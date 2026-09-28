@@ -19,7 +19,7 @@ from ledger import (get_accounts, trial_balance, backfill_from_transactions,
                     UnsupportedReversalError, reversal_support,
                     get_default_cash_account, get_cash_bank_accounts,
                     get_postable_cash_accounts)
-from voucher_service import post_voucher, bank_accounts, postable_accounts
+from voucher_service import post_voucher, bank_accounts as voucher_bank_accounts, postable_accounts
 
 accounting = Blueprint('accounting', __name__, url_prefix='/accounting')
 
@@ -56,7 +56,7 @@ def new_voucher():
     members = db.execute('SELECT id, member_number, first_name, last_name FROM members WHERE status = ? ORDER BY member_number', ('active',)).fetchall()
     loans = db.execute("SELECT id, loan_number, member_id, amount, status FROM loans WHERE status = 'pending' ORDER BY id DESC").fetchall()
     return render_template('accounting/voucher_new.html', token=secrets.token_urlsafe(24), today=_today(),
-                           accounts=postable_accounts(db), banks=bank_accounts(db), members=members, loans=loans)
+                           accounts=postable_accounts(db), banks=voucher_bank_accounts(db), members=members, loans=loans)
 
 
 @accounting.route('/vouchers/<int:voucher_id>')
