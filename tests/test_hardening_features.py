@@ -3557,6 +3557,95 @@ class HardeningFeatureTests(unittest.TestCase):
                 "SELECT 1 FROM journal_lines WHERE account_code = '3000' "
                 "AND memo LIKE '%should be refused%'").fetchone())
 
+    def test_bulk_repayment_retry_skips_existing_and_imports_only_new_rows(self):
+        self.login_admin()
+        mid = self.create_member()
+        with self.app.app_context():
+            db = get_db()
+            db.execute('UPDATE members SET email = NULL WHERE id = ?', (mid,))
+            db.execute("INSERT INTO loans (loan_number, member_id, amount, total_repayment, balance, status) VALUES ('LOAN/RETRY/001', ?, 1000, 1000, 900, 'active')", (mid,))
+            loan_id = db.execute("SELECT id FROM loans WHERE loan_number = 'LOAN/RETRY/001'").fetchone()['id']
+            # A repayment posted before duplicate protection was installed.
+            db.execute("INSERT INTO repayments (repayment_number, loan_id, amount, receipt_number, date) VALUES ('REP/LEGACY', ?, 100, 'RETRY-OLD', '2026-09-30')", (loan_id,))
+            db.commit()
+
+        def upload(rows):
+            body = 'loan_number,amount,payment_date,bank_account,receipt_number\n' + rows
+            response = self.client.post('/loans/bulk-repayments', data={
+                'file': (BytesIO(body.encode()), 'retry.csv')}, content_type='multipart/form-data')
+            self.assertEqual(response.status_code, 302)
+            with self.app.app_context():
+                db = get_db()
+                return json.loads(db.execute("SELECT data FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()['data'])
+
+        old = 'LOAN/RETRY/001,100,2026-09-30,1000,RETRY-OLD\n'
+        new = 'LOAN/RETRY/001,200,2026-09-30,1000,RETRY-NEW\n'
+        failed = 'MISSING-RETRY,50,2026-09-30,1000,RETRY-FIX\n'
+        try:
+            result = upload(old + new + failed)
+            self.assertEqual((result['success'], result['skipped'], len(result['errors'])), (1, 1, 1))
+            self.assertEqual(result['rows'][0]['status'], 'Skipped')
+            self.assertIn('Already imported', result['rows'][0]['reason'])
+            # Fix only the rejected row and resend the complete file.
+            result = upload(old + new + failed.replace('MISSING-RETRY', 'LOAN/RETRY/001'))
+            self.assertEqual((result['success'], result['skipped'], len(result['errors'])), (1, 2, 0))
+            with self.app.app_context():
+                db = get_db()
+                self.assertEqual(db.execute('SELECT balance FROM loans WHERE id = ?', (loan_id,)).fetchone()['balance'], 650)
+                self.assertEqual(db.execute('SELECT COUNT(*) AS n FROM repayments WHERE loan_id = ?', (loan_id,)).fetchone()['n'], 3)
+                self.assertEqual(db.execute("SELECT COUNT(*) AS n FROM journal_entries WHERE source_module = 'loan_repayment' AND source_id IN (SELECT id FROM repayments WHERE loan_id = ?)", (loan_id,)).fetchone()['n'], 2)
+            # Repeated rows within one file, blank receipts and later periods.
+            blank = 'LOAN/RETRY/001,40,2026-09-30,1000,\n'
+            result = upload(blank + blank)
+            self.assertEqual((result['success'], result['skipped']), (1, 1))
+            result = upload(blank)
+            self.assertEqual((result['success'], result['skipped']), (0, 1))
+            result = upload(blank.replace('2026-09-30', '2026-10-31'))
+            self.assertEqual((result['success'], result['skipped']), (1, 0))
+            # Legitimate separate payments with different nonblank receipts.
+            result = upload('LOAN/RETRY/001,30,2026-09-30,1000,RETRY-A\nLOAN/RETRY/001,30,2026-09-30,1000,RETRY-B\n')
+            self.assertEqual((result['success'], result['skipped']), (2, 0))
+            # A changed amount under the same receipt is never posted again.
+            result = upload(old.replace(',100,', ',101,'))
+            self.assertEqual((result['success'], result['skipped']), (0, 1))
+            self.assertIn('different amount or date', result['rows'][0]['reason'])
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                db.execute("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE source_module = 'loan_repayment' AND source_id IN (SELECT id FROM repayments WHERE loan_id = ?))", (loan_id,))
+                db.execute("DELETE FROM journal_entries WHERE source_module = 'loan_repayment' AND source_id IN (SELECT id FROM repayments WHERE loan_id = ?)", (loan_id,))
+                db.execute('DELETE FROM repayments WHERE loan_id = ?', (loan_id,))
+                db.execute('DELETE FROM loans WHERE id = ?', (loan_id,))
+                db.commit()
+
+    def test_bulk_repayment_duplicate_receipt_on_completed_or_other_loan(self):
+        self.login_admin()
+        mid = self.create_member()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO loans (loan_number, member_id, amount, total_repayment, balance, status) VALUES ('LOAN/RETRY/DONE', ?, 100, 100, 0, 'completed')", (mid,))
+            loan_id = db.execute("SELECT id FROM loans WHERE loan_number = 'LOAN/RETRY/DONE'").fetchone()['id']
+            db.execute("INSERT INTO repayments (repayment_number, loan_id, amount, receipt_number, date) VALUES ('REP/CAPPED/OLD', ?, 100, 'RETRY-CAPPED', '2026-09-30')", (loan_id,))
+            db.execute("INSERT INTO loans (loan_number, member_id, amount, total_repayment, balance, status) VALUES ('LOAN/RETRY/OTHER', ?, 100, 100, 100, 'active')", (mid,))
+            db.commit()
+        try:
+            body = ('loan_number,amount,payment_date,bank_account,receipt_number\n'
+                    'LOAN/RETRY/DONE,120,2026-09-30,1000,RETRY-CAPPED\n'
+                    'LOAN/RETRY/OTHER,100,2026-09-30,1000,RETRY-CAPPED\n')
+            self.client.post('/loans/bulk-repayments', data={'file': (BytesIO(body.encode()), 'completed.csv')}, content_type='multipart/form-data')
+            with self.app.app_context():
+                db = get_db()
+                result = json.loads(db.execute("SELECT data FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()['data'])
+                self.assertEqual((result['success'], result['skipped'], len(result['errors'])), (0, 1, 1))
+                self.assertIn('another loan', result['errors'][0])
+                self.assertEqual(db.execute("SELECT balance FROM loans WHERE loan_number = 'LOAN/RETRY/OTHER'").fetchone()['balance'], 100)
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                db.execute('DELETE FROM repayments WHERE loan_id = ?', (loan_id,))
+                db.execute("DELETE FROM loans WHERE loan_number IN ('LOAN/RETRY/DONE', 'LOAN/RETRY/OTHER')")
+                db.commit()
+
     def test_upload_history_keeps_all_row_errors_after_redirect(self):
         self.login_admin()
         body = 'loan_number,amount,payment_date,bank_account\n' + ''.join(

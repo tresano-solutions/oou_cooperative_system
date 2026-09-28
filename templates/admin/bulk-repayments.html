@@ -34,6 +34,7 @@
                             <li>Use <code>counter_account=1400</code> for cooperative fund payroll deductions. This debits the control account without recording a bank movement.</li>
                             <li>A row's <code>counter_account</code> takes precedence over its legacy <code>bank_account</code>. If both are blank, the default counter account below is used.</li>
                             <li>The loan must already exist in the system.</li>
+                            <li>Keep the same receipt numbers when retrying a file. Existing receipts are skipped. Without a receipt, the same loan, date and amount are treated as already imported. Skipped rows are listed in Upload History.</li>
                             <li>Payment amount cannot exceed the loan's outstanding balance.</li>
                         </ul>
                     </div>

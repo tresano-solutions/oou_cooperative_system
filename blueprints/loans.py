@@ -13,7 +13,7 @@ from flask import (Blueprint, render_template, redirect, url_for, request, flash
                    make_response, jsonify)
 from flask_login import login_required, current_user
 
-from database import get_db, last_insert_id
+from database import get_db, last_insert_id, USE_POSTGRES
 from email_service import (send_loan_approval_email, send_loan_rejection_email,
                            send_loan_repayment_email, send_loan_stage_email,
                            send_guarantor_request_email)
@@ -902,16 +902,24 @@ def bulk_loan_repayments():
 
             db = get_db()
             success = 0
+            skipped = 0
             errors = []
             warnings = []
             outcomes = []
             batch_token = secrets.token_hex(4)
             # Keep row savepoints inside one transaction on SQLite as well as PostgreSQL.
             db.execute('SAVEPOINT repayment_upload')
+            # Serialize bulk uploads through their duplicate check and commit.
+            # Existing data needs no unique-index migration or cleanup.
+            if USE_POSTGRES:
+                db.execute('SELECT pg_advisory_xact_lock(7319041)')
+            else:
+                db.execute('UPDATE repayments SET id = id WHERE 1 = 0')
 
             for row_num, row in enumerate(reader, start=2):
                 error_start = len(errors)
                 processed = False
+                duplicate_reason = ''
                 loan_number = str(row.get('loan_number') or '').strip()
                 db.execute('SAVEPOINT repayment_row')
                 try:
@@ -953,6 +961,40 @@ def bulk_loan_repayments():
                     ''', (loan_number,)).fetchone()
                     if not loan:
                         errors.append(f"Row {row_num}: Loan number {loan_number} not found")
+                        continue
+                    existing = None
+                    if receipt_number:
+                        existing = db.execute('''
+                            SELECT * FROM repayments
+                            WHERE TRIM(receipt_number) = ? AND reversed_at IS NULL
+                            ORDER BY id LIMIT 1
+                        ''', (receipt_number,)).fetchone()
+                        if existing and existing['loan_id'] != loan['id']:
+                            errors.append(f"Row {row_num}: Receipt {receipt_number} already belongs to another loan; review the receipt number")
+                            continue
+                    if not existing:
+                        # With no receipt on either side, conservatively treat
+                        # the same loan/date/amount as already posted. Distinct
+                        # nonblank receipts still permit legitimate instalments.
+                        existing = db.execute('''
+                            SELECT * FROM repayments WHERE loan_id = ?
+                            AND CAST(date AS DATE) = CAST(? AS DATE)
+                            AND ABS(amount - ?) < 0.005 AND reversed_at IS NULL
+                            AND (? = '' OR COALESCE(TRIM(receipt_number), '') = '')
+                            ORDER BY id LIMIT 1
+                        ''' if USE_POSTGRES else '''
+                            SELECT * FROM repayments WHERE loan_id = ?
+                            AND date(date) = date(?)
+                            AND ABS(amount - ?) < 0.005 AND reversed_at IS NULL
+                            AND (? = '' OR COALESCE(TRIM(receipt_number), '') = '')
+                            ORDER BY id LIMIT 1
+                        ''', (loan['id'], payment_date_str, amount, receipt_number)).fetchone()
+                    if existing:
+                        duplicate_reason = f"Already imported: {existing['repayment_number']}"
+                        if (abs(float(existing['amount']) - amount) >= 0.005
+                                or str(existing['date'])[:10] != payment_date_str):
+                            duplicate_reason += '; receipt exists with a different amount or date; review the existing repayment'
+                        skipped += 1
                         continue
                     if loan['status'] != 'active' or loan['balance'] <= 0:
                         errors.append(f"Row {row_num}: Loan {loan_number} is not active or has no outstanding balance")
@@ -1025,12 +1067,14 @@ def bulk_loan_repayments():
                         db.execute('ROLLBACK TO SAVEPOINT repayment_row')
                     db.execute('RELEASE SAVEPOINT repayment_row')
                     outcomes.append(dict(row=row_num, identifier=loan_number,
-                                         status='Imported' if processed else 'Failed',
-                                         reason='; '.join(errors[error_start:]) if not processed else 'Repayment recorded'))
+                                         status='Skipped' if duplicate_reason else ('Imported' if processed else 'Failed'),
+                                         reason=duplicate_reason or ('; '.join(errors[error_start:]) if not processed else 'Repayment recorded')))
 
-            record_upload(db, 'loan_repayments', success, errors, warnings=warnings, rows=outcomes)
+            record_upload(db, 'loan_repayments', success, errors, skipped=skipped, warnings=warnings, rows=outcomes)
             db.commit()
             flash('Full results saved in Upload History.', 'info')
+            if skipped:
+                flash(f'Skipped {skipped} already imported repayment(s). See Upload History for details.', 'info')
             if errors:
                 flash(f'Processed {success} repayments. {len(errors)} errors:', 'warning')
                 for err in errors[:5]:
