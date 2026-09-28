@@ -3557,6 +3557,45 @@ class HardeningFeatureTests(unittest.TestCase):
                 "SELECT 1 FROM journal_lines WHERE account_code = '3000' "
                 "AND memo LIKE '%should be refused%'").fetchone())
 
+    def test_bulk_repayment_control_account_debits_fund(self):
+        self.login_admin()
+        member_id = self.create_member()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO accounts (code, name, type, normal_balance, is_active, is_cash_account) VALUES ('1400', 'Cooperative Fund', 'asset', 'debit', 1, 0)")
+            db.execute("UPDATE members SET email = NULL WHERE id = ?", (member_id,))
+            db.execute("INSERT INTO loans (loan_number, member_id, amount, total_repayment, balance, status) VALUES ('LOAN/CONTROL/001', ?, 100000, 120000, 120000, 'active')", (member_id,))
+            db.commit()
+        try:
+            body = ('loan_number,amount,payment_date,payment_method,counter_account,receipt_number\n'
+                    'LOAN/CONTROL/001,20000,2026-09-30,salary_deduction,1400,CONTROL-TEST\n')
+            response = self.client.post('/loans/bulk-repayments', data={
+                'bank_account': '1000', 'file': (BytesIO(body.encode()), 'repayments.csv')},
+                content_type='multipart/form-data', follow_redirects=False)
+            self.assertEqual(response.status_code, 302)
+            with self.client.session_transaction() as session:
+                self.assertTrue(any('Successfully recorded 1 loan repayments' in message
+                                    for category, message in session.get('_flashes', [])))
+            with self.app.app_context():
+                db = get_db()
+                rep = db.execute("SELECT * FROM repayments WHERE receipt_number = 'CONTROL-TEST'").fetchone()
+                self.assertIsNotNone(rep)
+                lines = db.execute("SELECT jl.* FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE je.source_module = 'loan_repayment' AND je.source_id = ?", (rep['id'],)).fetchall()
+                self.assertAlmostEqual(sum(float(r['debit']) for r in lines), 20000)
+                self.assertAlmostEqual(sum(float(r['credit']) for r in lines), 20000)
+                self.assertEqual({r['account_code'] for r in lines if r['debit']}, {'1400'})
+                self.assertEqual(db.execute("SELECT is_cash_account FROM accounts WHERE code = '1400'").fetchone()['is_cash_account'], 0)
+                self.assertAlmostEqual(db.execute("SELECT balance FROM loans WHERE loan_number = 'LOAN/CONTROL/001'").fetchone()['balance'], 100000)
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                db.execute("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE source_module = 'loan_repayment' AND source_id IN (SELECT id FROM repayments WHERE receipt_number = 'CONTROL-TEST'))")
+                db.execute("DELETE FROM journal_entries WHERE source_module = 'loan_repayment' AND source_id IN (SELECT id FROM repayments WHERE receipt_number = 'CONTROL-TEST')")
+                db.execute("DELETE FROM repayments WHERE receipt_number = 'CONTROL-TEST'")
+                db.execute("DELETE FROM loans WHERE loan_number = 'LOAN/CONTROL/001'")
+                db.execute("DELETE FROM accounts WHERE code = '1400'")
+                db.commit()
+
     def test_bulk_repayment_row_with_bad_bank_account_writes_nothing(self):
         """The bulk loop shares one transaction and commits after the last row,
         with no savepoint per row. So a bad account has to be caught before the

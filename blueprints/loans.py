@@ -19,6 +19,7 @@ from utils import (role_required, audit, notify_member, compute_loan_schedule,
                    member_savings_balance, member_for_user,
                    member_has_minimum_membership, has_unpaid_loan_of_type)
 from ledger import (post_journal, post_journal_safe, get_default_cash_account, get_postable_cash_accounts,
+                    get_loan_repayment_counter_accounts, resolve_loan_repayment_counter_account,
                     resolve_cash_bank_account, UnknownCashAccountError,
                     LOANS_RECEIVABLE, ACCUM_SURPLUS, FEE_INCOME,
                     LOAN_INTEREST_INCOME, INSURANCE_PAYABLE)
@@ -143,7 +144,7 @@ def _disburse_loan(db, loan, cash_account):
 def download_repayment_template():
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['loan_number', 'amount', 'payment_date', 'payment_method', 'bank_account', 'receipt_number', 'notes'])
+    writer.writerow(['loan_number', 'amount', 'payment_date', 'payment_method', 'counter_account', 'receipt_number', 'notes'])
     writer.writerow(['LOAN/20250428/0001', '25000', '2025-04-28', 'transfer', '1000', 'RCPT-001', 'First repayment'])
     writer.writerow(['LOAN/20250428/0002', '50000', '2025-04-29', 'cash', '1000', '', 'Partial payment'])
     response = make_response(output.getvalue())
@@ -902,6 +903,11 @@ def bulk_loan_repayments():
                     payment_date_str = row.get('payment_date', '').strip()
                     payment_method = row.get('payment_method', 'cash').strip().lower()
                     bank_account = row.get('bank_account', '').strip() or request.form.get('bank_account', '').strip()
+                    # A row-specific legacy bank code takes precedence over the
+                    # form default; explicit counter_account is authoritative.
+                    counter_account = row.get('counter_account', '').strip()
+                    if not counter_account and not row.get('bank_account', '').strip():
+                        counter_account = request.form.get('counter_account', '').strip()
                     receipt_number = row.get('receipt_number', '').strip()
                     notes = row.get('notes', '').strip()
 
@@ -915,7 +921,7 @@ def bulk_loan_repayments():
                     # would still commit the repayment and the balance change
                     # while its journal entry never posted.
                     try:
-                        cash_account = resolve_cash_bank_account(db, bank_account)
+                        cash_account = resolve_loan_repayment_counter_account(db, counter_account, bank_account)
                     except UnknownCashAccountError as e:
                         errors.append(f"Row {row_num}: {e}")
                         continue
@@ -1011,7 +1017,7 @@ def bulk_loan_repayments():
 
     db = get_db()
     return render_template('admin/bulk-repayments.html',
-                           bank_accounts=get_postable_cash_accounts(db),
+                           bank_accounts=get_loan_repayment_counter_accounts(db),
                            default_cash_account=get_default_cash_account(db))
 
 

@@ -191,6 +191,39 @@ def resolve_cash_bank_account(db, requested_code=None):
     return code
 
 
+def get_loan_repayment_counter_accounts(db):
+    """Cash destinations plus the cooperative fund payroll control account."""
+    accounts = get_postable_cash_accounts(db)
+    control = db.execute('''
+        SELECT code, name, type, normal_balance, parent_code, is_active
+        FROM accounts WHERE code = '1400' AND type = 'asset' AND is_active = 1
+        AND NOT EXISTS (
+            SELECT 1 FROM accounts child
+            WHERE child.parent_code = '1400' AND child.is_active = 1
+        )
+    ''').fetchone()
+    if control and not any(a['code'] == '1400' for a in accounts):
+        accounts.append(dict(control))
+    return accounts
+
+
+def resolve_loan_repayment_counter_account(db, counter_account=None, bank_account=None):
+    """An explicit counter account supports non-bank payroll deductions.
+
+    Keep legacy bank_account validation intact; never mark the control account
+    as cash or change receiving accounts in other transaction workflows.
+    """
+    code = (counter_account or '').strip()
+    if not code:
+        return resolve_cash_bank_account(db, bank_account)
+    if code not in {a['code'] for a in get_loan_repayment_counter_accounts(db)}:
+        raise UnknownCashAccountError(
+            f"'{code}' is not an active postable loan repayment counter account. "
+            "Choose a cash/bank account or cooperative fund control account 1400."
+        )
+    return code
+
+
 def account_exists(db, code):
     return db.execute('SELECT 1 FROM accounts WHERE code = ?', (code,)).fetchone() is not None
 

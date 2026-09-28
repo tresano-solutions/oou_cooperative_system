@@ -28,9 +28,10 @@
                         <ul class="mb-0">
                             <li>Format: CSV (UTF‑8, comma‑separated)</li>
                             <li><strong>Required columns:</strong> <code>loan_number, amount, payment_date</code></li>
-                            <li><strong>Optional columns:</strong> payment_method, bank_account, receipt_number, notes</li>
+                            <li><strong>Optional columns:</strong> payment_method, counter_account, bank_account, receipt_number, notes</li>
                             <li>Date format: <code>YYYY-MM-DD</code></li>
-                            <li>If <code>bank_account</code> is blank in the file, the default receiving account selected below is used.</li>
+                            <li>Use <code>counter_account=1400</code> for cooperative fund payroll deductions. This debits the control account without recording a bank movement.</li>
+                            <li>A row's <code>counter_account</code> takes precedence over its legacy <code>bank_account</code>. If both are blank, the default counter account below is used.</li>
                             <li>The loan must already exist in the system.</li>
                             <li>Payment amount cannot exceed the loan's outstanding balance.</li>
                         </ul>
@@ -38,15 +39,15 @@
 
                     <form method="POST" enctype="multipart/form-data">
                         <div class="mb-3">
-                            <label class="form-label fw-bold">Default Receiving Bank / Cash Account</label>
-                            <select class="form-select" name="bank_account" required>
+                            <label class="form-label fw-bold">Default Debit Counter Account</label>
+                            <select class="form-select" name="counter_account" required>
                                 {% for account in bank_accounts %}
                                 <option value="{{ account.code }}" {% if account.code == default_cash_account %}selected{% endif %}>
                                     {{ account.code }} - {{ account.name }}
                                 </option>
                                 {% endfor %}
                             </select>
-                            <small class="text-muted">Used for every uploaded repayment unless a row contains its own bank_account code.</small>
+                            <small class="text-muted">Used unless the row specifies a counter_account or legacy bank_account. Select 1400 for cooperative fund deductions.</small>
                         </div>
 
                         <div class="mb-3">
@@ -64,7 +65,7 @@
                                             <th>amount</th>
                                             <th>payment_date</th>
                                             <th>payment_method</th>
-                                            <th>bank_account</th>
+                                            <th>counter_account</th>
                                             <th>receipt_number</th>
                                             <th>notes</th>
                                         </tr>
