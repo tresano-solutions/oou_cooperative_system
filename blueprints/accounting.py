@@ -29,8 +29,17 @@ accounting = Blueprint('accounting', __name__, url_prefix='/accounting')
 @role_required('admin', 'treasurer')
 def vouchers():
     db = get_db()
-    rows = db.execute('SELECT * FROM vouchers ORDER BY date DESC, id DESC LIMIT 100').fetchall()
-    return render_template('accounting/vouchers.html', vouchers=rows)
+    q = (request.args.get('q') or '').strip()
+    kind = request.args.get('kind') or ''
+    where, params = [], []
+    if q:
+        where.append('(voucher_number LIKE ? OR party LIKE ? OR reference LIKE ? OR description LIKE ?)')
+        params.extend([f'%{q}%'] * 4)
+    if kind in ('receipt', 'payment', 'journal'):
+        where.append('kind = ?'); params.append(kind)
+    clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+    rows = db.execute(f'SELECT * FROM vouchers{clause} ORDER BY date DESC, id DESC LIMIT 100', tuple(params)).fetchall()
+    return render_template('accounting/vouchers.html', vouchers=rows, q=q, kind=kind)
 
 
 @accounting.route('/vouchers/new', methods=['GET', 'POST'])
