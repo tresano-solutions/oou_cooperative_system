@@ -9,17 +9,14 @@
             <div class="error-page py-5">
                 <h1 class="display-1 text-danger">500</h1>
                 <h2 class="mb-4"><i class="fas fa-exclamation-triangle text-danger"></i> Internal Server Error</h2>
-                <p class="lead mb-4">Something went wrong on our end. Our team has been notified and we're working to fix it.</p>
-                <div class="mb-4">
-                    <img src="{{ url_for('static', filename='images/500-illustration.svg') }}" alt="Server error" class="img-fluid" style="max-height: 200px;">
-                </div>
+                <p class="lead mb-4">We could not complete this request. If you were posting a transaction, check its status before trying again.</p>
                 <div class="d-flex justify-content-center gap-3">
                     <a href="{{ url_for('main.dashboard') }}" class="btn btn-primary btn-lg">
                         <i class="fas fa-tachometer-alt"></i> Go to Dashboard
                     </a>
                     <button onclick="location.reload()" class="btn btn-outline-secondary btn-lg">
                         <i class="fas fa-sync-alt"></i> Try Again
-                    </a>
+                    </button>
                 </div>
                 <p class="text-muted mt-4">
                     <i class="fas fa-envelope"></i> If the problem persists, please contact your administrator.

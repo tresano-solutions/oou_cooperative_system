@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, redirect, url_for
 from flask_login import login_required, current_user
+from datetime import datetime
 
 from database import get_db
 from utils import member_for_user
@@ -24,7 +25,7 @@ def dashboard():
 
     members_count      = db.execute('SELECT COUNT(*) FROM members').fetchone()[0] or 0
     total_savings      = db.execute('SELECT SUM(amount) FROM savings').fetchone()[0] or 0
-    total_loans        = db.execute("SELECT SUM(amount) FROM loans WHERE status = 'active'").fetchone()[0] or 0
+    total_loans        = db.execute("SELECT SUM(balance) FROM loans WHERE status = 'active'").fetchone()[0] or 0
     total_investments  = db.execute('SELECT SUM(amount) FROM investments').fetchone()[0] or 0
 
     recent_savings = db.execute("""
@@ -39,7 +40,21 @@ def dashboard():
         ORDER BY l.date_applied DESC LIMIT 5
     """).fetchall()
 
+    now = datetime.now()
+    months = []
+    for offset in range(5, -1, -1):
+        year, month = divmod(now.year * 12 + now.month - 1 - offset, 12)
+        months.append(f'{year:04d}-{month+1:02d}')
+    savings_trend, loan_trend = [], []
+    for month in months:
+        savings_trend.append(float(db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM savings WHERE CAST(date AS TEXT) LIKE ?",
+            (month + '%',)).fetchone()[0]))
+        loan_trend.append(float(db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM loans WHERE CAST(disbursement_date AS TEXT) LIKE ?",
+            (month + '%',)).fetchone()[0]))
     return render_template('dashboard.html',
+                           trend_months=months, savings_trend=savings_trend, loan_trend=loan_trend,
                            members_count=members_count,
                            total_savings=total_savings,
                            total_loans=total_loans,

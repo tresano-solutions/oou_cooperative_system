@@ -16,6 +16,12 @@
         </div>
     </div>
     
+    <div class="workspace-actions" aria-label="Quick actions">
+        {% if can('accounting.voucher_post') %}<a class="btn btn-primary" href="{{ url_for('accounting.new_voucher') }}">New voucher</a>{% endif %}
+        {% if can('savings.manage') %}<a class="btn btn-outline-primary" href="{{ url_for('member_receipts.member_payment') }}">Receive member payment</a>{% endif %}
+        {% if can('loans.view') %}<a class="btn btn-outline-primary" href="{{ url_for('loans.loans_list') }}">Review loans</a>{% endif %}
+        {% if can('accounting.view') %}<a class="btn btn-outline-primary" href="{{ url_for('accounting.reconciliation') }}">Ledger reconciliation</a>{% endif %}
+    </div>
     <!-- Statistics Cards -->
     <div class="row g-3 mb-4">
         <div class="col-md-3">
@@ -78,8 +84,8 @@
                 <div class="card-header">
                     <h5 class="mb-0"><i class="fas fa-chart-pie"></i> Financial Overview</h5>
                 </div>
-                <div class="card-body">
-                    <canvas id="financialChart" height="300"></canvas>
+                <div class="card-body" style="height: 320px">
+                    <canvas id="financialChart" height="300" role="img" aria-label="Savings, outstanding loans and investments. Values are shown in the summary cards above."></canvas>
                 </div>
             </div>
         </div>
@@ -89,8 +95,8 @@
                 <div class="card-header">
                     <h5 class="mb-0"><i class="fas fa-chart-line"></i> Monthly Trends</h5>
                 </div>
-                <div class="card-body">
-                    <canvas id="trendsChart" height="300"></canvas>
+                <div class="card-body" style="height: 320px">
+                    <canvas id="trendsChart" height="300" role="img" aria-label="Monthly savings and loan disbursements"></canvas>
                 </div>
             </div>
         </div>
@@ -202,21 +208,21 @@ new Chart(ctx1, {
     }
 });
 
-// Trends Chart (sample data - would be replaced with real data)
+// Actual recorded savings and disbursements for the last six months.
 const ctx2 = document.getElementById('trendsChart').getContext('2d');
 new Chart(ctx2, {
     type: 'line',
     data: {
-        labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+        labels: {{ trend_months|tojson }},
         datasets: [{
             label: 'Savings',
-            data: [120000, 135000, 148000, 152000, 168000, 175000],
+            data: {{ savings_trend|tojson }},
             borderColor: '#082b66',
             backgroundColor: 'rgba(8,43,102,.08)',
             tension: 0.4
         }, {
-            label: 'Loans',
-            data: [80000, 95000, 102000, 110000, 115000, 122000],
+            label: 'Loan disbursements',
+            data: {{ loan_trend|tojson }},
             borderColor: '#f4b51c',
             backgroundColor: 'rgba(244,181,28,.08)',
             tension: 0.4

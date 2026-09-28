@@ -1,0 +1,57 @@
+/* Run against scripts/preview_workspace.py, using an installed Playwright runtime. */
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+(async () => {
+  const browser = await chromium.launch({headless:true, channel: process.env.BROWSER_CHANNEL || 'msedge'});
+  const page = await browser.newPage({viewport:{width:1440,height:1000}});
+  const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('http://127.0.0.1:5087/login');
+  await page.locator('[name=username]').fill('admin');
+  await page.locator('[name=password]').fill('TestAdmin123');
+  await Promise.all([page.waitForURL('**/dashboard'),page.locator('button[type=submit]').click()]);
+  await page.waitForSelector('.nav-group');
+  fs.mkdirSync('outputs/design-review',{recursive:true});
+  await page.screenshot({path:'outputs/design-review/dashboard-desktop.png',fullPage:true});
+  assert(await page.locator('.nav-group').count()>=4);
+  await page.goto('http://127.0.0.1:5087/accounting/chart');
+  const search=page.locator('.table-tools input').first();
+  if(await search.count()) {
+    await search.fill('zz-no-account');
+    assert.equal(await page.locator('.table-responsive tbody tr:visible').count(),0);
+    await search.fill('');
+    await page.locator('.table-sort').first().click();
+    assert(await page.locator('th[aria-sort=ascending]').count()>0);
+  }
+  await page.goto('http://127.0.0.1:5087/accounting/vouchers/new');
+  await page.locator('#kind').selectOption('journal');
+  await page.locator('#description').fill('Review-only accounting adjustment');
+  await page.locator('#account_0').selectOption('4100');
+  await page.locator('#debit_0').fill('1000');
+  assert(await page.locator('#reviewButton').isDisabled());
+  await page.locator('#addLine').click();
+  await page.locator('#account_1').selectOption('4100');
+  await page.locator('#credit_1').fill('1000');
+  assert(await page.locator('#reviewButton').isEnabled());
+  await page.locator('#reviewButton').click();
+  assert(await page.locator('#reviewDialog').isVisible());
+  await page.locator('#editVoucher').click();
+  await page.locator('#kind').selectOption('payment');
+  await page.locator('#purpose').selectOption('loan_disbursement');
+  assert(await page.locator('#linesSection').isHidden());
+  assert(await page.locator('#account_0').isDisabled());
+  await page.screenshot({path:'outputs/design-review/voucher-desktop.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.waitForFunction(()=>document.getElementById('mainContent').getBoundingClientRect().left===0);
+  await page.locator('#purpose').selectOption('general');
+  await page.screenshot({path:'outputs/design-review/voucher-mobile.png',fullPage:true});
+  const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1);
+  assert(!overflow,'Mobile page must not overflow horizontally');
+  await page.locator('#sidebarToggle').click();
+  await page.waitForFunction(()=>document.getElementById('sidebarToggle').getAttribute('aria-expanded')==='true');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#sidebarToggle').getAttribute('aria-expanded'),'false');
+  assert.deepEqual(errors,[]);
+  console.log('PASS: navigation, journal balance, review dialog, loan controls, mobile reflow, keyboard dismissal; no page errors.');
+  await browser.close();
+})().catch(e=>{console.error(e);process.exit(1);});

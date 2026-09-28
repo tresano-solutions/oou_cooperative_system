@@ -32,14 +32,29 @@ def vouchers():
     q = (request.args.get('q') or '').strip()
     kind = request.args.get('kind') or ''
     where, params = [], []
+    from_date = request.args.get('from_date', '')
+    to_date = request.args.get('to_date', '')
+    for value, condition in [(from_date, 'date >= ?'), (to_date, 'date <= ?')]:
+        if value:
+            try:
+                datetime.strptime(value, '%Y-%m-%d')
+            except ValueError:
+                flash('Use a valid date filter.', 'warning')
+                continue
+            where.append(condition)
+            params.append(value + (' 23:59:59' if condition.startswith('date <=') else ''))
     if q:
         where.append('(voucher_number LIKE ? OR party LIKE ? OR reference LIKE ? OR description LIKE ?)')
         params.extend([f'%{q}%'] * 4)
     if kind in ('receipt', 'payment', 'journal'):
         where.append('kind = ?'); params.append(kind)
     clause = (' WHERE ' + ' AND '.join(where)) if where else ''
-    rows = db.execute(f'SELECT * FROM vouchers{clause} ORDER BY date DESC, id DESC LIMIT 100', tuple(params)).fetchall()
-    return render_template('accounting/vouchers.html', vouchers=rows, q=q, kind=kind)
+    total = db.execute(f'SELECT COUNT(*) FROM vouchers{clause}', tuple(params)).fetchone()[0]
+    pages = max(1, (total + 49) // 50)
+    page = min(max(1, request.args.get('page', 1, type=int) or 1), pages)
+    rows = db.execute(f'SELECT * FROM vouchers{clause} ORDER BY date DESC, id DESC LIMIT 50 OFFSET ?', tuple(params + [(page-1)*50])).fetchall()
+    return render_template('accounting/vouchers.html', vouchers=rows, q=q, kind=kind,
+                           from_date=from_date, to_date=to_date, page=page, pages=pages, total=total)
 
 
 @accounting.route('/vouchers/new', methods=['GET', 'POST'])
@@ -54,8 +69,8 @@ def new_voucher():
             for i in range(count):
                 lines.append({k: request.form.get(f'{k}_{i}', '') for k in ('account','debit','credit','amount','member_id','loan_id','memo')})
             vid, created = post_voucher(db, request.form, lines, current_user)
-            db.execute('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?, ?, ?, ?, ?)',
-                       (current_user.id, 'VOUCHER_POSTED' if created else 'VOUCHER_DUPLICATE', 'voucher', vid, request.form.get('description','')))
+            audit(db, 'VOUCHER_POSTED' if created else 'VOUCHER_DUPLICATE', 'accounting',
+                  f'Voucher {vid}: {request.form.get("description", "")}')
             db.commit()
             flash('Voucher posted.' if created else 'This voucher was already posted; no duplicate was created.', 'success')
             return redirect(url_for('accounting.voucher_detail', voucher_id=vid))
@@ -63,9 +78,10 @@ def new_voucher():
             db.rollback()
             flash(str(exc), 'danger')
     members = db.execute('SELECT id, member_number, first_name, last_name FROM members WHERE status = ? ORDER BY member_number', ('active',)).fetchall()
-    loans = db.execute("SELECT id, loan_number, member_id, amount, status FROM loans WHERE status = 'pending' ORDER BY id DESC").fetchall()
+    loans = db.execute("SELECT l.*, m.first_name || ' ' || m.last_name AS member_name FROM loans l JOIN members m ON m.id=l.member_id WHERE l.status IN ('pending', 'active', 'completed') ORDER BY l.id DESC").fetchall()
     return render_template('accounting/voucher_new.html', token=secrets.token_urlsafe(24), today=_today(),
-                           accounts=postable_accounts(db), banks=voucher_bank_accounts(db), members=members, loans=loans)
+                           accounts=postable_accounts(db), banks=voucher_bank_accounts(db), members=members, loans=loans,
+                           form=request.form if request.method == 'POST' else {})
 
 
 @accounting.route('/vouchers/<int:voucher_id>')
@@ -73,7 +89,7 @@ def new_voucher():
 @role_required('admin', 'treasurer')
 def voucher_detail(voucher_id):
     db = get_db()
-    voucher = db.execute('SELECT * FROM vouchers WHERE id = ?', (voucher_id,)).fetchone()
+    voucher = db.execute('SELECT v.*, u.username AS posted_by FROM vouchers v LEFT JOIN users u ON u.id=v.created_by WHERE v.id = ?', (voucher_id,)).fetchone()
     if not voucher:
         return 'Voucher not found', 404
     entry = journal_entry_detail(db, voucher['journal_entry_id']) if voucher['journal_entry_id'] else None

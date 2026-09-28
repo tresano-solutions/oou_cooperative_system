@@ -1,1 +1,27 @@
-{% extends 'base.html' %}{% block content %}<div class="d-flex justify-content-between mb-4"><div><h1>{{ voucher.voucher_number }}</h1><p class="text-muted">{{ voucher.kind|title }} · {{ voucher.description }}</p></div><a class="btn btn-outline-secondary" href="{{ url_for('accounting.vouchers') }}">Back</a></div><div class="card"><div class="card-body"><dl class="row mb-0"><dt class="col-sm-3">Date</dt><dd class="col-sm-9">{{ voucher.date }}</dd><dt class="col-sm-3">Party</dt><dd class="col-sm-9">{{ voucher.party or '—' }}</dd><dt class="col-sm-3">Reference</dt><dd class="col-sm-9">{{ voucher.reference or '—' }}</dd></dl></div></div>{% if entry %}<div class="card mt-4"><div class="card-header">Journal entry</div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Account</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead><tbody>{% for l in entry.lines %}<tr><td>{{ l.account_code }} — {{ l.account_name }}</td><td class="text-end">{{ '%.2f'|format(l.debit) }}</td><td class="text-end">{{ '%.2f'|format(l.credit) }}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between gap-3 mb-4">
+  <div><h1>{{ voucher.voucher_number }}</h1><p class="text-muted">{{ voucher.kind|title }} · {{ voucher.description }}</p>
+    <span class="badge {{ 'bg-danger' if entry and entry.entry.reversed_at else 'bg-success' }}">{{ 'Reversed' if entry and entry.entry.reversed_at else 'Posted' }}</span>
+  </div>
+  <div class="workspace-actions"><a class="btn btn-outline-secondary" href="{{ url_for('accounting.vouchers') }}">Back to register</a><button class="btn btn-outline-primary" onclick="window.print()" type="button">Print voucher</button></div>
+</div>
+<div class="card"><div class="card-body"><dl class="row mb-0">
+  <dt class="col-sm-3">Posting date</dt><dd class="col-sm-9">{{ voucher.date }}</dd>
+  <dt class="col-sm-3">Party</dt><dd class="col-sm-9">{{ voucher.party or '—' }}</dd>
+  <dt class="col-sm-3">External reference</dt><dd class="col-sm-9">{{ voucher.reference or '—' }}</dd>
+  <dt class="col-sm-3">Posted by</dt><dd class="col-sm-9">{{ voucher.posted_by or '—' }}</dd>
+  <dt class="col-sm-3">Recorded at</dt><dd class="col-sm-9">{{ voucher.created_at }}</dd>
+</dl></div></div>
+{% if entry %}
+<section class="card mt-4" aria-labelledby="entryTitle"><div class="card-header d-flex justify-content-between">
+  <h2 class="h5 mb-0" id="entryTitle">Accounting entry</h2>
+  {% if can('accounting.view') %}<a href="{{ url_for('accounting.journal_entry_view', entry_id=voucher.journal_entry_id) }}">View journal and reversal history</a>{% endif %}
+</div>
+<div class="table-responsive"><table class="table mb-0">
+  <thead><tr><th scope="col">Account</th><th scope="col">Memo</th><th scope="col" class="text-end">Debit (₦)</th><th scope="col" class="text-end">Credit (₦)</th></tr></thead>
+  <tbody>{% for l in entry.lines %}<tr><td>{{ l.account_code }} — {{ l.account_name }}</td><td>{{ l.memo or '—' }}</td><td class="text-end">{{ '{:,.2f}'.format(l.debit) }}</td><td class="text-end">{{ '{:,.2f}'.format(l.credit) }}</td></tr>{% endfor %}</tbody>
+  <tfoot><tr><th colspan="2" scope="row">Total</th><td class="text-end">{{ '{:,.2f}'.format(entry.total_debit) }}</td><td class="text-end">{{ '{:,.2f}'.format(entry.total_credit) }}</td></tr></tfoot>
+</table></div></section>
+{% endif %}
+{% endblock %}
