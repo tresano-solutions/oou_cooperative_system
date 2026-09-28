@@ -3874,6 +3874,50 @@ class HardeningFeatureTests(unittest.TestCase):
                 db.execute("DELETE FROM accounts WHERE code = '1095'")
                 db.commit()
 
+    def test_salary_upload_control_account_and_direct_bank_override(self):
+        self.login_admin()
+        mid = self.create_member()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO accounts (code, name, type, normal_balance, is_active, is_cash_account) VALUES ('1400', 'Cooperative Fund', 'asset', 'debit', 1, 0)")
+            db.commit()
+        body = ('member_number,amount,month,date,counter_account,bank_account,receipt_number\n'
+                'OOU/TEST/0001,10000,2026-09,2026-09-25,,,SAL-CONTROL-DEFAULT\n'
+                'OOU/TEST/0001,5000,2026-09,2026-09-25,,1000,SAL-DIRECT-BANK\n'
+                'OOU/TEST/0001,2000,2026-09,2026-09-25,1400,1000,SAL-CONTROL-ROW\n'
+                'OOU/TEST/0001,1000,2026-09,2026-09-25,9999,,SAL-CONTROL-BAD\n')
+        try:
+            page = self.client.get('/savings/salary-upload')
+            self.assertIn(b'name="counter_account"', page.data)
+            self.assertIn(b'value="1400" selected', page.data)
+            for attempt in range(2):
+                response = self.client.post('/savings/salary-upload', data={
+                    'month': '2026-09', 'batch_ref': 'SAL/CONTROL/TEST',
+                    'file': (BytesIO(body.encode()), 'control.csv')}, content_type='multipart/form-data')
+                self.assertEqual(response.status_code, 302)
+                with self.app.app_context():
+                    db = get_db()
+                    result = json.loads(db.execute("SELECT data FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()['data'])
+                    self.assertEqual((result['success'], result['skipped'], len(result['errors'])), (3, 0, 1) if attempt == 0 else (0, 3, 1))
+            with self.app.app_context():
+                db = get_db()
+                rows = db.execute("SELECT jl.* FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE je.reference IN ('SAL-CONTROL-DEFAULT', 'SAL-DIRECT-BANK', 'SAL-CONTROL-ROW')").fetchall()
+                self.assertEqual(sum(float(r['debit']) for r in rows if r['account_code'] == '1400'), 12000)
+                self.assertEqual(sum(float(r['debit']) for r in rows if r['account_code'] == '1000'), 5000)
+                self.assertEqual(sum(float(r['credit']) for r in rows), 17000)
+                self.assertEqual(db.execute("SELECT is_cash_account FROM accounts WHERE code = '1400'").fetchone()['is_cash_account'], 0)
+                self.assertIsNone(db.execute("SELECT id FROM savings WHERE receipt_number = 'SAL-CONTROL-BAD'").fetchone())
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                sums = db.execute("SELECT COALESCE(SUM(amount), 0) AS amount, COALESCE(SUM(share_capital), 0) AS shares FROM savings WHERE import_batch = 'SAL/CONTROL/TEST'").fetchone()
+                db.execute('UPDATE members SET total_savings = total_savings - ?, shares_value = shares_value - ? WHERE id = ?', (sums['amount'], sums['shares'], mid))
+                db.execute("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE reference IN ('SAL-CONTROL-DEFAULT', 'SAL-DIRECT-BANK', 'SAL-CONTROL-ROW'))")
+                db.execute("DELETE FROM journal_entries WHERE reference IN ('SAL-CONTROL-DEFAULT', 'SAL-DIRECT-BANK', 'SAL-CONTROL-ROW')")
+                db.execute("DELETE FROM savings WHERE import_batch = 'SAL/CONTROL/TEST'")
+                db.execute("DELETE FROM accounts WHERE code = '1400'")
+                db.commit()
+
     def test_salary_upload_posts_to_the_selected_receiving_account(self):
         """The payroll batch is the largest recurring flow, so it has to honour
         the chosen account too — and a row may name its own."""

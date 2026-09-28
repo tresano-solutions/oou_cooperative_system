@@ -191,7 +191,7 @@ def resolve_cash_bank_account(db, requested_code=None):
     return code
 
 
-def get_loan_repayment_counter_accounts(db):
+def get_payroll_counter_accounts(db):
     """Cash destinations plus the cooperative fund payroll control account."""
     accounts = get_postable_cash_accounts(db)
     control = db.execute('''
@@ -207,7 +207,7 @@ def get_loan_repayment_counter_accounts(db):
     return accounts
 
 
-def resolve_loan_repayment_counter_account(db, counter_account=None, bank_account=None):
+def resolve_payroll_counter_account(db, counter_account=None, bank_account=None):
     """An explicit counter account supports non-bank payroll deductions.
 
     Keep legacy bank_account validation intact; never mark the control account
@@ -216,12 +216,20 @@ def resolve_loan_repayment_counter_account(db, counter_account=None, bank_accoun
     code = (counter_account or '').strip()
     if not code:
         return resolve_cash_bank_account(db, bank_account)
-    if code not in {a['code'] for a in get_loan_repayment_counter_accounts(db)}:
+    if code not in {a['code'] for a in get_payroll_counter_accounts(db)}:
         raise UnknownCashAccountError(
-            f"'{code}' is not an active postable loan repayment counter account. "
+            f"'{code}' is not an active postable payroll counter account. "
             "Choose a cash/bank account or cooperative fund control account 1400."
         )
     return code
+
+
+def get_loan_repayment_counter_accounts(db):
+    return get_payroll_counter_accounts(db)
+
+
+def resolve_loan_repayment_counter_account(db, counter_account=None, bank_account=None):
+    return resolve_payroll_counter_account(db, counter_account, bank_account)
 
 
 def account_exists(db, code):

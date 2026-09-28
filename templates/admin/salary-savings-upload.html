@@ -8,7 +8,7 @@
     <div class="row mb-3">
         <div class="col-md-8">
             <h2><i class="fas fa-file-upload text-success"></i> Savings Upload</h2>
-            <p class="text-muted mb-0">Upload a batch of member savings &mdash; a payroll deduction list or monthly contributions collected directly.</p>
+            <p class="text-muted mb-0">Upload payroll deductions to the Cooperative Fund control account. Use a bank account only for payments received directly.</p>
         </div>
         <div class="col-md-4 text-end">
             <a href="{{ url_for('savings.download_salary_template') }}" class="btn btn-outline-success">
@@ -37,15 +37,15 @@
                     <div class="form-text">Stored on each row for audit tracing.</div>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label fw-semibold">Receiving Bank / Cash Account</label>
-                    <select class="form-select" name="bank_account" required>
+                    <label class="form-label fw-semibold">Debit Counter Account</label>
+                    <select class="form-select" name="counter_account" required>
                         {% for account in bank_accounts %}
                         <option value="{{ account.code }}" {% if account.code == default_cash_account %}selected{% endif %}>
                             {{ account.code }} - {{ account.name }}
                         </option>
                         {% endfor %}
                     </select>
-                    <div class="form-text">Used for every row unless a row names its own <code>bank_account</code>.</div>
+                    <div class="form-text">Choose 1400 for payroll deductions. A row's <code>counter_account</code> overrides this selection, followed by its legacy <code>bank_account</code>.</div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">CSV File</label>
@@ -73,6 +73,7 @@
             <h5 class="mb-0">Expected Columns</h5>
         </div>
         <div class="card-body">
+            <p>Payroll deductions debit control account 1400 and credit member savings (and share capital where configured). When the employer remits the funds, record a receipt debiting the receiving bank and crediting 1400; do not record another member savings deposit.</p>
             <table class="table perm-table table-sm mb-0">
                 <thead>
                     <tr>
@@ -88,7 +89,8 @@
                     <tr><td><code>email</code></td><td>One identifier required</td><td>Fallback member lookup.</td></tr>
                     <tr><td><code>phone</code></td><td>One identifier required</td><td>Fallback member lookup.</td></tr>
                     <tr><td><code>month</code></td><td>No</td><td>Overrides the savings month for that row.</td></tr>
-                    <tr><td><code>bank_account</code></td><td>No</td><td>Overrides the receiving account for that row.</td></tr>
+                    <tr><td><code>counter_account</code></td><td>No</td><td>Use 1400 for cooperative payroll deductions, or an eligible bank account for direct payments.</td></tr>
+                    <tr><td><code>bank_account</code></td><td>No</td><td>Legacy bank-only override, used if counter_account is blank.</td></tr>
                     <tr><td><code>date</code></td><td>No</td><td>Payment date. Defaults to upload date.</td></tr>
                     <tr><td><code>receipt_number</code></td><td>No</td><td>Generated when blank.</td></tr>
                     <tr><td><code>notes</code></td><td>No</td><td>Reference or comments.</td></tr>

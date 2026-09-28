@@ -14,6 +14,7 @@ from email_service import send_payment_confirmation_email
 from utils import (role_required, audit, notify_member, record_revenue, share_capital_split,
                    member_savings_balance)
 from ledger import (post_journal_safe, get_default_cash_account, resolve_cash_bank_account,
+                    get_payroll_counter_accounts, resolve_payroll_counter_account,
                     reverse_journal_entry, UnknownCashAccountError,
                     get_postable_cash_accounts,
                     PeriodLockedError, MEMBER_DEPOSITS, FEE_INCOME, SHARE_CAPITAL,
@@ -261,12 +262,12 @@ def download_salary_template():
     writer = csv.writer(out)
     writer.writerow([
         'member_number', 'employee_id', 'email', 'phone', 'amount',
-        'month', 'date', 'bank_account', 'receipt_number', 'notes',
+        'month', 'date', 'counter_account', 'receipt_number', 'notes',
     ])
     writer.writerow([
         'MEM/2025/0001', 'EMP001', 'member@example.com', '08012345678',
         '15000', datetime.now().strftime('%Y-%m'), datetime.now().strftime('%Y-%m-%d'),
-        '', '', 'July payroll deduction',
+        '1400', '', 'Payroll deduction',
     ])
     response = make_response(out.getvalue())
     response.headers['Content-Type'] = 'text/csv'
@@ -284,6 +285,7 @@ def salary_upload():
         batch_ref = request.form.get('batch_ref', '').strip() or _batch_ref(month or datetime.now().strftime('%Y-%m'))
         apply_late_fee = bool(request.form.get('apply_late_fee'))
         batch_bank_account = request.form.get('bank_account', '').strip()
+        batch_counter_account = request.form.get('counter_account', '').strip()
 
         if not month:
             flash('Payroll month is required.', 'danger')
@@ -297,10 +299,13 @@ def salary_upload():
 
         db = get_db()
 
-        # Settled before the file is opened: a whole payroll batch posting to
-        # the wrong bank is exactly the misposting the selector exists to stop.
+        if not batch_counter_account and not batch_bank_account:
+            if any(a['code'] == '1400' for a in get_payroll_counter_accounts(db)):
+                batch_counter_account = '1400'
+
+        # Validate the batch account before processing payroll deductions.
         try:
-            batch_cash_account = resolve_cash_bank_account(db, batch_bank_account)
+            batch_cash_account = resolve_payroll_counter_account(db, batch_counter_account, batch_bank_account)
         except UnknownCashAccountError as e:
             flash(str(e), 'danger')
             return redirect(request.url)
@@ -354,8 +359,9 @@ def salary_upload():
                     # row writes, so a bad code skips the row rather than
                     # committing a deduction whose journal entry never posted.
                     row_bank = (row.get('bank_account') or '').strip()
-                    cash_account = (resolve_cash_bank_account(db, row_bank)
-                                    if row_bank else batch_cash_account)
+                    row_counter = (row.get('counter_account') or '').strip()
+                    cash_account = (resolve_payroll_counter_account(db, row_counter, row_bank)
+                                    if row_counter or row_bank else batch_cash_account)
 
                     late_fee = 0.0
                     if apply_late_fee and payment_date.day > 10:
@@ -434,11 +440,13 @@ def salary_upload():
             return redirect(request.url)
 
     db = get_db()
+    counter_accounts = get_payroll_counter_accounts(db)
     return render_template('admin/salary-savings-upload.html',
                            default_month=datetime.now().strftime('%Y-%m'),
                            default_batch=_batch_ref(datetime.now().strftime('%Y-%m')),
-                           bank_accounts=get_postable_cash_accounts(db),
-                           default_cash_account=get_default_cash_account(db))
+                           bank_accounts=counter_accounts,
+                           default_cash_account=('1400' if any(a['code'] == '1400' for a in counter_accounts)
+                                                 else get_default_cash_account(db)))
 
 
 @savings.route('/savings/add', methods=['POST'])
