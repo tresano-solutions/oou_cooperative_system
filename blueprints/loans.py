@@ -2,6 +2,9 @@ import csv
 import hmac
 import os
 import random
+import math
+import secrets
+from upload_history import record_upload
 import loan_limits
 from datetime import datetime, timedelta
 from io import StringIO, TextIOWrapper
@@ -873,12 +876,15 @@ def cancel_loan_application(loan_id):
 @role_required('admin', 'treasurer')
 def bulk_loan_repayments():
     if request.method == 'POST':
+        db = get_db()
         if 'file' not in request.files or request.files['file'].filename == '':
             flash('No file selected', 'danger')
             return redirect(request.url)
 
         file = request.files['file']
         if not file.filename.lower().endswith('.csv'):
+            record_upload(db, 'loan_repayments', 0, ['Please upload a CSV file'])
+            db.commit()
             flash('Please upload a CSV file', 'danger')
             return redirect(request.url)
 
@@ -889,14 +895,25 @@ def bulk_loan_repayments():
             required = {'loan_number', 'amount', 'payment_date'}
             if not required.issubset(reader.fieldnames or []):
                 missing = required - set(reader.fieldnames or [])
+                record_upload(db, 'loan_repayments', 0, [f'Missing columns: {", ".join(sorted(missing))}'])
+                db.commit()
                 flash(f'Missing columns: {", ".join(missing)}', 'danger')
                 return redirect(request.url)
 
             db = get_db()
             success = 0
             errors = []
+            warnings = []
+            outcomes = []
+            batch_token = secrets.token_hex(4)
+            # Keep row savepoints inside one transaction on SQLite as well as PostgreSQL.
+            db.execute('SAVEPOINT repayment_upload')
 
             for row_num, row in enumerate(reader, start=2):
+                error_start = len(errors)
+                processed = False
+                loan_number = str(row.get('loan_number') or '').strip()
+                db.execute('SAVEPOINT repayment_row')
                 try:
                     loan_number = row.get('loan_number', '').strip()
                     amount = float(row.get('amount', 0))
@@ -911,15 +928,11 @@ def bulk_loan_repayments():
                     receipt_number = row.get('receipt_number', '').strip()
                     notes = row.get('notes', '').strip()
 
-                    if not loan_number or amount <= 0:
+                    if not loan_number or not math.isfinite(amount) or amount <= 0:
                         errors.append(f"Row {row_num}: Invalid loan number or amount")
                         continue
 
-                    # Resolved up front, before this row writes anything. The
-                    # loop shares one transaction and commits after every row,
-                    # with no savepoint per row, so a rejection raised later
-                    # would still commit the repayment and the balance change
-                    # while its journal entry never posted.
+                    # Validate the account before writing this row.
                     try:
                         cash_account = resolve_loan_repayment_counter_account(db, counter_account, bank_account)
                     except UnknownCashAccountError as e:
@@ -941,12 +954,15 @@ def bulk_loan_repayments():
                     if not loan:
                         errors.append(f"Row {row_num}: Loan number {loan_number} not found")
                         continue
+                    if loan['status'] != 'active' or loan['balance'] <= 0:
+                        errors.append(f"Row {row_num}: Loan {loan_number} is not active or has no outstanding balance")
+                        continue
 
                     # Pre-liquidation: if amount >= balance, settle in full
                     is_pre_liquidation = amount >= loan['balance']
                     settled_amount = loan['balance'] if is_pre_liquidation else amount
 
-                    repayment_number = f"REP/{datetime.now().strftime('%Y%m%d')}/{row_num:04d}"
+                    repayment_number = f"REP/{datetime.now().strftime('%Y%m%d')}/{batch_token}/{row_num:04d}"
                     repayment_notes = notes
                     if is_pre_liquidation:
                         repayment_notes = ('Pre-liquidation – loan settled in full. ' + (notes or '')).strip()
@@ -970,13 +986,20 @@ def bulk_loan_repayments():
                         'UPDATE loans SET balance = ?, status = ?, completed_at = ? WHERE id = ?',
                         (new_balance, status, completed_at, loan['id'])
                     )
-                    post_journal_safe(db, f"Loan repayment — {loan_number}", [
+                    post_journal(db, f"Loan repayment — {loan_number}", [
                         {'account': cash_account, 'debit': settled_amount,
                          'memo': f'Repayment via {payment_method}'},
                         {'account': LOANS_RECEIVABLE, 'credit': principal_paid, 'memo': loan_number},
                         {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},
                     ], date=payment_date, reference=repayment_number, source_module='loan_repayment',
                        source_id=rep_id, created_by=current_user.id)
+                    processed = True
+                    success += 1
+                    if amount > settled_amount:
+                        warnings.append(
+                            f"Row {row_num}: Loan {loan_number}: entered {amount:,.2f}; "
+                            f"recorded outstanding balance {settled_amount:,.2f}. Loan completed."
+                        )
                     if loan['email']:
                         send_loan_repayment_email(
                             loan['email'],
@@ -992,17 +1015,22 @@ def bulk_loan_repayments():
                             },
                             url_for('portal.my_loans', _external=True),
                         )
-                    if is_pre_liquidation:
-                        errors.append(
-                            f"Row {row_num}: Note — ₦{amount:,.2f} entered but only "
-                            f"₦{settled_amount:,.2f} (outstanding balance) was recorded. "
-                            f"Loan {loan_number} marked as completed."
-                        )
-                    success += 1
                 except Exception as e:
-                    errors.append(f"Row {row_num}: {str(e)}")
+                    if processed:
+                        warnings.append(f"Row {row_num}: Repayment recorded; email notification failed: {e}")
+                    else:
+                        errors.append(f"Row {row_num}: {str(e)}")
+                finally:
+                    if not processed:
+                        db.execute('ROLLBACK TO SAVEPOINT repayment_row')
+                    db.execute('RELEASE SAVEPOINT repayment_row')
+                    outcomes.append(dict(row=row_num, identifier=loan_number,
+                                         status='Imported' if processed else 'Failed',
+                                         reason='; '.join(errors[error_start:]) if not processed else 'Repayment recorded'))
 
+            record_upload(db, 'loan_repayments', success, errors, warnings=warnings, rows=outcomes)
             db.commit()
+            flash('Full results saved in Upload History.', 'info')
             if errors:
                 flash(f'Processed {success} repayments. {len(errors)} errors:', 'warning')
                 for err in errors[:5]:
@@ -1011,6 +1039,9 @@ def bulk_loan_repayments():
                 flash(f'Successfully recorded {success} loan repayments!', 'success')
 
         except Exception as e:
+            db.rollback()
+            record_upload(db, 'loan_repayments', 0, [f'File processing failed; this upload was rolled back: {e}'])
+            db.commit()
             flash(f'Error processing file: {str(e)}', 'danger')
 
         return redirect(url_for('loans.loans_list'))

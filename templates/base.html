@@ -213,9 +213,15 @@
                         <i class="fas fa-coins"></i> Dividends
                     </a>
                     {% endif %}
+                    {% if current_user.role in ['admin', 'treasurer', 'secretary'] %}
+                    <a href="{{ url_for('admin_panel.upload_history') }}"
+                       class="{% if request.endpoint == 'admin_panel.upload_history' %}active{% endif %}">
+                        <i class="fas fa-history"></i> Upload History
+                    </a>
+                    {% endif %}
                     {% if can('system.settings') %}
                     <a href="{{ url_for('admin_panel.settings') }}"
-                       class="{% if request.blueprint == 'admin_panel' and request.endpoint != 'admin_panel.task_assignment' %}active{% endif %}">
+                       class="{% if request.blueprint == 'admin_panel' and request.endpoint not in ['admin_panel.task_assignment', 'admin_panel.upload_history'] %}active{% endif %}">
                         <i class="fas fa-cog"></i> Settings
                     </a>
                     {% endif %}

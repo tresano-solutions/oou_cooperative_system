@@ -4,6 +4,7 @@ Handles bulk import/export for migrating from the old cooperative app.
 All imports use atomic transactions — the whole file succeeds or rolls back.
 """
 import csv
+from upload_history import record_upload
 import random
 import secrets
 from contextlib import contextmanager
@@ -1581,6 +1582,10 @@ def _csv_response(out, filename):
 
 
 def _flash_result(success, skipped, errors, entity_name):
+    db = get_db()
+    record_upload(db, f'migration_{entity_name}', success, errors, skipped=skipped)
+    db.commit()
+    flash('Full results saved in Upload History.', 'info')
     if errors:
         flash(f'Imported {success} {entity_name}(s). '
               f'{skipped} duplicate(s) skipped. '

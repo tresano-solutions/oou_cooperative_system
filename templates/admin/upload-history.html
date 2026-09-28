@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Upload History{% endblock %}
+{% block content %}
+<div class="container-fluid">
+  <h2><i class="fas fa-history" aria-hidden="true"></i> Upload History</h2>
+  <p class="text-muted">Saved upload results and reasons for rows that did not import. Uploads made before this feature was installed are not included.</p>
+  {% for log in logs %}
+  <section class="card mb-3" aria-labelledby="upload-{{ log.id }}">
+    <div class="card-body">
+      <h3 class="h5 text-break" id="upload-{{ log.id }}">{{ log.result.get('filename', 'Upload') }}</h3>
+      <p class="text-muted">{{ log.timestamp }} · {{ log.username }} · {{ log.module }}</p>
+      <p>{{ log.result.get('success', 0) }} imported · {{ log.result.get('skipped', 0) }} skipped · {{ log.result.get('errors', [])|length }} failed · {{ log.result.get('warnings', [])|length }} warnings</p>
+      <details {% if log.result.get('errors') %}open{% endif %}>
+        <summary class="mb-2">View results and reasons</summary>
+        {% if log.result.get('rows') %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead><tr><th scope="col">CSV row</th><th scope="col">Loan number</th><th scope="col">Result</th><th scope="col">Reason</th></tr></thead>
+            <tbody>{% for row in log.result.rows %}<tr>
+              <td>{{ row.row }}</td><td class="text-break">{{ row.identifier }}</td><td>{{ row.status }}</td><td class="text-break">{{ row.reason }}</td>
+            </tr>{% endfor %}</tbody>
+          </table>
+        </div>
+        {% else %}
+          {% for reason in log.result.get('errors', []) %}<p class="text-break mb-1">{{ reason }}</p>{% endfor %}
+        {% endif %}
+        {% for warning in log.result.get('warnings', []) %}<p class="text-break mb-1">{{ warning }}</p>{% endfor %}
+        {% if not log.result.get('rows') and not log.result.get('errors') and not log.result.get('warnings') %}<p>No errors recorded.</p>{% endif %}
+      </details>
+    </div>
+  </section>
+  {% else %}<div class="alert alert-info">No saved upload results yet.</div>{% endfor %}
+  <nav aria-label="Upload history pages" class="d-flex gap-3 align-items-center">
+    {% if page > 1 %}<a class="btn btn-outline-secondary" href="{{ url_for('admin_panel.upload_history', page=page-1) }}">Newer uploads</a>{% endif %}
+    <span>Page {{ page }}</span>
+    {% if has_next %}<a class="btn btn-outline-secondary" href="{{ url_for('admin_panel.upload_history', page=page+1) }}">Older uploads</a>{% endif %}
+  </nav>
+</div>
+{% endblock %}

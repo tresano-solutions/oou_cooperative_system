@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, render_template, redirect, url_for, reques
 from flask_login import login_required, current_user
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
+from upload_history import decode_upload
 
 from database import USE_POSTGRES, get_db, last_insert_id
 from email_service import send_member_onboarding_email
@@ -21,6 +22,26 @@ import permissions as perms
 import loan_limits
 
 admin_panel = Blueprint('admin_panel', __name__)
+
+
+@admin_panel.route('/upload-history')
+@login_required
+@role_required('admin', 'treasurer', 'secretary')
+def upload_history():
+    page = max(1, request.args.get('page', 1, type=int))
+    db = get_db()
+    where = "action = 'UPLOAD_RESULT'"
+    params = []
+    if current_user.role == 'secretary':
+        where += ' AND user_id = ?'
+        params.append(current_user.id)
+    logs = db.execute(
+        f"SELECT * FROM audit_log WHERE {where} ORDER BY id DESC LIMIT 21 OFFSET ?",
+        (*params, (page - 1) * 20)
+    ).fetchall()
+    return render_template('admin/upload-history.html',
+                           logs=[decode_upload(r) for r in logs[:20]],
+                           page=page, has_next=len(logs) > 20)
 
 _DEFAULT_SETTINGS = {
     'mail_enabled':  '0',

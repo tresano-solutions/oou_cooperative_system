@@ -1,4 +1,5 @@
 import csv
+from upload_history import record_upload
 import os
 import random
 from datetime import datetime
@@ -417,9 +418,10 @@ def salary_upload():
                 except Exception as row_error:
                     errors.append(f"Row {row_num}: {row_error}")
 
-            db.commit()
+            record_upload(db, 'salary_savings', success, errors, skipped=skipped)
             audit(db, 'IMPORT_SALARY_SAVINGS', 'savings',
                   f"Batch {batch_ref}: imported {success}, skipped {skipped}, errors {len(errors)}")
+            db.commit()
             flash(f'Batch {batch_ref}: imported {success} savings record(s), skipped {skipped}.', 'success')
             for error in errors[:8]:
                 flash(error, 'warning')

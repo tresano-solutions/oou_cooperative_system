@@ -1,4 +1,5 @@
 import csv
+from upload_history import record_upload
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -524,6 +525,7 @@ def bulk_upload_members():
                 except Exception as e:
                     errors.append(f"Row {row_num}: {str(e)}")
 
+            record_upload(db, 'members', success, errors)
             db.commit()
             if errors:
                 flash(f'Imported {success} members. {len(errors)} errors:', 'warning')

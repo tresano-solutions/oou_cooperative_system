@@ -3557,6 +3557,101 @@ class HardeningFeatureTests(unittest.TestCase):
                 "SELECT 1 FROM journal_lines WHERE account_code = '3000' "
                 "AND memo LIKE '%should be refused%'").fetchone())
 
+    def test_upload_history_keeps_all_row_errors_after_redirect(self):
+        self.login_admin()
+        body = 'loan_number,amount,payment_date,bank_account\n' + ''.join(
+            f'MISSING-{i},10,2026-09-30,1000\n' for i in range(9))
+        response = self.client.post('/loans/bulk-repayments', data={
+            'file': (BytesIO(body.encode()), '<script>upload.csv')},
+            content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            row = get_db().execute("SELECT * FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()
+            result = json.loads(row['data'])
+            self.assertEqual(result['success'], 0)
+            self.assertEqual(len(result['errors']), 9)
+            self.assertEqual(len(result['rows']), 9)
+            self.assertEqual(result['rows'][-1]['identifier'], 'MISSING-8')
+        page = self.client.get('/upload-history')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'MISSING-8', page.data)
+        self.assertIn(b'&lt;script&gt;upload.csv', page.data)
+        self.assertNotIn(b'<script>upload.csv', page.data)
+        anonymous = self.app.test_client().get('/upload-history')
+        self.assertEqual(anonymous.status_code, 302)
+        with self.app.app_context():
+            db = get_db()
+            db.execute("UPDATE users SET role = 'member' WHERE username = 'admin'")
+            db.commit()
+        try:
+            self.assertEqual(self.client.get('/upload-history').status_code, 302)
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                db.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+                db.commit()
+
+    def test_upload_history_records_rejected_file(self):
+        self.login_admin()
+        self.client.post('/loans/bulk-repayments', data={
+            'file': (BytesIO(b'wrong,headers\n1,2\n'), 'bad.csv')},
+            content_type='multipart/form-data')
+        page = self.client.get('/upload-history')
+        self.assertIn(b'Missing columns:', page.data)
+        self.assertIn(b'bad.csv', page.data)
+
+    def test_upload_history_paginates_and_limits_secretary_to_own_uploads(self):
+        self.login_admin()
+        with self.app.app_context():
+            db = get_db()
+            admin_id = db.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()['id']
+            for i in range(22):
+                db.execute("INSERT INTO audit_log (user_id, username, action, module, description, data) VALUES (?, 'admin', 'UPLOAD_RESULT', 'test_history', 'test', ?)",
+                           (admin_id if i == 0 else None, json.dumps(dict(filename=f'page-test-{i}.csv', success=0, errors=[]))))
+            db.commit()
+        try:
+            first = self.client.get('/upload-history')
+            self.assertIn(b'page-test-21.csv', first.data)
+            self.assertNotIn(b'page-test-0.csv', first.data)
+            second = self.client.get('/upload-history?page=2')
+            self.assertIn(b'page-test-0.csv', second.data)
+            with self.app.app_context():
+                db = get_db()
+                db.execute("UPDATE users SET role = 'secretary' WHERE id = ?", (admin_id,))
+                db.commit()
+            own = self.client.get('/upload-history')
+            self.assertEqual(own.status_code, 200)
+            self.assertIn(b'page-test-0.csv', own.data)
+            self.assertNotIn(b'page-test-21.csv', own.data)
+        finally:
+            with self.app.app_context():
+                db = get_db()
+                db.execute("UPDATE users SET role = 'admin' WHERE id = ?", (admin_id,))
+                db.execute("DELETE FROM audit_log WHERE module = 'test_history'")
+                db.commit()
+
+    def test_failed_repayment_journal_rolls_back_row_and_is_logged(self):
+        self.login_admin()
+        mid = self.create_member()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO loans (loan_number, member_id, amount, total_repayment, balance, status) VALUES ('LOAN/LOG/FAIL', ?, 100, 100, 100, 'active')", (mid,))
+            db.commit()
+        body = 'loan_number,amount,payment_date,bank_account\nLOAN/LOG/FAIL,20,2026-09-30,1000\n'
+        with patch('blueprints.loans.post_journal', side_effect=ValueError('Test journal rejection')):
+            self.client.post('/loans/bulk-repayments', data={
+                'file': (BytesIO(body.encode()), 'journal-fail.csv')}, content_type='multipart/form-data')
+        with self.app.app_context():
+            db = get_db()
+            loan = db.execute("SELECT * FROM loans WHERE loan_number = 'LOAN/LOG/FAIL'").fetchone()
+            self.assertEqual(loan['balance'], 100)
+            self.assertIsNone(db.execute('SELECT id FROM repayments WHERE loan_id = ?', (loan['id'],)).fetchone())
+            result = json.loads(db.execute("SELECT data FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()['data'])
+            self.assertEqual(result['success'], 0)
+            self.assertIn('Test journal rejection', result['errors'][0])
+            db.execute('DELETE FROM loans WHERE id = ?', (loan['id'],))
+            db.commit()
+
     def test_bulk_repayment_control_account_debits_fund(self):
         self.login_admin()
         member_id = self.create_member()
@@ -3586,6 +3681,10 @@ class HardeningFeatureTests(unittest.TestCase):
                 self.assertEqual({r['account_code'] for r in lines if r['debit']}, {'1400'})
                 self.assertEqual(db.execute("SELECT is_cash_account FROM accounts WHERE code = '1400'").fetchone()['is_cash_account'], 0)
                 self.assertAlmostEqual(db.execute("SELECT balance FROM loans WHERE loan_number = 'LOAN/CONTROL/001'").fetchone()['balance'], 100000)
+                result = json.loads(db.execute("SELECT data FROM audit_log WHERE action = 'UPLOAD_RESULT' ORDER BY id DESC LIMIT 1").fetchone()['data'])
+                self.assertEqual(result['success'], 1)
+                self.assertEqual(result['errors'], [])
+                self.assertEqual(result['rows'][0]['status'], 'Imported')
         finally:
             with self.app.app_context():
                 db = get_db()
