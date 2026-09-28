@@ -67,6 +67,18 @@ ASSIGNABLE_ROLES = ('treasurer', 'secretary', 'exco')
 # now open the members list, not only a member's detail page.
 
 PERMISSIONS = [
+    {
+        'key': 'accounting.vouchers', 'label': 'View vouchers', 'group': 'Accounting',
+        'description': 'View posted receipts, payments and journals.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('accounting.vouchers', 'accounting.voucher_detail'),
+    },
+    {
+        'key': 'accounting.voucher_post', 'label': 'Post vouchers', 'group': 'Accounting',
+        'description': 'Create receipts, payments and journals in the general ledger.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('accounting.new_voucher',),
+    },
     # ── Members ──────────────────────────────────────────────────────────────
     {
         'key': 'members.view',

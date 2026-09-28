@@ -208,6 +208,7 @@
                        class="{% if request.blueprint == 'accounting' and 'dividend' not in (request.endpoint or '') %}active{% endif %}">
                         <i class="fas fa-balance-scale"></i> Accounting
                     </a>
+                     {% if can('accounting.vouchers') %}<a href="{{ url_for('accounting.vouchers') }}" class="{% if 'voucher' in (request.endpoint or '') %}active{% endif %}"><i class="fas fa-file-invoice-dollar"></i> Vouchers</a>{% endif %}
                     <a href="{{ url_for('accounting.dividends') }}"
                        class="{% if 'dividend' in (request.endpoint or '') %}active{% endif %}">
                         <i class="fas fa-coins"></i> Dividends

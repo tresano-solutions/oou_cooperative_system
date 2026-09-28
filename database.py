@@ -1643,6 +1643,36 @@ def init_db():
         )
     '''))
 
+    # Unified receipt, payment and journal vouchers. A submission token makes
+    # retrying the same form safe without duplicating its financial effects.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS vouchers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            voucher_number TEXT UNIQUE NOT NULL,
+            submission_token TEXT UNIQUE NOT NULL,
+            kind TEXT NOT NULL,
+            party TEXT,
+            description TEXT NOT NULL,
+            reference TEXT,
+            date TIMESTAMP NOT NULL,
+            journal_entry_id INTEGER,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id),
+            FOREIGN KEY (created_by) REFERENCES users(id)
+        )
+    '''))
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS voucher_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            voucher_id INTEGER NOT NULL,
+            target TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            FOREIGN KEY (voucher_id) REFERENCES vouchers(id)
+        )
+    '''))
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_voucher_targets ON voucher_allocations(target, target_id)')
+
     # One-time account setup / onboarding tokens.
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS account_setup_tokens (

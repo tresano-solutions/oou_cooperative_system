@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4"><div><h1>Vouchers</h1><p class="text-muted mb-0">Receipts, payments and journals posted to the chart of accounts.</p></div><a class="btn btn-primary" href="{{ url_for('accounting.new_voucher') }}">New voucher</a></div>
+<div class="card"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Number</th><th>Date</th><th>Type</th><th>Party</th><th>Description</th></tr></thead><tbody>{% for v in vouchers %}<tr><td><a href="{{ url_for('accounting.voucher_detail', voucher_id=v.id) }}">{{ v.voucher_number }}</a></td><td>{{ v.date.strftime('%Y-%m-%d') if v.date.strftime is defined else v.date }}</td><td>{{ v.kind|title }}</td><td>{{ v.party or '—' }}</td><td>{{ v.description }}</td></tr>{% else %}<tr><td colspan="5" class="text-muted">No vouchers posted yet.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

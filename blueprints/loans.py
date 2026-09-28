@@ -96,7 +96,7 @@ def _acting_on_own_loan(db, loan):
     return bool(me and loan and me['id'] == loan['member_id'])
 
 
-def _disburse_loan(db, loan, cash_account):
+def _disburse_loan(db, loan, cash_account, posting_date=None):
     """Final approval: book fees, disburse, post the GL entry, notify the member.
 
     `cash_account` is the account the money actually leaves — the approver picks
@@ -108,6 +108,7 @@ def _disburse_loan(db, loan, cash_account):
     insurance = round(loan['amount'] * 0.01, 2)
     application_fee = round(loan['amount'] * 0.01, 2)
     disbursed = round(loan['amount'] - insurance - application_fee, 2)
+    posting_date = posting_date or datetime.now()
     # The balance is created here, not at application. Until this moment the
     # member has asked for a loan, not taken one, and a request must not read as
     # something owed on their account.
@@ -118,7 +119,7 @@ def _disburse_loan(db, loan, cash_account):
             balance = ?
         WHERE id = ?
     ''', (datetime.now(), current_user.id, insurance, application_fee, disbursed,
-          datetime.now(), datetime.now() + timedelta(days=30),
+          posting_date, posting_date + timedelta(days=30),
           loan['total_repayment'] or loan['amount'], loan['id']))
     # The application fee is the cooperative's income. The 1% insurance is withheld
     # on behalf of the insurer — a pass-through liability, not income — so it posts
@@ -126,12 +127,12 @@ def _disburse_loan(db, loan, cash_account):
     record_revenue(db, 'Loan Application Fee', application_fee,
                    description=f"Application fee on loan {loan['loan_number']}",
                    source=f"Loan {loan['loan_number']}", received_by=current_user.id)
-    post_journal_safe(db, f"Loan disbursement — {loan['loan_number']}", [
+    post_journal(db, f"Loan disbursement — {loan['loan_number']}", [
         {'account': LOANS_RECEIVABLE, 'debit': loan['amount'], 'memo': loan['loan_number']},
         {'account': cash_account, 'credit': disbursed, 'memo': 'Net disbursed'},
         {'account': FEE_INCOME, 'credit': application_fee, 'memo': 'Application fee'},
         {'account': INSURANCE_PAYABLE, 'credit': insurance, 'memo': 'Insurance premium held for insurer'},
-    ], reference=loan['loan_number'], source_module='loan_disbursement',
+    ], date=posting_date, reference=loan['loan_number'], source_module='loan_disbursement',
        source_id=loan['id'], created_by=current_user.id)
     member = db.execute('SELECT * FROM members WHERE id = ?', (loan['member_id'],)).fetchone()
     if member and member['email']:

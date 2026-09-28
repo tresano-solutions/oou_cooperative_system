@@ -1030,6 +1030,7 @@ REVERSAL_HANDLERS = {
     'va_savings':      _reverse_va_savings,
     'va_loan':         _reverse_va_loan,
     'member_receipt':  _reverse_member_receipt,
+    'voucher':         lambda db, entry, source_id: __import__('voucher_service', fromlist=['reverse_voucher_records']).reverse_voucher_records(db, entry, source_id),
 }
 
 

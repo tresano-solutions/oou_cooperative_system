@@ -5,6 +5,7 @@ and the journal register. This is the auditable face of the double-entry ledger.
 
 import csv
 import io
+import secrets
 from datetime import datetime
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, make_response, jsonify
@@ -18,8 +19,56 @@ from ledger import (get_accounts, trial_balance, backfill_from_transactions,
                     UnsupportedReversalError, reversal_support,
                     get_default_cash_account, get_cash_bank_accounts,
                     get_postable_cash_accounts)
+from voucher_service import post_voucher, bank_accounts, postable_accounts
 
 accounting = Blueprint('accounting', __name__, url_prefix='/accounting')
+
+
+@accounting.route('/vouchers', methods=['GET'])
+@login_required
+@role_required('admin', 'treasurer')
+def vouchers():
+    db = get_db()
+    rows = db.execute('SELECT * FROM vouchers ORDER BY date DESC, id DESC LIMIT 100').fetchall()
+    return render_template('accounting/vouchers.html', vouchers=rows)
+
+
+@accounting.route('/vouchers/new', methods=['GET', 'POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def new_voucher():
+    db = get_db()
+    if request.method == 'POST':
+        try:
+            count = min(int(request.form.get('line_count', '0') or 0), 100)
+            lines = []
+            for i in range(count):
+                lines.append({k: request.form.get(f'{k}_{i}', '') for k in ('account','debit','credit','amount','member_id','loan_id','memo')})
+            vid, created = post_voucher(db, request.form, lines, current_user)
+            db.execute('INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (?, ?, ?, ?, ?)',
+                       (current_user.id, 'VOUCHER_POSTED' if created else 'VOUCHER_DUPLICATE', 'voucher', vid, request.form.get('description','')))
+            db.commit()
+            flash('Voucher posted.' if created else 'This voucher was already posted; no duplicate was created.', 'success')
+            return redirect(url_for('accounting.voucher_detail', voucher_id=vid))
+        except Exception as exc:
+            db.rollback()
+            flash(str(exc), 'danger')
+    members = db.execute('SELECT id, member_number, first_name, last_name FROM members WHERE status = ? ORDER BY member_number', ('active',)).fetchall()
+    loans = db.execute("SELECT id, loan_number, member_id, amount, status FROM loans WHERE status = 'pending' ORDER BY id DESC").fetchall()
+    return render_template('accounting/voucher_new.html', token=secrets.token_urlsafe(24), today=_today(),
+                           accounts=postable_accounts(db), banks=bank_accounts(db), members=members, loans=loans)
+
+
+@accounting.route('/vouchers/<int:voucher_id>')
+@login_required
+@role_required('admin', 'treasurer')
+def voucher_detail(voucher_id):
+    db = get_db()
+    voucher = db.execute('SELECT * FROM vouchers WHERE id = ?', (voucher_id,)).fetchone()
+    if not voucher:
+        return 'Voucher not found', 404
+    entry = journal_entry_detail(db, voucher['journal_entry_id']) if voucher['journal_entry_id'] else None
+    return render_template('accounting/voucher_detail.html', voucher=voucher, entry=entry)
 
 
 def _today():
