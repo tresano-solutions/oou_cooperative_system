@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from database import get_db, last_insert_id
 from email_service import send_payment_confirmation_email
-from utils import (role_required, audit, notify_member, record_revenue, share_capital_split,
+from utils import (finite_float, role_required, audit, notify_member, record_revenue, share_capital_split,
                    member_savings_balance)
 from ledger import (post_journal_safe, get_default_cash_account, resolve_cash_bank_account,
                     get_payroll_counter_accounts, resolve_payroll_counter_account,
@@ -454,7 +454,11 @@ def salary_upload():
 @role_required('admin', 'treasurer')
 def add_saving():
     member_id     = request.form['member_id']
-    amount        = float(request.form['amount'])
+    try:
+        amount = finite_float(request.form['amount'])
+    except (KeyError, ValueError):
+        flash('Enter a valid savings amount.', 'danger')
+        return redirect(url_for('members.member_details', member_id=member_id))
     month         = request.form['month']
     payment_type  = request.form.get('payment_type', 'monthly').strip() or 'monthly'
     payment_method = request.form.get('payment_method', 'cash').strip() or 'cash'
@@ -613,7 +617,7 @@ def adjust_saving():
     back = redirect(url_for('members.member_details', member_id=member_id))
 
     try:
-        amount = float(request.form.get('amount') or 0)
+        amount = finite_float(request.form.get('amount') or 0)
     except ValueError:
         flash('Enter a valid adjustment amount.', 'danger')
         return back
@@ -715,7 +719,7 @@ def record_payout():
     balance = member_savings_balance(db, member_id)
     full = request.form.get('full_payout') == '1'
     try:
-        amount = balance if full else float(request.form.get('amount') or 0)
+        amount = balance if full else finite_float(request.form.get('amount') or 0)
     except ValueError:
         flash('Enter a valid payout amount.', 'danger')
         return back

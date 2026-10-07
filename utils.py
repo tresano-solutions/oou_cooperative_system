@@ -59,6 +59,23 @@ def role_required(*roles):
 
 
 
+
+def finite_float(value):
+    """float() that refuses NaN, Infinity and absurd magnitudes.
+
+    Python's float() happily parses 'nan' and 'inf'; every comparison with NaN is
+    False, so checks like ``amount <= 0`` pass and a NaN balance is then stored
+    permanently. Raises ValueError (callers already handle that) instead.
+    """
+    import math
+    if isinstance(value, str):
+        value = value.strip().replace(',', '')
+    number = float(value)
+    if not math.isfinite(number) or abs(number) > 1e12:
+        raise ValueError('amount must be a finite number')
+    return number
+
+
 STAFF_ROLES = {'admin', 'treasurer', 'secretary', 'exco'}
 
 

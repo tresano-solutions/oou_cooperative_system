@@ -17,7 +17,7 @@ from database import get_db, last_insert_id, USE_POSTGRES
 from email_service import (send_loan_approval_email, send_loan_rejection_email,
                            send_loan_repayment_email, send_loan_stage_email,
                            send_guarantor_request_email)
-from utils import (role_required, audit, notify_member, compute_loan_schedule,
+from utils import (finite_float, role_required, audit, notify_member, compute_loan_schedule,
                    PURPOSE_SETTING_KEY, METHOD_LABELS, record_revenue, split_repayment,
                    member_savings_balance, member_for_user,
                    member_has_minimum_membership, has_unpaid_loan_of_type)
@@ -423,7 +423,11 @@ def apply_loan():
 
     if request.method == 'POST':
         member_id = request.form.get('member_id')
-        amount    = float(request.form.get('amount', 0))
+        try:
+            amount = finite_float(request.form.get('amount', 0))
+        except ValueError:
+            flash('Enter a valid loan amount.', 'danger')
+            return redirect(url_for('loans.apply_loan'))
         purpose   = request.form.get('purpose', '').strip()
         tenure    = int(request.form.get('tenure', 0))
 
@@ -925,7 +929,7 @@ def bulk_loan_repayments():
                 db.execute('SAVEPOINT repayment_row')
                 try:
                     loan_number = row.get('loan_number', '').strip()
-                    amount = float(row.get('amount', 0))
+                    amount = finite_float(row.get('amount', 0))
                     payment_date_str = row.get('payment_date', '').strip()
                     payment_method = row.get('payment_method', 'cash').strip().lower()
                     bank_account = row.get('bank_account', '').strip() or request.form.get('bank_account', '').strip()
@@ -1280,7 +1284,7 @@ def repay_loan(loan_id):
             flash('Only active loans can receive repayments.', 'warning')
             return redirect(url_for('loans.loans_list'))
 
-        amount = float(request.form.get('amount', 0))
+        amount = finite_float(request.form.get('amount', 0))
         method = request.form.get('method', 'cash')
         bank_account = request.form.get('bank_account', '').strip()
 

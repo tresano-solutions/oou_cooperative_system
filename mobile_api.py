@@ -26,6 +26,7 @@ from database import get_db, last_insert_id
 from email_service import send_guarantor_request_email, send_password_reset_email
 from security import generate_account_setup_token, validate_password_strength
 from utils import (
+    finite_float,
     audit,
     clear_login_attempts,
     compute_loan_schedule,
@@ -833,7 +834,7 @@ def mobile_ctas_apply():
     if not cycle:
         return jsonify({'success': False, 'error': 'That cycle is not open for applications.'}), 400
     try:
-        target = float(data.get('target_amount') or 0)
+        target = finite_float(data.get('target_amount') or 0)
         tenure = int(data.get('tenure_months') or 0)
     except (ValueError, TypeError):
         return jsonify({'success': False, 'error': 'Enter a valid amount and tenure.'}), 400
@@ -882,7 +883,7 @@ def mobile_loan_options():
 def mobile_loan_schedule_preview():
     data = request.get_json(silent=True) or {}
     try:
-        amount = float(data.get('amount') or 0)
+        amount = finite_float(data.get('amount') or 0)
         tenure = int(data.get('tenure') or 0)
     except (TypeError, ValueError):
         return jsonify({'success': False, 'error': 'Invalid amount or tenure'}), 400
@@ -921,7 +922,7 @@ def mobile_apply_loan():
     member = g.member
     data = request.get_json(silent=True) or {}
     try:
-        amount = float(data.get('amount') or 0)
+        amount = finite_float(data.get('amount') or 0)
         tenure = int(data.get('tenure') or 0)
     except (TypeError, ValueError):
         return jsonify({'success': False, 'error': 'Invalid amount or tenure'}), 400

@@ -19,7 +19,7 @@ from database import USE_POSTGRES, get_db
 from email_service import send_loan_repayment_email
 from payments import get_gateway, generate_reference
 from security import log_audit
-from utils import audit, member_for_user, split_repayment
+from utils import finite_float, audit, member_for_user, split_repayment
 from ledger import (post_journal_safe, get_default_cash_account, MEMBER_DEPOSITS, LOANS_RECEIVABLE,
                     LOAN_INTEREST_INCOME)
 
@@ -198,7 +198,7 @@ def initiate_savings():
         return redirect(url_for('portal.my_savings'))
 
     try:
-        amount = float(request.form['amount'])
+        amount = finite_float(request.form['amount'])
         month  = request.form['month']         # expected YYYY-MM
         if amount <= 0:
             raise ValueError('Amount must be positive')
@@ -273,7 +273,7 @@ def initiate_loan_repayment(loan_id):
         return redirect(url_for('portal.my_loans'))
 
     try:
-        amount = float(request.form['amount'])
+        amount = finite_float(request.form['amount'])
         if amount <= 0:
             raise ValueError('Amount must be positive')
         if amount > loan['balance']:

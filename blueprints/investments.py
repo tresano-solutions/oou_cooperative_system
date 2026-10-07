@@ -5,7 +5,7 @@ from flask import Blueprint, render_template, redirect, url_for, request, flash
 from flask_login import login_required, current_user
 
 from database import get_db
-from utils import role_required, audit
+from utils import finite_float, role_required, audit
 from ledger import post_journal_safe, get_default_cash_account, INVESTMENTS as ACCT_INVESTMENTS
 
 investments = Blueprint('investments', __name__)
@@ -39,7 +39,7 @@ def add_investment():
                 flash('Investment name is required.', 'danger')
                 return redirect(url_for('investments.add_investment'))
 
-            amount = float(request.form.get('amount', 0))
+            amount = finite_float(request.form.get('amount', 0))
             if amount <= 0:
                 flash('Amount must be greater than zero.', 'danger')
                 return redirect(url_for('investments.add_investment'))

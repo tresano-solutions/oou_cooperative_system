@@ -15,7 +15,7 @@ from werkzeug.utils import secure_filename
 from database import get_db, last_insert_id
 from crypto import decrypt_member_sensitive_fields, encrypt_field, mask_member_sensitive_fields
 from security import validate_password_strength
-from utils import (audit, notify_member, notify, compute_loan_schedule, METHOD_LABELS,
+from utils import (finite_float, audit, notify_member, notify, compute_loan_schedule, METHOD_LABELS,
                    member_for_user, member_savings_balance, member_share_capital,
                    validate_image, member_has_minimum_membership, has_unpaid_loan_of_type)
 import loan_workflow as lw
@@ -804,7 +804,7 @@ def loan_schedule_preview():
     """Live repayment schedule so a member can compare options before applying."""
     db = get_db()
     try:
-        amount  = float(request.args.get('amount', 0))
+        amount  = finite_float(request.args.get('amount', 0))
         tenure  = int(request.args.get('tenure', 0))
         purpose = request.args.get('purpose', 'Regular')
     except (TypeError, ValueError):
@@ -842,7 +842,7 @@ def apply_loan_member():
     is_staff_member = bool((member['employee_id'] or '').strip()) if 'employee_id' in member.keys() else False
 
     if request.method == 'POST':
-        amount  = float(request.form.get('amount', 0))
+        amount  = finite_float(request.form.get('amount', 0))
         purpose = request.form.get('purpose', '').strip()
         tenure  = int(request.form.get('tenure', 0))
 

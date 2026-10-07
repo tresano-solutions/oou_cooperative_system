@@ -28,7 +28,7 @@ from flask import (Blueprint, abort, current_app, flash, jsonify, make_response,
 from flask_login import current_user, login_required
 
 from database import get_db, last_insert_id
-from utils import audit, role_required, member_for_user, notify_member
+from utils import finite_float, audit, role_required, member_for_user, notify_member
 from ledger import post_journal_safe, get_default_cash_account, MEMBER_DEPOSITS, SHARE_CAPITAL
 from payments import get_gateway, generate_reference
 import permissions as perms
@@ -864,7 +864,7 @@ def add_subscription(cycle_id):
         flash('Choose a member.', 'danger')
         return redirect(url_for('ctas.cycle_detail', cycle_id=cycle_id))
     try:
-        target = float(request.form.get('target_amount') or 0)
+        target = finite_float(request.form.get('target_amount') or 0)
         tenure = int(request.form.get('tenure_months') or 0)
     except ValueError:
         flash('Enter a valid target amount and tenure.', 'danger')
@@ -1639,7 +1639,7 @@ def request_guarantor(sub_id):
         return redirect(url_for('ctas.my_ctas'))
     try:
         guarantor_id = int(request.form.get('guarantor_id') or 0)
-        amount = round(max(0.0, float(request.form.get('amount') or 0)), 2)
+        amount = round(max(0.0, finite_float(request.form.get('amount') or 0)), 2)
     except ValueError:
         flash('Enter a valid guarantor and amount.', 'danger')
         return redirect(url_for('ctas.my_ctas'))
@@ -1786,7 +1786,7 @@ def my_ctas_apply():
         flash('That cycle is not open for applications.', 'warning')
         return redirect(url_for('ctas.my_ctas'))
     try:
-        target = float(request.form.get('target_amount') or 0)
+        target = finite_float(request.form.get('target_amount') or 0)
         tenure = int(request.form.get('tenure_months') or 0)
     except ValueError:
         flash('Enter a valid amount and tenure.', 'danger')

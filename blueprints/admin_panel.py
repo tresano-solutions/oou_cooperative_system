@@ -13,7 +13,7 @@ from upload_history import decode_upload
 from database import USE_POSTGRES, get_db, last_insert_id
 from email_service import send_member_onboarding_email
 from security import generate_account_setup_token, validate_password_strength
-from utils import (role_required, audit, validate_image, logo_data_uri,
+from utils import (finite_float, role_required, audit, validate_image, logo_data_uri,
                    member_savings_balance, reconcile_member_savings, notify,
                    coop_name as _coop_name)
 from ledger import (post_journal_safe, get_default_cash_account, OPERATING_EXPENSES, FEE_INCOME,
@@ -562,7 +562,7 @@ def add_expense():
             ''', (
                 expense_number,
                 request.form['category'],
-                float(request.form['amount']),
+                finite_float(request.form['amount']),
                 request.form['description'],
                 request.form.get('vendor', ''),
                 request.form['payment_method'],
@@ -572,13 +572,13 @@ def add_expense():
             ))
             cash_account = get_default_cash_account(db)
             post_journal_safe(db, f"Expense — {request.form['category']}", [
-                {'account': OPERATING_EXPENSES, 'debit': float(request.form['amount']),
+                {'account': OPERATING_EXPENSES, 'debit': finite_float(request.form['amount']),
                  'memo': request.form.get('description', '')},
-                {'account': cash_account, 'credit': float(request.form['amount'])},
+                {'account': cash_account, 'credit': finite_float(request.form['amount'])},
             ], reference=expense_number, source_module='expenses', created_by=current_user.id)
             db.commit()
             audit(db, 'ADD_EXPENSE', 'expenses',
-                  f"Recorded expense {expense_number} – ₦{float(request.form['amount']):,.2f}")
+                  f"Recorded expense {expense_number} – ₦{finite_float(request.form['amount']):,.2f}")
             flash('Expense recorded successfully!', 'success')
         except Exception as e:
             db.rollback()
@@ -613,7 +613,7 @@ def add_revenue():
             ''', (
                 revenue_number,
                 request.form['category'],
-                float(request.form['amount']),
+                finite_float(request.form['amount']),
                 request.form['description'],
                 request.form.get('source', ''),
                 request.form.get('date', datetime.now()),
@@ -622,13 +622,13 @@ def add_revenue():
             ))
             cash_account = get_default_cash_account(db)
             post_journal_safe(db, f"Revenue — {request.form['category']}", [
-                {'account': cash_account, 'debit': float(request.form['amount'])},
-                {'account': FEE_INCOME, 'credit': float(request.form['amount']),
+                {'account': cash_account, 'debit': finite_float(request.form['amount'])},
+                {'account': FEE_INCOME, 'credit': finite_float(request.form['amount']),
                  'memo': request.form.get('description', '')},
             ], reference=revenue_number, source_module='revenue', created_by=current_user.id)
             db.commit()
             audit(db, 'ADD_REVENUE', 'revenue',
-                  f"Recorded revenue {revenue_number} – ₦{float(request.form['amount']):,.2f}")
+                  f"Recorded revenue {revenue_number} – ₦{finite_float(request.form['amount']):,.2f}")
             flash('Revenue recorded successfully!', 'success')
         except Exception as e:
             db.rollback()
@@ -664,7 +664,7 @@ def add_honorarium():
         ''', (
             request.form.get('recipient_id'),
             request.form['recipient_name'],
-            float(request.form['amount']),
+            finite_float(request.form['amount']),
             request.form['description'],
             request.form['month'],
             current_user.id,
@@ -672,9 +672,9 @@ def add_honorarium():
         _hid = last_insert_id(db)
         cash_account = get_default_cash_account(db)
         post_journal_safe(db, f"Honorarium — {request.form.get('recipient_name', '')}", [
-            {'account': HONORARIUM, 'debit': float(request.form['amount']),
+            {'account': HONORARIUM, 'debit': finite_float(request.form['amount']),
              'memo': request.form.get('recipient_name', '')},
-            {'account': cash_account, 'credit': float(request.form['amount'])},
+            {'account': cash_account, 'credit': finite_float(request.form['amount'])},
         ], source_module='honorarium', source_id=_hid, created_by=current_user.id)
         db.commit()
         flash('Honorarium recorded successfully!', 'success')
