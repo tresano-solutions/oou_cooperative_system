@@ -170,3 +170,25 @@ BACKUP_PASSPHRASE='...' openssl enc -d -aes-256-cbc -pbkdf2 \
   reinstall needed. One 2 GB box handles many small coops.
 - **Postgres is private:** it isn't exposed to the internet; only the app
   containers reach it over Docker's internal network.
+
+## Per-client database logins (security: F-01)
+
+Every client app used to connect as the shared `postgres` **superuser**, so a break-in
+to one client exposed all of them. Each client now gets its own login `coop_<name>` that
+owns only `coop_<name>` and cannot connect to any other database.
+
+New clients get this automatically (`add-client.sh`). **Existing clients must be migrated
+once, one at a time** - do the smallest/least critical first and check it before the next:
+
+```bash
+cd ~/oou_cooperative_system/deploy/vps
+git pull
+bash harden-db-roles.sh smtcoop        # takes a backup, creates the role, switches the app, restarts it
+docker compose logs --tail 30 app-smtcoop   # expect a normal start, no "permission denied"
+python3 generate.py                    # lists any client still marked "!! still on the shared postgres SUPERUSER"
+```
+
+Roll back one client: delete the `DATABASE_URL=` line from `clients/<name>.env`, then
+`python3 generate.py && docker compose up -d app-<name>`. When every client is migrated, rotate
+`POSTGRES_PASSWORD` in `deploy/vps/.env` (it is now used only by backups and admin scripts).
+Re-running `harden-db-roles.sh <name>` rotates that client's password.

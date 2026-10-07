@@ -114,6 +114,9 @@ else
   echo "    ${DBNAME} already exists — reusing it"
 fi
 
+echo "==> Giving ${NAME} its own least-privilege database login"
+bash harden-db-roles.sh "$NAME" --no-backup
+
 echo "==> Regenerating compose + Caddy config"
 python3 generate.py
 

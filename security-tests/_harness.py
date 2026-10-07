@@ -48,11 +48,27 @@ def fresh_database():
     conn.close()
 
 
+def restricted_url():
+    sys.path.insert(0, os.path.join(REPO, 'deploy', 'vps'))
+    import db_roles, psycopg2
+    slug = DB_NAME[len('coop_'):]
+    pw = 'sectest_restricted_password_0123456789'
+    conn = psycopg2.connect(f'postgresql://{PG_USER}@{PG_HOST}:{PG_PORT}/postgres')
+    conn.autocommit = True
+    conn.cursor().execute(db_roles.stage1(slug, pw))
+    conn.close()
+    return f'postgresql://{db_roles.role_name(slug)}:{pw}@{PG_HOST}:{PG_PORT}/{DB_NAME}'
+
+
 def boot_app():
     """Create a clean DB, set the environment, import the real application."""
     url = f'postgresql://{PG_USER}@{PG_HOST}:{PG_PORT}/{DB_NAME}'
     _assert_local(url)
     fresh_database()
+    if os.environ.get('SECTEST_RESTRICTED') == '1':
+        # Run the whole app as the per-client least-privilege role from
+        # deploy/vps/db_roles.py instead of the superuser (finding F-01).
+        url = restricted_url()
     os.environ['DATABASE_URL'] = url
     os.environ['SECRET_KEY'] = 'sectest-' + 'k' * 40
     os.environ['FIELD_ENCRYPTION_KEY'] = '05SmPJhNFMKwg9NysnBdQjKtqn3VwWDl1IiPIMAg2as='

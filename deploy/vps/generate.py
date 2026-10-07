@@ -42,7 +42,11 @@ def load_clients():
         domain = env.get("DOMAIN", "").strip()
         if not domain:
             raise SystemExit(f"clients/{name}.env is missing a DOMAIN= line.")
-        clients.append({"name": name, "domain": domain})
+        # A client with its own DATABASE_URL (see harden-db-roles.sh) uses its own
+        # least-privilege login; others fall back to the shared superuser and are
+        # reported so they get migrated.
+        clients.append({"name": name, "domain": domain,
+                        "own_db_url": bool(env.get("DATABASE_URL", "").strip())})
     return clients
 
 
@@ -65,7 +69,10 @@ def render_compose(clients):
             "    env_file:",
             f"      - ./clients/{n}.env",
             "    environment:",
-            f"      DATABASE_URL: postgresql://postgres:${{POSTGRES_PASSWORD}}@postgres:5432/coop_{n}",
+            *([] if c["own_db_url"] else [
+                # LEGACY: shared superuser. Run ./harden-db-roles.sh <name> to fix.
+                f"      DATABASE_URL: postgresql://postgres:${{POSTGRES_PASSWORD}}@postgres:5432/coop_{n}",
+            ]),
             # Shared token so HQ can read member counts and set access on every
             # tenant. Comes from deploy/vps/.env, so all clients get it centrally.
             "      HQ_SYNC_TOKEN: ${HQ_SYNC_TOKEN:-}",
@@ -218,7 +225,9 @@ def main():
     if clients:
         print("Configured clients:")
         for c in clients:
-            print(f"  - {c['name']:<15} https://{c['domain']}")
+            flag = "" if c["own_db_url"] else (
+                "   !! still on the shared postgres SUPERUSER - run ./harden-db-roles.sh " + c["name"])
+            print(f"  - {c['name']:<15} https://{c['domain']}{flag}")
     else:
         print("No clients yet. Add one with: ./add-client.sh <name> <domain>")
 
