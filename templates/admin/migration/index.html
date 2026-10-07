@@ -245,6 +245,16 @@
             <input type="text" class="form-control" name="confirm_phrase"
                    placeholder="PURGE ALL DATA" autocomplete="off" required>
           </div>
+          <div class="mb-3">
+            <label class="form-label">Your password:</label>
+            <input type="password" class="form-control" name="password" autocomplete="current-password" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">2FA code (if you use two-factor):</label>
+            <input type="text" class="form-control" name="totp_code" autocomplete="one-time-code">
+          </div>
+          <p class="small text-muted mb-0">Disabled unless the server operator sets ENABLE_PURGE=1.
+            Take a backup first. The audit log is never deleted.</p>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>

@@ -4,6 +4,7 @@ Handles bulk import/export for migrating from the old cooperative app.
 All imports use atomic transactions — the whole file succeeds or rolls back.
 """
 import csv
+import os
 from upload_history import record_upload
 import random
 import secrets
@@ -11,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from io import StringIO, TextIOWrapper
 
-from flask import Blueprint, render_template, redirect, url_for, request, flash, make_response, session
+from flask import current_app, Blueprint, render_template, redirect, url_for, request, flash, make_response, session
 from flask_login import login_required, current_user
 from werkzeug.security import generate_password_hash
 
@@ -1506,7 +1507,8 @@ _PURGEABLE_TABLES = [
     'repayments', 'loan_request_events', 'loan_approvals', 'loan_guarantors',
     'loans', 'savings',
     'honorarium', 'expenses', 'revenue', 'investments',
-    'notifications', 'audit_log', 'members',
+    # audit_log is deliberately NOT purgeable: it is the evidence of who ran this.
+    'notifications', 'members',
 ]
 
 @migration.route('/load-demo', methods=['POST'])
@@ -1539,23 +1541,52 @@ def load_demo():
 @login_required
 @role_required('admin')
 def purge_database():
+    """Wipe all transactional data. Off unless ENABLE_PURGE=1 is set in the
+    environment, and then only with the admin's password (and 2FA code, if on).
+    Take a database backup first (deploy/vps/backup.sh); the audit log is kept."""
+    from werkzeug.security import check_password_hash
+    from security import user_2fa_secret, verify_2fa_code
+
+    db = get_db()
+    if os.environ.get('ENABLE_PURGE') != '1':
+        audit(db, 'PURGE_REFUSED', 'migration', 'Purge attempted while disabled (ENABLE_PURGE is not set)')
+        db.commit()
+        flash('Purging is disabled on this system. It can only be enabled by the '
+              'server operator, after taking a backup.', 'danger')
+        return redirect(url_for('migration.index'))
+
     confirm = request.form.get('confirm_phrase', '').strip()
     if confirm != 'PURGE ALL DATA':
         flash('Confirmation phrase did not match. Purge cancelled.', 'danger')
         return redirect(url_for('migration.index'))
 
-    db = get_db()
+    if not check_password_hash(current_user.password_hash, request.form.get('password', '')):
+        audit(db, 'PURGE_REFUSED', 'migration', 'Purge refused: wrong password')
+        db.commit()
+        flash('Password incorrect. Purge cancelled.', 'danger')
+        return redirect(url_for('migration.index'))
+
+    if user_2fa_secret(db, current_user.id) and not verify_2fa_code(
+            db, current_user.id, request.form.get('totp_code', '')):
+        audit(db, 'PURGE_REFUSED', 'migration', 'Purge refused: wrong 2FA code')
+        db.commit()
+        flash('Two-factor code incorrect. Purge cancelled.', 'danger')
+        return redirect(url_for('migration.index'))
+
     try:
         for table in _PURGEABLE_TABLES:
             db.execute(f'DELETE FROM {table}')
         # Remove member portal logins created during import; keep staff accounts.
         db.execute("DELETE FROM users WHERE role = 'member'")
+        audit(db, 'PURGE_DATABASE', 'migration',
+              'All transactional data purged (ledger, loans, savings, members)')
         db.commit()
         flash('All transactional data (including the ledger and dividends) has been '
-              'purged. Staff users and settings were kept.', 'success')
+              'purged. Staff users, settings and the audit log were kept.', 'success')
     except Exception as e:
         db.rollback()
-        flash(f'Purge failed: {str(e)}', 'danger')
+        current_app.logger.exception('Purge failed')
+        flash('Purge failed. Nothing was changed.', 'danger')
 
     return redirect(url_for('migration.index'))
 
