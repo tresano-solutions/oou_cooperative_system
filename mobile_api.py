@@ -41,13 +41,22 @@ from utils import (
     notify,
     notify_member,
     record_failed_login,
+    sign_in_pause_seconds,
+    record_sign_in_failure,
+    clear_account_failures,
+    pause_message,
 )
 
 mobile_api = Blueprint('mobile_api', __name__)
 
 JWT_ISSUER = 'coopms'
 JWT_AUDIENCE = 'coopms-mobile'
-MOBILE_TOKEN_TTL_HOURS = 24
+MOBILE_TOKEN_TTL_HOURS = 24            # staff
+MEMBER_TOKEN_TTL_HOURS = 24 * 30       # members stay signed in on their own phone; revocable (F-10)
+
+
+def _token_hours(role):
+    return MEMBER_TOKEN_TTL_HOURS if role == 'member' else MOBILE_TOKEN_TTL_HOURS
 TENANT_CODE_RE = re.compile(r'^[a-z0-9][a-z0-9-]{1,30}$')
 
 PROFILE_FIELDS = (
@@ -161,7 +170,7 @@ def _generate_token(user_id, username, role, session_version=0):
         'role': role,
         'iat': now,
         'nbf': now,
-        'exp': now + timedelta(hours=MOBILE_TOKEN_TTL_HOURS),
+        'exp': now + timedelta(hours=_token_hours(role)),
         'iss': JWT_ISSUER,
         'aud': JWT_AUDIENCE,
     }
@@ -449,11 +458,13 @@ def mobile_login():
         return jsonify({'success': False, 'error': 'username and password are required'}), 400
 
     login_key = _mobile_login_key()
-    if is_rate_limited(login_key):
+    wait = sign_in_pause_seconds(login_key, username)
+    if wait:
         return jsonify({
             'success': False,
-            'error': 'Too many failed login attempts. Please try again later.',
-            'retry_after_seconds': lockout_seconds_remaining(login_key),
+            'error': pause_message(wait),
+            'code': 'try_again_later',
+            'retry_after_seconds': wait,
         }), 429
 
     db = get_db()
@@ -468,8 +479,8 @@ def mobile_login():
     ''', (username, username)).fetchone()
 
     if not user or not check_password_hash(user['password_hash'], password):
-        record_failed_login(login_key)
-        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+        record_sign_in_failure(login_key, username)
+        return jsonify({'success': False, 'error': 'Incorrect username or password.', 'code': 'invalid_credentials'}), 401
 
     # Two-factor: a password alone must not be enough for an account that has 2FA on
     # (the web login already demands the code; the app used to skip it).
@@ -478,11 +489,11 @@ def mobile_login():
         if not otp:
             return _json_error('Enter the 6-digit code from your authenticator app.', 401, 'otp_required')
         if not verify_2fa_code(db, user['id'], otp):
-            record_failed_login(login_key)
+            record_sign_in_failure(login_key, username)
             db.commit()
             return _json_error('That code was not valid.', 401, 'otp_invalid')
 
-    clear_login_attempts(login_key)
+    clear_account_failures(username)
     db.execute('UPDATE users SET last_login = ? WHERE id = ?', (datetime.now(), user['id']))
     db.commit()
     token = _generate_token(user['id'], user['username'], user['role'],
@@ -490,7 +501,7 @@ def mobile_login():
     return jsonify({
         'success': True,
         'token': token,
-        'expires_in_seconds': MOBILE_TOKEN_TTL_HOURS * 3600,
+        'expires_in_seconds': _token_hours(user['role']) * 3600,
         'user': {
             'id': user['id'],
             'username': user['username'],

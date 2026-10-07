@@ -1266,7 +1266,7 @@ def change_password():
             flash('New passwords do not match.', 'danger')
             return redirect(url_for('portal.change_password'))
         db   = get_db()
-        ok, errors = validate_password_strength(new_pw, db)
+        ok, errors = validate_password_strength(new_pw, db, role=current_user.role, identifiers=(current_user.username, current_user.email))
         if not ok:
             flash(' '.join(errors), 'danger')
             return redirect(url_for('portal.change_password'))

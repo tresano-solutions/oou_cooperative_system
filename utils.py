@@ -263,6 +263,81 @@ def clear_login_attempts(ip: str) -> None:
         pass
 
 
+# ── Sign-in throttling (finding F-12) ─────────────────────────────────────────
+#
+# Designed so an honest, slightly forgetful member is rarely stopped, while
+# guessing is still impractical:
+#   * the limit follows the ACCOUNT, not the shared network: a whole office or a
+#     village sharing one Wi-Fi is never locked out by one person's typos;
+#   * a generous number of tries first, then a SHORT pause (5 min), not a lock-out;
+#   * a separate, much higher ceiling per network stops one machine from trying
+#     many different accounts (password spraying);
+#   * one person signing in successfully never resets the network ceiling (that
+#     would let an attacker clear it by logging into their own account).
+# The pause only affects typing a password; "Forgot password?" by email always works.
+
+ACCOUNT_MAX = 8          # wrong passwords per account within the window
+ACCOUNT_PAUSE = 300      # seconds to wait after the last wrong try (5 minutes)
+NETWORK_MAX = 40         # wrong passwords, any accounts, from one network address
+NETWORK_PAUSE = 600      # seconds (10 minutes)
+THROTTLE_WINDOW = 900    # failures older than this are forgotten (15 minutes)
+
+
+def _norm_account(username) -> str:
+    return (username or '').strip().lower()
+
+
+def _failures(column: str, value: str) -> list:
+    from database import get_db
+    cutoff = datetime.now() - timedelta(seconds=THROTTLE_WINDOW)
+    try:
+        rows = get_db().execute(
+            f'SELECT attempted_at FROM login_attempts WHERE {column} = ? AND attempted_at >= ? '
+            'ORDER BY attempted_at', (value, cutoff)).fetchall()      # column is a constant below
+        return [_to_dt(r['attempted_at']) for r in rows]
+    except Exception:
+        return []        # a throttle-store hiccup must never lock honest people out
+
+
+def _pause_left(times: list, limit: int, pause: int) -> int:
+    if len(times) < limit:
+        return 0
+    return max(0, int(pause - (datetime.now() - max(times)).total_seconds()))
+
+
+def sign_in_pause_seconds(network_key: str, username: str) -> int:
+    """Seconds this sign-in must wait (0 = go ahead)."""
+    account = _pause_left(_failures('username', _norm_account(username)), ACCOUNT_MAX, ACCOUNT_PAUSE) \
+        if _norm_account(username) else 0
+    network = _pause_left(_failures('ip', network_key), NETWORK_MAX, NETWORK_PAUSE)
+    return max(account, network)
+
+
+def sign_in_tries_left(username: str) -> int:
+    return max(0, ACCOUNT_MAX - len(_failures('username', _norm_account(username))))
+
+
+def record_sign_in_failure(network_key: str, username: str) -> None:
+    record_failed_login(network_key, _norm_account(username))
+
+
+def clear_account_failures(username: str) -> None:
+    """After a successful sign-in forget THIS account's wrong tries (not the network's)."""
+    from database import get_db
+    db = get_db()
+    try:
+        db.execute('DELETE FROM login_attempts WHERE username = ?', (_norm_account(username),))
+        db.commit()
+    except Exception:
+        pass
+
+
+def pause_message(seconds: int) -> str:
+    minutes = max(1, round(seconds / 60))
+    return (f"Let's try again in {minutes} minute{'s' if minutes != 1 else ''}. "
+            "If you have forgotten your password, tap \"Forgot password?\" and we will email you a link.")
+
+
 # ── Loan interest computation ─────────────────────────────────────────────────
 
 # Maps canonical purpose names → settings key suffix

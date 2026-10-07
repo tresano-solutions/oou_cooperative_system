@@ -58,7 +58,7 @@ class MobileTwoFactor(unittest.TestCase):
     def test_brute_forcing_codes_is_rate_limited(self):
         c = app.test_client()
         codes = []
-        for i in range(8):
+        for i in range(12):   # 8 tries per account, then a short pause
             codes.append(c.post('/api/mobile/login', json={'username': 'treasurer', 'password': H.TREAS_PW,
                                                            'otp': f'{i:06d}'}).status_code)
         self.assertIn(429, codes)

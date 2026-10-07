@@ -58,9 +58,9 @@ _DEFAULT_SETTINGS = {
     'date_format': 'Y-m-d',
     'session_timeout': '30',
     'password_min_length': '8',
-    'password_require_upper': '1',
-    'password_require_lower': '1',
-    'password_require_number': '1',
+    'password_require_upper': '0',
+    'password_require_lower': '0',
+    'password_require_number': '0',
     'password_require_special': '0',
     'maintenance_mode': '0',
     'min_savings': '5000',
@@ -741,7 +741,7 @@ def add_user():
                 flash('Give this user an email address so they can be invited, or set a '
                       'password to hand over in person.', 'danger')
                 return redirect(url_for('admin_panel.settings') + '#users')
-            ok, errors = validate_password_strength(password, db)
+            ok, errors = validate_password_strength(password, db, role=role, identifiers=(username, email))
             if not ok:
                 flash(' '.join(errors), 'danger')
                 return redirect(url_for('admin_panel.settings') + '#users')

@@ -15,9 +15,9 @@ import qrcode.image.svg
 
 DEFAULT_PASSWORD_POLICY = {
     'password_min_length': '8',
-    'password_require_upper': '1',
-    'password_require_lower': '1',
-    'password_require_number': '1',
+    'password_require_upper': '0',
+    'password_require_lower': '0',
+    'password_require_number': '0',
     'password_require_special': '0',
 }
 
@@ -44,6 +44,52 @@ def password_policy(db=None):
     return policy
 
 
+# Passwords people (and password-guessing tools) try first. The point of this list is
+# not to make passwords harder to REMEMBER - it stops the handful that are cracked in
+# seconds, and still allows any long, easy phrase such as "blue river market sunday".
+_COMMON_PASSWORDS = {
+    'password', 'passw0rd', 'p@ssword', 'p@ssw0rd', 'pass1234', 'password1', 'password12', 'password123',
+    '12345678', '123456789', '1234567890', '123123123', '11111111', '00000000', '87654321', '12341234',
+    'qwerty', 'qwerty12', 'qwerty123', 'qwertyui', 'qwertyuiop', 'asdfghjk', 'asdfghjkl', 'zxcvbnm',
+    'abc12345', 'abcd1234', 'abcdefgh', 'iloveyou', 'letmein', 'welcome', 'welcome1', 'welcome12',
+    'welcome123', 'admin', 'admin123', 'administrator', 'changeme', 'changeit', 'default', 'login',
+    'monkey', 'dragon', 'master', 'sunshine', 'princess', 'football', 'baseball', 'superman', 'trustno1',
+    'nigeria', 'nigeria1', 'nigeria123', 'lagos', 'lagos123', 'abuja', 'jesus', 'jesus123', 'godisgood',
+    'godislove', 'blessing', 'blessed', 'ibadan', 'ogun', 'oou', 'smt',
+    'coop', 'coop123', 'coop1234', 'coop12345', 'coopms', 'coopms123', 'cooperative', 'cooperative1',
+    'cooperative123', 'member', 'member123', 'member1234', 'society', 'savings', 'savings123', 'treasurer',
+    'secretary', 'president',
+}
+_COMMON_WORDS = ('password', 'passw0rd', 'qwerty', 'welcome', 'admin', 'letmein', 'coopms', 'iloveyou',
+                 'cooperative', 'changeme')
+
+
+def is_too_easy_to_guess(password, identifiers=()):
+    """True for passwords that are guessed in seconds: well-known ones, a well-known word
+    with digits tacked on, one repeated character, a simple run (12345678), or the person's
+    own name/e-mail/phone. Long phrases pass."""
+    import re
+    raw = (password or '').strip().lower()
+    if not raw:
+        return True
+    base = re.sub(r'[\d\W_]+$', '', raw)             # "Welcome2024!" -> "welcome"
+    squeezed = re.sub(r'[\W_]+', '', raw)
+    if raw in _COMMON_PASSWORDS or squeezed in _COMMON_PASSWORDS or base in _COMMON_PASSWORDS:
+        return True
+    if len(set(squeezed)) <= 2:                       # 11111111, abababab
+        return True
+    runs = '0123456789012345678909876543210abcdefghijklmnopqrstuvwxyzqwertyuiopasdfghjklzxcvbnm'
+    if len(squeezed) >= 6 and squeezed in runs:
+        return True
+    if len(squeezed) < 14 and any(squeezed.startswith(w) or squeezed.endswith(w) for w in _COMMON_WORDS):
+        return True
+    for ident in identifiers:
+        ident = re.sub(r'[\W_]+', '', (ident or '').split('@')[0].lower())
+        if len(ident) >= 4 and (ident in squeezed or squeezed in ident):
+            return True
+    return False
+
+
 def password_policy_description(db=None):
     policy = password_policy(db)
     parts = [f"at least {policy['password_min_length']} characters"]
@@ -55,10 +101,12 @@ def password_policy_description(db=None):
         parts.append('a number')
     if policy['password_require_special'] == '1':
         parts.append('a special character')
-    return 'Password must contain ' + ', '.join(parts) + '.'
+    return ('Password must contain ' + ', '.join(parts)
+            + '. A short phrase of a few ordinary words (for example "blue river market sunday") is easy to '
+              'remember and very safe. Avoid common passwords such as "password" or "12345678".')
 
 
-def validate_password_strength(password, db=None):
+def validate_password_strength(password, db=None, role=None, identifiers=()):
     policy = password_policy(db)
     password = password or ''
     errors = []
@@ -74,6 +122,14 @@ def validate_password_strength(password, db=None):
         errors.append('Password must include a number.')
     if policy['password_require_special'] == '1' and not any(c in string.punctuation for c in password):
         errors.append('Password must include a special character.')
+
+    # Staff handle the cooperative's money, so they need a little more length.
+    if role in STAFF_ROLES and len(password) < max(min_length, 10):
+        errors.append('Officer passwords must be at least 10 characters. A short phrase of a few words works well.')
+
+    if not errors and is_too_easy_to_guess(password, identifiers):
+        errors.append('That password is too easy to guess. Try a short phrase of three or four ordinary '
+                      'words you will remember, for example "blue river market sunday".')
 
     return not errors, errors
 

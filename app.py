@@ -292,7 +292,10 @@ def utility_processor():
             except Exception:
                 pass
 
+    _role = getattr(current_user, 'role', None) if current_user.is_authenticated else None
     return {
+        'idle_timeout_seconds':     idle_timeout_for_role(_role),
+        'idle_warning_seconds':     180 if _role == 'member' else int(app.config.get('IDLE_WARNING_SECONDS', 120)),
         'new_submission_token':     new_submission_token,
         'now':                      datetime.now,
         'coop_name':                coop_name['value']  if coop_name  else 'Your Cooperative',
@@ -426,6 +429,14 @@ def check_maintenance():
             ), 402
 
 
+def idle_timeout_for_role(role):
+    """Staff handle money, so they time out sooner; members get longer (and a longer
+    on-screen warning) because many are older and read and type more slowly."""
+    if role == 'member':
+        return int(os.environ.get('MEMBER_IDLE_TIMEOUT_SECONDS', 30 * 60))
+    return int(app.config.get('IDLE_TIMEOUT_SECONDS', 15 * 60))
+
+
 @app.before_request
 def enforce_idle_timeout():
     if not current_user.is_authenticated:
@@ -435,7 +446,7 @@ def enforce_idle_timeout():
         return
 
     now_ts = time.time()
-    timeout = int(app.config.get('IDLE_TIMEOUT_SECONDS', 15 * 60))
+    timeout = idle_timeout_for_role(getattr(current_user, 'role', None))
     last_activity = session.get('last_activity_at')
 
     try:

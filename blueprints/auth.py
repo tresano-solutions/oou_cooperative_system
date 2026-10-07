@@ -13,7 +13,8 @@ from database import get_db
 from email_service import send_password_reset_email
 from security import (start_web_session, end_web_session, generate_account_setup_token, hash_account_setup_token, log_audit,
                       validate_password_strength, user_2fa_secret, verify_2fa_code)
-from utils import User, is_rate_limited, lockout_seconds_remaining, record_failed_login, clear_login_attempts
+from utils import (User, ACCOUNT_PAUSE, sign_in_pause_seconds, sign_in_tries_left, record_sign_in_failure,
+                   clear_account_failures, pause_message, record_failed_login)
 
 auth = Blueprint('auth', __name__)
 
@@ -166,39 +167,33 @@ def web_manifest():
 def login():
     if request.method == 'POST':
         ip = request.remote_addr or '0.0.0.0'
-
-        # ── Rate-limit check — show exact time remaining ──────────────────
-        if is_rate_limited(ip):
-            secs = lockout_seconds_remaining(ip)
-            mins = max(1, round(secs / 60))
-            flash(
-                f'Too many failed login attempts. '
-                f'Your account is temporarily locked — please try again in '
-                f'<strong>{mins} minute{"s" if mins != 1 else ""}</strong>.',
-                'lockout'
-            )
-            return render_template('login.html')
-
         username = request.form['username']
         password = request.form['password']
         ua       = request.user_agent.string if request.user_agent else ''
+
+        # A short, friendly pause after many wrong passwords on THIS account (or a
+        # flood from one network) - never a long lock-out. See utils.sign_in_pause_seconds.
+        wait = sign_in_pause_seconds(ip, username)
+        if wait:
+            flash(pause_message(wait), 'lockout')
+            return render_template('login.html')
 
         db   = get_db()
         user = db.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
 
         if user and user['is_active'] == 0:
-            record_failed_login(ip)
+            record_sign_in_failure(ip, username)
             log_audit(db, user['id'], user['username'], 'FAILED_LOGIN', 'auth',
                       'Inactive user login attempt', ip, ua)
             db.commit()
             flash('Incorrect username or password. Please try again.', 'danger')
         elif user and check_password_hash(user['password_hash'], password):
-            clear_login_attempts(ip)
+            clear_account_failures(username)
             keys = user.keys()
             has_2fa = ('two_factor_enabled' in keys and user['two_factor_enabled']
                        and user_2fa_secret(db, user['id']))
             if has_2fa:
-                # Password is correct but 2FA is on — defer the actual login
+                # Password is correct but 2FA is on - defer the actual login
                 # until the second factor is verified.
                 session['pending_2fa_user'] = user['id']
                 session['pending_2fa_at'] = time.time()
@@ -208,31 +203,17 @@ def login():
                 return redirect(url_for('auth.verify_2fa'))
             return _finalize_login(db, user, ip, ua)
         else:
-            record_failed_login(ip)
-            remaining_attempts = 5 - len([1 for _ in range(1)])  # recalculate
+            record_sign_in_failure(ip, username)
             log_audit(db, None, username, 'FAILED_LOGIN', 'auth',
                       f'Failed login attempt for username: {username}', ip, ua)
             db.commit()
-            # Count how many attempts remain before lockout
-            from utils import _recent_attempts
-            attempts_so_far = len(_recent_attempts(ip))
-            attempts_left   = max(0, 5 - attempts_so_far)
-            if attempts_left == 0:
-                secs = lockout_seconds_remaining(ip)
-                mins = max(1, round(secs / 60))
-                flash(
-                    f'Too many failed attempts — your login is now locked for '
-                    f'<strong>{mins} minute{"s" if mins != 1 else ""}</strong>. '
-                    f'Please wait before trying again.',
-                    'lockout'
-                )
-            elif attempts_left <= 2:
-                flash(
-                    f'Incorrect username or password. '
-                    f'<strong>{attempts_left} attempt{"s" if attempts_left != 1 else ""} remaining</strong> '
-                    f'before your login is temporarily locked.',
-                    'danger'
-                )
+            left = sign_in_tries_left(username)
+            if left == 0:
+                flash(pause_message(ACCOUNT_PAUSE), 'lockout')
+            elif left <= 3:
+                flash(f'Incorrect username or password. You have {left} '
+                      f'{"try" if left == 1 else "tries"} left before a short pause. '
+                      'Forgotten it? Tap "Forgot password?" below.', 'danger')
             else:
                 flash('Incorrect username or password. Please try again.', 'danger')
 
@@ -292,22 +273,17 @@ def verify_2fa():
         ip = request.remote_addr or '0.0.0.0'
         ua = request.user_agent.string if request.user_agent else ''
 
-        if is_rate_limited(ip):
-            secs = lockout_seconds_remaining(ip)
-            mins = max(1, round(secs / 60))
-            flash(
-                f'Too many failed attempts. Please try again in '
-                f'<strong>{mins} minute{"s" if mins != 1 else ""}</strong>.',
-                'lockout'
-            )
+        wait = sign_in_pause_seconds(ip, user['username'])
+        if wait:
+            flash(pause_message(wait), 'lockout')
             return render_template('auth/verify-2fa.html', username=user['username'])
 
         code = request.form.get('code', '')
         if verify_2fa_code(db, user_id, code):
-            clear_login_attempts(ip)
+            clear_account_failures(user['username'])
             return _finalize_login(db, user, ip, ua)
 
-        record_failed_login(ip, user['username'])
+        record_sign_in_failure(ip, user['username'])
         log_audit(db, user_id, user['username'], 'FAILED_2FA', 'auth',
                   'Invalid 2FA code at login', ip, ua)
         db.commit()

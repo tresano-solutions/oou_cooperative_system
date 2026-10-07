@@ -517,8 +517,8 @@
     </div>
     <script>
         (function() {
-            const timeoutSeconds = {{ config.IDLE_TIMEOUT_SECONDS|default(900) }};
-            const warningSeconds = {{ config.IDLE_WARNING_SECONDS|default(120) }};
+            const timeoutSeconds = {{ idle_timeout_seconds|default(900) }};
+            const warningSeconds = {{ idle_warning_seconds|default(120) }};
             const warningAtMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
             const logoutAtMs = timeoutSeconds * 1000;
             const modal = document.getElementById('idleTimeoutModal');

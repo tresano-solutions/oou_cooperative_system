@@ -358,7 +358,7 @@ class HardeningFeatureTests(unittest.TestCase):
         clear_login_attempts(login_key)
         environ = {'REMOTE_ADDR': '203.0.113.10'}
 
-        for _ in range(5):
+        for _ in range(8):   # 8 tries per account before a short pause (F-12)
             response = self.client.post(
                 '/api/mobile/login',
                 json={'username': 'admin', 'password': 'wrong-password'},
