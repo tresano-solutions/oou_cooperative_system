@@ -542,6 +542,19 @@ def session_ping():
 
 
 @app.after_request
+def persist_audit_rows(response):
+    """Commit audit rows written after a handler's own commit (see security.log_audit).
+    Skipped on server errors, where the whole request is being abandoned."""
+    from flask import g
+    if getattr(g, '_audit_dirty', False) and response.status_code < 500:
+        try:
+            get_db().commit()
+        except Exception as exc:  # never turn a finished request into an error
+            print(f"[audit] failed to commit audit rows: {exc}")
+    return response
+
+
+@app.after_request
 def apply_security_headers(response):
     response.headers.setdefault('X-Content-Type-Options', 'nosniff')
     response.headers.setdefault('X-Frame-Options', 'DENY')

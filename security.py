@@ -178,6 +178,15 @@ def log_audit(db, user_id, username, action, module, description,
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (user_id, username, action, module, description, ip_address, user_agent, data)
         )
+        # Many handlers call audit() *after* their own db.commit(), which would leave
+        # this row in an uncommitted transaction that is rolled back when the request
+        # ends. Flag it so the after_request hook in app.py commits it.
+        try:
+            from flask import g, has_request_context
+            if has_request_context():
+                g._audit_dirty = True
+        except Exception:
+            pass
     except Exception as exc:
         print(f"[audit] failed to write log: {exc}")
 
