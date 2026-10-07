@@ -23,7 +23,9 @@ import base64
 import io
 import json
 import os
+import hq_tokens
 import secrets
+import urllib.error
 import urllib.request
 from datetime import datetime, date, timedelta
 from functools import wraps
@@ -224,20 +226,44 @@ def _client_base_url(client):
     return f'https://{code}.cooperativems.com'
 
 
-def _post_to_tenant(client, path, payload):
-    """POST JSON to a client's token-guarded HQ endpoint. Returns (ok, message)."""
-    token = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
-    if not token:
-        return False, 'HQ_SYNC_TOKEN is not set in the HQ environment.'
+def _tenant_call(client, path, payload=None):
+    """Call a tenant's HQ endpoint with that tenant's own derived token (hq_tokens.py).
+    While tenants are being migrated, a 403 is retried once with the legacy shared
+    token; set HQ_LEGACY_FALLBACK=0 once every tenant has HQ_TENANT_TOKEN.
+    Returns the decoded JSON; raises on network/HTTP errors."""
     base = _client_base_url(client)
     if not base:
-        return False, 'client has no code/subdomain to reach.'
+        raise RuntimeError('client has no code/subdomain to reach.')
+    master = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
+    tokens = [hq_tokens.sender_token_for(client['code'])]
+    if os.environ.get('HQ_LEGACY_FALLBACK') != '0':
+        tokens.append(master)
+    tokens = [t for i, t in enumerate(tokens) if t and t not in tokens[:i]]
+    if not tokens:
+        raise RuntimeError('HQ_SYNC_TOKEN is not set in the HQ environment.')
+    last = None
+    for tok in tokens:
+        headers = {'X-HQ-Token': tok, 'Accept': 'application/json'}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        req = urllib.request.Request(f'{base}{path}', data=data, headers=headers,
+                                     method='POST' if payload is not None else 'GET')
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code != 403:
+                raise
+    raise last
+
+
+def _post_to_tenant(client, path, payload):
+    """POST JSON to a client's token-guarded HQ endpoint. Returns (ok, message)."""
     try:
-        req = urllib.request.Request(
-            f'{base}{path}', data=json.dumps(payload).encode('utf-8'), method='POST',
-            headers={'X-HQ-Token': token, 'Content-Type': 'application/json', 'Accept': 'application/json'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+        data = _tenant_call(client, path, payload)
         return bool(data.get('success')), ('' if data.get('success') else 'the tenant rejected the request.')
     except Exception as exc:  # pragma: no cover - network
         return False, str(exc)
@@ -543,9 +569,8 @@ def sync_members():
     store it as user_count. Each tenant exposes GET /api/hq/member-count guarded
     by the shared HQ_SYNC_TOKEN."""
     db = get_db()
-    token = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
-    if not token:
-        flash('Set HQ_SYNC_TOKEN in the HQ environment (and on each tenant) to enable syncing.', 'warning')
+    if not (os.environ.get('HQ_SYNC_TOKEN') or '').strip():
+        flash('Set HQ_SYNC_TOKEN in the HQ environment to enable syncing.', 'warning')
         return redirect(url_for('hq_billing.clients'))
     clients_ = db.execute("SELECT * FROM hq_clients WHERE status = 'active'").fetchall()
     ok, failed = 0, []
@@ -555,11 +580,7 @@ def sync_members():
             failed.append(f"{c['name']} (no code)")
             continue
         try:
-            req = urllib.request.Request(
-                f'{base}/api/hq/member-count',
-                headers={'X-HQ-Token': token, 'Accept': 'application/json'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
+            data = _tenant_call(c, '/api/hq/member-count')
             count = int(data.get('active_members'))
             db.execute('UPDATE hq_clients SET user_count = ?, updated_at = ? WHERE id = ?',
                        (count, datetime.now(), c['id']))

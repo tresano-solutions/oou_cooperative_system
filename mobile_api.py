@@ -18,6 +18,7 @@ import jwt
 from flask import Blueprint, current_app, g, jsonify, make_response, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import hq_tokens
 import loan_workflow as lw
 import loan_alerts as la
 from loan_pdf import build_loan_application_pdf
@@ -1256,10 +1257,8 @@ def mobile_tenant():
 @mobile_api.route('/api/hq/member-count', methods=['GET'])
 def hq_member_count():
     """Report this cooperative's active-member count to HQ for billing.
-    Guarded by the shared HQ_SYNC_TOKEN (header X-HQ-Token); not public."""
-    token = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
-    provided = (request.headers.get('X-HQ-Token') or '').strip()
-    if not token or not hmac.compare_digest(provided, token):
+    Guarded by this tenant's own HQ token (hq_tokens.py) (header X-HQ-Token); not public."""
+    if not hq_tokens.request_is_authorised(request.headers.get('X-HQ-Token')):
         return jsonify({'success': False, 'error': 'Unauthorised'}), 403
     db = get_db()
     n = db.execute("SELECT COUNT(*) FROM members WHERE status = 'active'").fetchone()[0] or 0
@@ -1269,11 +1268,9 @@ def hq_member_count():
 @mobile_api.route('/api/hq/set-status', methods=['POST'])
 def hq_set_status():
     """Let HQ suspend or reactivate this cooperative's access. Guarded by the
-    shared HQ_SYNC_TOKEN. Sets settings.tenant_suspended, which the app's
+    this tenant's HQ token. Sets settings.tenant_suspended, which the app's
     before-request gate enforces."""
-    token = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
-    provided = (request.headers.get('X-HQ-Token') or '').strip()
-    if not token or not hmac.compare_digest(provided, token):
+    if not hq_tokens.request_is_authorised(request.headers.get('X-HQ-Token')):
         return jsonify({'success': False, 'error': 'Unauthorised'}), 403
     data = request.get_json(silent=True) or {}
     suspended = bool(data.get('suspended'))
@@ -1288,10 +1285,8 @@ def hq_set_status():
 @mobile_api.route('/api/hq/set-feature', methods=['POST'])
 def hq_set_feature():
     """Let HQ turn an optional add-on on/off for this cooperative (on request).
-    Guarded by the shared HQ_SYNC_TOKEN. Currently supports feature 'ctas'."""
-    token = (os.environ.get('HQ_SYNC_TOKEN') or '').strip()
-    provided = (request.headers.get('X-HQ-Token') or '').strip()
-    if not token or not hmac.compare_digest(provided, token):
+    Guarded by this tenant's own HQ token (hq_tokens.py). Currently supports feature 'ctas'."""
+    if not hq_tokens.request_is_authorised(request.headers.get('X-HQ-Token')):
         return jsonify({'success': False, 'error': 'Unauthorised'}), 403
     data = request.get_json(silent=True) or {}
     feature = (data.get('feature') or '').strip()
