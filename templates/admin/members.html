@@ -201,6 +201,7 @@
             </div>
             <form action="{{ url_for('savings.add_saving') }}" method="POST" id="savingsForm">
                 <div class="modal-body">
+                    <input type="hidden" name="submission_token" value="{{ new_submission_token() }}">
                     <input type="hidden" name="member_id" id="savings_member_id" value="">
                     
                     <div class="mb-3">

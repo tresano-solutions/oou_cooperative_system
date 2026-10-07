@@ -89,6 +89,10 @@ class _PGCursor:
     def __iter__(self):
         return iter(self.fetchall())
 
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
 
 # ── PostgreSQL connection wrapper ──────────────────────────────────────────────
 
@@ -228,6 +232,12 @@ def _add_col(db, table, column, col_def):
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
         except Exception:
             pass  # column already exists
+
+
+def for_update(sql, of=''):
+    """Append FOR UPDATE on PostgreSQL so a read-then-write on one row is serialised.
+    SQLite has no row locks (it serialises writers itself), so it is a no-op there."""
+    return sql + (' FOR UPDATE' + (f' OF {of}' if of else '')) if USE_POSTGRES else sql
 
 
 def _exec_ignore(db, sql):
@@ -1674,6 +1684,12 @@ def init_db():
 
     # Unified receipt, payment and journal vouchers. A submission token makes
     # retrying the same form safe without duplicating its financial effects.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS form_submissions (
+            token TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS vouchers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

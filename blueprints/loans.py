@@ -13,11 +13,11 @@ from flask import (Blueprint, render_template, redirect, url_for, request, flash
                    make_response, jsonify)
 from flask_login import login_required, current_user
 
-from database import get_db, last_insert_id, USE_POSTGRES
+from database import get_db, last_insert_id, USE_POSTGRES, for_update
 from email_service import (send_loan_approval_email, send_loan_rejection_email,
                            send_loan_repayment_email, send_loan_stage_email,
                            send_guarantor_request_email)
-from utils import (finite_float, role_required, audit, notify_member, compute_loan_schedule,
+from utils import (claim_submission, finite_float, role_required, audit, notify_member, compute_loan_schedule,
                    PURPOSE_SETTING_KEY, METHOD_LABELS, record_revenue, split_repayment,
                    member_savings_balance, member_for_user,
                    member_has_minimum_membership, has_unpaid_loan_of_type)
@@ -729,7 +729,7 @@ def loan_act(loan_id):
     action  = request.form.get('action', '')
     comment = request.form.get('comment', '').strip()
     try:
-        loan = db.execute('SELECT * FROM loans WHERE id = ?', (loan_id,)).fetchone()
+        loan = db.execute(for_update('SELECT * FROM loans WHERE id = ?'), (loan_id,)).fetchone()
         if not loan or loan['status'] != 'pending':
             flash('Loan not found or already processed.', 'danger')
             return redirect(url_for('loans.loans_list'))
@@ -958,12 +958,12 @@ def bulk_loan_repayments():
                         errors.append(f"Row {row_num}: Invalid date format (use YYYY-MM-DD)")
                         continue
 
-                    loan = db.execute('''
+                    loan = db.execute(for_update('''
                         SELECT l.*, m.first_name, m.last_name, m.email
                         FROM loans l
                         JOIN members m ON m.id = l.member_id
                         WHERE l.loan_number = ?
-                    ''', (loan_number,)).fetchone()
+                    ''', 'l'), (loan_number,)).fetchone()
                     if not loan:
                         errors.append(f"Row {row_num}: Loan number {loan_number} not found")
                         continue
@@ -1275,13 +1275,20 @@ def export_loan_statements():
 def repay_loan(loan_id):
     db = get_db()
     try:
-        loan = db.execute('SELECT * FROM loans WHERE id = ?', (loan_id,)).fetchone()
+        # Lock the loan so two concurrent repayments cannot both read the same
+        # balance and overwrite each other's reduction.
+        loan = db.execute(for_update('SELECT * FROM loans WHERE id = ?'), (loan_id,)).fetchone()
         if not loan:
             flash('Loan not found.', 'danger')
             return redirect(url_for('loans.loans_list'))
 
         if loan['status'] != 'active':
             flash('Only active loans can receive repayments.', 'warning')
+            return redirect(url_for('loans.loans_list'))
+
+        if not claim_submission(db, request.form.get('submission_token')):
+            db.rollback()
+            flash('This repayment form was already submitted. Check the loan before entering it again.', 'warning')
             return redirect(url_for('loans.loans_list'))
 
         amount = finite_float(request.form.get('amount', 0))

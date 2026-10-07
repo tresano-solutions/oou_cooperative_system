@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from database import get_db, last_insert_id
 from email_service import send_payment_confirmation_email
-from utils import (finite_float, role_required, audit, notify_member, record_revenue, share_capital_split,
+from utils import (claim_submission, finite_float, role_required, audit, notify_member, record_revenue, share_capital_split,
                    member_savings_balance)
 from ledger import (post_journal_safe, get_default_cash_account, resolve_cash_bank_account,
                     get_payroll_counter_accounts, resolve_payroll_counter_account,
@@ -481,6 +481,10 @@ def add_saving():
         return redirect(url_for('members.member_details', member_id=member_id))
 
     try:
+        if not claim_submission(db, request.form.get('submission_token')):
+            db.rollback()
+            flash('This deposit was already recorded (the form was submitted twice).', 'warning')
+            return redirect(url_for('members.member_details', member_id=member_id))
         today = datetime.now()
         # Late fee applies only to monthly/salary savings recorded after the 10th.
         # The fee is cooperative INCOME — it is recorded separately and must NOT

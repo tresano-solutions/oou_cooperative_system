@@ -13,7 +13,7 @@ from database import init_db, get_db, close_db
 from extensions import csrf
 from crypto import encryption_enabled
 from security import log_audit, STAFF_ROLES, two_factor_enforced
-from utils import User, member_for_user
+from utils import User, member_for_user, new_submission_token
 
 # ── App factory ──────────────────────────────────────────────────────────────
 
@@ -291,6 +291,7 @@ def utility_processor():
                 pass
 
     return {
+        'new_submission_token':     new_submission_token,
         'now':                      datetime.now,
         'coop_name':                coop_name['value']  if coop_name  else 'Your Cooperative',
         'coop_logo':                coop_logo['value']  if coop_logo  else '',

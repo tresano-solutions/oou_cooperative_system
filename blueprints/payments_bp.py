@@ -15,7 +15,7 @@ from flask import (Blueprint, abort, current_app, flash, jsonify,
                    redirect, render_template, request, url_for)
 from flask_login import current_user, login_required
 
-from database import USE_POSTGRES, get_db
+from database import USE_POSTGRES, get_db, for_update
 from email_service import send_loan_repayment_email
 from payments import get_gateway, generate_reference
 from security import log_audit
@@ -123,7 +123,7 @@ def _record_payment(db, reference: str) -> bool:
     elif ptype == 'loan_repayment':
         loan_id = row['related_id']
         loan    = db.execute(
-            'SELECT * FROM loans WHERE id = ? AND member_id = ?',
+            for_update('SELECT * FROM loans WHERE id = ? AND member_id = ?'),
             (loan_id, member_id)
         ).fetchone()
         if loan:

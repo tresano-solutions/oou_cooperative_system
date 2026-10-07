@@ -60,6 +60,31 @@ def role_required(*roles):
 
 
 
+
+def new_submission_token():
+    """A fresh one-time token to embed in a money-posting form."""
+    import uuid
+    return uuid.uuid4().hex
+
+
+def claim_submission(db, token):
+    """Record a form's one-time token inside the current transaction.
+
+    Returns False if this token was already used (a double-click, a retry, a
+    replayed request) so the caller must not post the money again. The row lives
+    in the same transaction as the posting: if the posting rolls back, the token
+    is released and the form can be resubmitted. A form without a token (old
+    client) is allowed through.
+    """
+    token = (token or '').strip()
+    if not token:
+        return True
+    cur = db.execute(
+        'INSERT INTO form_submissions (token) VALUES (?) ON CONFLICT (token) DO NOTHING',
+        (token[:64],))
+    return cur.rowcount == 1
+
+
 def finite_float(value):
     """float() that refuses NaN, Infinity and absurd magnitudes.
 

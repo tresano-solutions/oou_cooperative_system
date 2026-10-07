@@ -464,6 +464,7 @@
             </div>
             <form action="" method="POST" id="repaymentForm">
                 <div class="modal-body">
+                    <input type="hidden" name="submission_token" value="{{ new_submission_token() }}">
                     <div class="mb-3">
                         <label class="form-label">Remaining Balance</label>
                         <h4 id="remainingBalance">₦0.00</h4>
