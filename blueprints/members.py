@@ -666,6 +666,12 @@ def savings_request_act(req_id):
         flash('This request has already been reviewed.', 'warning')
         return redirect(url_for('members.savings_requests'))
 
+    from utils import member_for_user
+    me = member_for_user(db)
+    if me and me['id'] == req['member_id']:
+        flash('You cannot review your own savings change request. A different officer must do it.', 'danger')
+        return redirect(url_for('members.savings_requests'))
+
     reviewer = getattr(current_user, 'full_name', None) or getattr(current_user, 'username', 'Staff')
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 

@@ -742,6 +742,12 @@ def loan_act(loan_id):
             flash('You cannot approve or reject your own loan application. '
                   'A different officer must review it.', 'danger')
             return redirect(url_for('loans.loan_detail', loan_id=loan_id))
+        conflict = lw.sod_conflict(db, loan, current_user.id, stage) if action == 'approve' else ''
+        if conflict:
+            audit(db, 'LOAN_SOD_BLOCKED', 'loans', f"Loan {loan['loan_number']} stage {stage}: {conflict}")
+            db.commit()
+            flash(conflict, 'danger')
+            return redirect(url_for('loans.loan_detail', loan_id=loan_id))
         member = db.execute('SELECT * FROM members WHERE id = ?', (loan['member_id'],)).fetchone()
 
         if action == 'reject':

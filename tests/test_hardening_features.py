@@ -1207,6 +1207,7 @@ class HardeningFeatureTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(loan)
 
+    @patch.dict(os.environ, {'ALLOW_SAME_USER_APPROVALS': '1'})  # these tests drive one admin through every stage
     def test_final_loan_approval_requires_completed_due_diligence(self):
         self.login_admin()
         with self.app.app_context():
@@ -1295,6 +1296,7 @@ class HardeningFeatureTests(unittest.TestCase):
             db.execute('DELETE FROM members WHERE id = ?', (member_id,))
             db.commit()
 
+    @patch.dict(os.environ, {'ALLOW_SAME_USER_APPROVALS': '1'})  # these tests drive one admin through every stage
     def test_loan_insurance_posts_to_payable_not_income(self):
         """The 1% loan insurance is money held for the insurer — a pass-through
         liability, not income. On disbursement it must credit Insurance Payable

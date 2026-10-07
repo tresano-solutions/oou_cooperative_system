@@ -52,6 +52,36 @@ def can_act(role, stage):
     return role == 'admin' or role == STAGE_ROLE[stage]
 
 
+def same_user_approvals_allowed():
+    """Operator override (server environment, not editable from the app):
+    ALLOW_SAME_USER_APPROVALS=1 lets one person approve several stages of a loan.
+    Off by default - a cooperative with a single officer must opt in explicitly."""
+    import os
+    return os.environ.get('ALLOW_SAME_USER_APPROVALS') == '1'
+
+
+def sod_conflict(db, loan, user_id, stage):
+    """Why `user_id` may not act at `stage` of this loan, or '' if they may.
+
+    Segregation of duties: nobody approves two stages of the same loan, and the
+    officer who completed the due-diligence checks cannot give the final approval
+    that releases the money.
+    """
+    if same_user_approvals_allowed():
+        return ''
+    prior = db.execute(
+        "SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? AND action = 'approved'",
+        (loan['id'], user_id)).fetchone()
+    if prior:
+        return (f"You already approved this loan at the {STAGE_ACTOR_LABEL.get(prior['stage'], prior['stage'])} "
+                f"stage. A different officer must approve each stage.")
+    if (stage == STAGE_PRESIDENT and 'due_diligence_updated_by' in loan.keys()
+            and loan['due_diligence_updated_by'] == user_id):
+        return ('You completed the due-diligence checks on this loan, so a different officer '
+                'must give the final approval.')
+    return ''
+
+
 def guarantors_required(db):
     row = db.execute("SELECT value FROM settings WHERE key = 'guarantors_required'").fetchone()
     try:
