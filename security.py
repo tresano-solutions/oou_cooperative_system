@@ -126,6 +126,41 @@ def log_audit(db, user_id, username, action, module, description,
         print(f"[audit] failed to write log: {exc}")
 
 
+# ── Revocable web sessions ───────────────────────────────────────────────────
+
+def start_web_session(db, user_id, session_version):
+    """Register this login server-side and stamp the cookie with its id and the
+    user's current session_version. Call right after login_user()."""
+    from flask import session
+    sid = secrets.token_urlsafe(24)
+    db.execute('INSERT INTO user_sessions (sid, user_id) VALUES (?, ?)', (sid, user_id))
+    session['sid'] = sid
+    session['sv'] = int(session_version or 0)
+
+
+def end_web_session(db, sid):
+    if sid:
+        db.execute('UPDATE user_sessions SET revoked_at = ? WHERE sid = ? AND revoked_at IS NULL',
+                   (datetime.now(), sid))
+
+
+def session_is_valid(db, user_row, session_obj):
+    """False if the account is disabled, its session_version moved on (password
+    change, role change, deactivation, 2FA reset), or this session was logged out.
+    Cookies issued before this feature (no sv/sid) are honoured until the next bump."""
+    if not user_row or user_row['is_active'] == 0:
+        return False
+    current = int(user_row['session_version'] or 0) if 'session_version' in user_row.keys() else 0
+    if int(session_obj.get('sv', 0) or 0) != current:
+        return False
+    sid = session_obj.get('sid')
+    if sid:
+        row = db.execute('SELECT revoked_at FROM user_sessions WHERE sid = ?', (sid,)).fetchone()
+        if row is None or row['revoked_at']:
+            return False
+    return True
+
+
 # ── 2FA helpers ──────────────────────────────────────────────────────────────
 
 class SecurityManager:
@@ -233,7 +268,7 @@ def enable_user_2fa(db, user_id, secret) -> list:
 def disable_user_2fa(db, user_id) -> None:
     """Turn off 2FA for a user and destroy their secret + backup codes."""
     db.execute(
-        'UPDATE users SET two_factor_secret = NULL, two_factor_enabled = 0 WHERE id = ?',
+        'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, two_factor_secret = NULL, two_factor_enabled = 0 WHERE id = ?',
         (user_id,),
     )
     db.execute('DELETE FROM user_backup_codes WHERE user_id = ?', (user_id,))

@@ -822,7 +822,7 @@ def edit_user(user_id):
                 return redirect(url_for('admin_panel.settings') + '#users')
 
         db.execute(
-            'UPDATE users SET full_name = ?, email = ?, role = ? WHERE id = ?',
+            'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, full_name = ?, email = ?, role = ? WHERE id = ?',
             (full_name, email, role, user_id)
         )
         db.commit()
@@ -849,7 +849,7 @@ def reset_user_password(user_id):
             return redirect(url_for('admin_panel.settings') + '#users')
 
         db.execute(
-            'UPDATE users SET password_hash = ?, must_change_password = ? WHERE id = ?',
+            'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ?, must_change_password = ? WHERE id = ?',
             (generate_password_hash(new_password), 1 if force_change else 0, user_id)
         )
         db.commit()
@@ -1017,7 +1017,7 @@ def toggle_super_admin(user_id):
             flash('User not found.', 'danger')
             return redirect(url_for('admin_panel.settings') + '#users')
         new_val = 0 if target['is_super_admin'] else 1
-        db.execute('UPDATE users SET is_super_admin = ? WHERE id = ?', (new_val, user_id))
+        db.execute('UPDATE users SET session_version = COALESCE(session_version, 0) + 1, is_super_admin = ? WHERE id = ?', (new_val, user_id))
         db.commit()
         status = 'granted' if new_val else 'revoked'
         audit(db, 'UPDATE', 'users', f'Super admin status {status} for {target["username"]}')
@@ -1042,7 +1042,7 @@ def toggle_user(user_id):
             flash('User not found.', 'danger')
             return redirect(url_for('admin_panel.settings') + '#users')
         new_status = 0 if user['is_active'] else 1
-        db.execute('UPDATE users SET is_active = ? WHERE id = ?', (new_status, user_id))
+        db.execute('UPDATE users SET session_version = COALESCE(session_version, 0) + 1, is_active = ? WHERE id = ?', (new_status, user_id))
         db.commit()
         action = 'enabled' if new_status else 'disabled'
         audit(db, 'UPDATE', 'users', f'Admin {action} user {user["username"]}')

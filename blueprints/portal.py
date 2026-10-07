@@ -1277,7 +1277,7 @@ def change_password():
             return redirect(url_for('portal.change_password'))
 
         db.execute(
-            'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+            'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ?, must_change_password = 0 WHERE id = ?',
             (generate_password_hash(new_pw), current_user.id)
         )
         db.commit()

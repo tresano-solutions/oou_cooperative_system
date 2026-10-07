@@ -310,6 +310,20 @@ def init_db():
     _add_col(db, 'users', 'must_change_password', 'INTEGER DEFAULT 0')
     _add_col(db, 'users', 'is_super_admin',       'INTEGER DEFAULT 0')
     _add_col(db, 'users', 'two_factor_enabled',   'INTEGER DEFAULT 0')
+    # Bumped on password change/reset, role change, deactivation and 2FA reset; every
+    # web session and mobile token carries the value it was issued under, so a bump
+    # revokes them all.
+    _add_col(db, 'users', 'session_version', 'INTEGER DEFAULT 0')
+    # One row per web login, so logging out revokes that session server-side even if
+    # someone kept a copy of the cookie.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            sid TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TIMESTAMP
+        )
+    '''))
 
     # One-time backup codes for 2FA recovery (stored hashed, never in clear).
     db.execute(_adapt('''

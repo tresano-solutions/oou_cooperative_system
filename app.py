@@ -12,7 +12,7 @@ from flask_login import LoginManager, current_user, logout_user
 from database import init_db, get_db, close_db
 from extensions import csrf
 from crypto import encryption_enabled
-from security import log_audit, STAFF_ROLES, two_factor_enforced
+from security import end_web_session, session_is_valid, log_audit, STAFF_ROLES, two_factor_enforced
 from utils import User, member_for_user, new_submission_token
 
 # ── App factory ──────────────────────────────────────────────────────────────
@@ -85,6 +85,8 @@ login_manager.login_view = 'auth.login'
 def load_user(user_id):
     db = get_db()
     user = db.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+    if user and not session_is_valid(db, user, session):
+        return None
     if user:
         keys = user.keys()
         return User(
@@ -454,6 +456,8 @@ def enforce_idle_timeout():
         db.commit()
         session.pop('view_mode', None)
         session.pop('last_activity_at', None)
+        end_web_session(db, session.get('sid'))
+        db.commit()
         logout_user()
         flash(f'You were logged out after {timeout // 60} minutes of inactivity.', 'warning')
         if request.path.startswith('/api/') or request.headers.get('X-Requested-With') == 'XMLHttpRequest':

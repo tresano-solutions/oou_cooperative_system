@@ -11,7 +11,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from database import get_db
 from email_service import send_password_reset_email
-from security import (generate_account_setup_token, hash_account_setup_token, log_audit,
+from security import (start_web_session, end_web_session, generate_account_setup_token, hash_account_setup_token, log_audit,
                       validate_password_strength, user_2fa_secret, verify_2fa_code)
 from utils import User, is_rate_limited, lockout_seconds_remaining, record_failed_login, clear_login_attempts
 
@@ -249,6 +249,7 @@ def _finalize_login(db, user, ip, ua):
         user['must_change_password'] if 'must_change_password' in keys else 0,
     )
     login_user(user_obj)
+    start_web_session(db, user['id'], user['session_version'] if 'session_version' in keys else 0)
     session.pop('view_mode', None)
     session.pop('pending_2fa_user', None)
     session.pop('pending_2fa_at', None)
@@ -402,7 +403,7 @@ def reset_password(token):
 
         try:
             db.execute(
-                'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+                'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ?, must_change_password = 0 WHERE id = ?',
                 (generate_password_hash(new_password), reset_row['user_id'])
             )
             db.execute(
@@ -456,7 +457,7 @@ def setup_password(token):
 
         try:
             db.execute(
-                'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+                'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ?, must_change_password = 0 WHERE id = ?',
                 (generate_password_hash(new_password), setup_row['user_id'])
             )
             db.execute(
@@ -497,6 +498,8 @@ def logout():
     db.commit()
     session.pop('view_mode', None)
     session.pop('last_activity_at', None)
+    end_web_session(db, session.get('sid'))
+    db.commit()
     logout_user()
     if request.args.get('reason') == 'timeout':
         timeout_minutes = int(current_app.config.get('IDLE_TIMEOUT_SECONDS', 15 * 60)) // 60
@@ -539,7 +542,7 @@ def emergency_reset():
     try:
         db = get_db()
         db.execute(
-            'UPDATE users SET password_hash = ? WHERE username = ?',
+            'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ? WHERE username = ?',
             (generate_password_hash(new_password), 'admin')
         )
         db.commit()

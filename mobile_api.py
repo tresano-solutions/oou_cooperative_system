@@ -151,9 +151,10 @@ def _max_tenure(db):
         return 18
 
 
-def _generate_token(user_id, username, role):
+def _generate_token(user_id, username, role, session_version=0):
     now = datetime.now(UTC)
     payload = {
+        'sv': int(session_version or 0),
         'user_id': user_id,
         'username': username,
         'role': role,
@@ -208,6 +209,14 @@ def jwt_required(f):
             g.user_id = payload['user_id']
             g.username = payload['username']
             g.role = payload['role']
+            # Revocation: the account must still be active and the token must carry
+            # the user's current session_version (bumped on password change, role
+            # change, deactivation, 2FA reset).
+            row = get_db().execute('SELECT is_active, session_version FROM users WHERE id = ?',
+                                   (g.user_id,)).fetchone()
+            if (not row or row['is_active'] == 0
+                    or int(row['session_version'] or 0) != int(payload.get('sv', 0) or 0)):
+                return _json_error('Session is no longer valid. Please sign in again.', 401, 'token_revoked')
         except jwt.ExpiredSignatureError:
             return _json_error('Token has expired', 401, 'token_expired')
         except jwt.InvalidTokenError:
@@ -464,7 +473,8 @@ def mobile_login():
     clear_login_attempts(login_key)
     db.execute('UPDATE users SET last_login = ? WHERE id = ?', (datetime.now(), user['id']))
     db.commit()
-    token = _generate_token(user['id'], user['username'], user['role'])
+    token = _generate_token(user['id'], user['username'], user['role'],
+                            user['session_version'] if 'session_version' in user.keys() else 0)
     return jsonify({
         'success': True,
         'token': token,
@@ -570,12 +580,15 @@ def mobile_change_password():
         return _json_error(' '.join(errors), 400, 'weak_password')
 
     db.execute(
-        'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+        'UPDATE users SET session_version = COALESCE(session_version, 0) + 1, password_hash = ?, must_change_password = 0 WHERE id = ?',
         (generate_password_hash(new_password), g.user_id),
     )
     audit(db, 'MOBILE_CHANGE_PASSWORD', 'auth', 'Mobile user changed password')
     db.commit()
-    return jsonify({'success': True, 'message': 'Password changed successfully.'})
+    # Every older token is now revoked; hand this device a fresh one.
+    fresh = db.execute('SELECT id, username, role, session_version FROM users WHERE id = ?', (g.user_id,)).fetchone()
+    return jsonify({'success': True, 'message': 'Password changed successfully.',
+                    'token': _generate_token(fresh['id'], fresh['username'], fresh['role'], fresh['session_version'])})
 
 
 @mobile_api.route('/api/mobile/v1/me')
