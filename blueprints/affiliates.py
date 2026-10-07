@@ -2,16 +2,18 @@
 Affiliate channel — the two-tier partner network that introduces cooperatives.
 
 A team member closes a cooperative; a team lead recruits and supports members.
-This module covers recruitment and attribution only: who is in the programme,
-what their code is, and which leads and clients they brought. No money moves
-here — commission accrual is a later slice built on hq_billing.setup_paid().
+This module covers recruitment, attribution, setup-fee commissions and
+read-only affiliate statements. Payout processing remains separate.
 
 Operator-only, like hq_billing: it lives on the HQ instance and is guarded by
 the same hq_admin_required, so it never appears in a tenant's duty catalogue.
 The two public routes (apply, accept appointment) are deliberately open.
 """
 import re
+import json
+import hashlib
 import secrets
+from markupsafe import escape
 from datetime import datetime
 from functools import wraps
 
@@ -92,7 +94,7 @@ def resolve_code(db, code):
     if not cleaned:
         return None
     return db.execute(
-        'SELECT * FROM affiliates WHERE UPPER(REPLACE(code, " ", "")) = ?', (cleaned,)
+        "SELECT * FROM affiliates WHERE UPPER(REPLACE(code, ' ', '')) = ?", (cleaned,)
     ).fetchone()
 
 
@@ -226,22 +228,32 @@ def accept_appointment(token):
         return render_template('affiliates/accepted.html', affiliate=aff, already=False,
                                closed=True)
 
+    snapshot = json.dumps(MOU_TERMS, ensure_ascii=False)
+    version = hashlib.sha256(snapshot.encode('utf-8')).hexdigest()
+
     if request.method == 'GET':
-        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS)
+        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS, terms_version=version)
+
+    if request.form.get('terms_version') != version:
+        flash('Please review the current terms before signing.', 'warning')
+        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS, terms_version=version), 400
 
     if not request.form.get('accept_terms'):
         flash('Please tick to confirm you accept the terms of reference.', 'danger')
-        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS), 400
+        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS, terms_version=version), 400
     signature = (request.form.get('signature_name') or '').strip()
-    if not signature:
+    if not signature or len(signature) > 200:
         flash('Type your full name to sign.', 'danger')
-        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS), 400
+        return render_template('affiliates/accept.html', affiliate=aff, terms=MOU_TERMS, terms_version=version), 400
 
     db.execute("UPDATE affiliates SET status = ?, accepted_at = ?, accepted_ip = ?, "
-               "notes = COALESCE(notes, '') , updated_at = ? WHERE id = ?",
+               "signature_name = ?, accepted_terms = ?, accepted_terms_version = ?, "
+               "updated_at = ? WHERE id = ? AND status = ?",
                (STATUS_ACTIVE, datetime.now(),
-                (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:60],
-                datetime.now(), aff['id']))
+                (request.remote_addr or '')[:60], signature, snapshot, version,
+                datetime.now(), aff['id'], STATUS_APPROVED))
+    audit(db, 'AFFILIATE_ACCEPTED', 'affiliates',
+          f"Affiliate {aff['id']} accepted terms {version}")
     db.commit()
     aff = db.execute('SELECT * FROM affiliates WHERE id = ?', (aff['id'],)).fetchone()
     return render_template('affiliates/accepted.html', affiliate=aff, already=False)
@@ -263,7 +275,7 @@ def _send_appointment(db, aff):
         f"<p style='margin:0 0 10px'><strong>{title}</strong><br>{body}</p>"
         for title, body in MOU_TERMS)
     html = f"""
-      <p>Dear {aff['full_name']},</p>
+      <p>Dear {escape(aff['full_name'])},</p>
       <p>Congratulations — your application to join the CoopMS affiliate channel has been
          approved following compliance review.</p>
       <p style="font-size:18px"><strong>Your affiliate code is
@@ -284,8 +296,7 @@ def _send_appointment(db, aff):
          statement</a> — no password needed, we email you a link.</p>
     """
     try:
-        send_email(aff['email'], 'Your CoopMS affiliate appointment', html)
-        return True
+        return bool(send_email(aff['email'], 'Your CoopMS affiliate appointment', html))
     except Exception as exc:                      # pragma: no cover - network
         current_app.logger.warning('Affiliate appointment email failed for %s: %s',
                                    aff['email'], exc)
@@ -679,7 +690,7 @@ def setup_paid_on_invoice(db, invoice_id):
     return round(float(row[0] or 0), 2)
 
 
-def accrue_for_invoice(db, invoice_id, created_by=None):
+def commission_plan(db, invoice_id):
     """Earn commission on the setup-fee cash of a newly paid invoice.
 
     Idempotent: a repeated mark-paid, or a gateway callback replayed by the
@@ -699,8 +710,20 @@ def accrue_for_invoice(db, invoice_id, created_by=None):
     if not affiliate or affiliate['status'] not in (STATUS_ACTIVE, STATUS_SUSPENDED):
         return []
 
+    return [dict(affiliate_id=aff_id, role=role, rate=rate, source_id=source_id,
+                 basis=basis, client_id=client['id'], invoice_number=inv['invoice_number'])
+            for aff_id, role, rate, source_id in _earner_split(db, affiliate)]
+
+
+def accrue_for_invoice(db, invoice_id, created_by=None, plan=None):
+    # A retry uses the original payment-time rates and attribution, not today's.
+    plan = commission_plan(db, invoice_id) if plan is None else plan
+    if setup_paid_on_invoice(db, invoice_id) <= 0:
+        return []
     written = []
-    for aff_id, role, rate, source_id in _earner_split(db, affiliate):
+    for item in plan:
+        aff_id, role, rate, source_id = (item[k] for k in ('affiliate_id', 'role', 'rate', 'source_id'))
+        basis = item['basis']
         existing = db.execute(
             'SELECT 1 FROM affiliate_commissions WHERE invoice_id = ? AND affiliate_id = ? '
             "AND role = ? AND status = 'earned'", (invoice_id, aff_id, role)).fetchone()
@@ -713,9 +736,9 @@ def accrue_for_invoice(db, invoice_id, created_by=None):
             'INSERT INTO affiliate_commissions (affiliate_id, client_id, invoice_id, '
             ' source_affiliate_id, role, basis_amount, rate, amount, status, note, created_by) '
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (aff_id, client['id'], invoice_id, source_id, role, basis, rate, amount,
+            (aff_id, item['client_id'], invoice_id, source_id, role, basis, rate, amount,
              STATUS_EARNED,
-             f"{rate:g}% of setup fee collected on {inv['invoice_number']}", created_by))
+             f"{rate:g}% of setup fee collected on {item['invoice_number']}", created_by))
         written.append({'affiliate_id': aff_id, 'role': role, 'rate': rate, 'amount': amount})
     return written
 
@@ -785,8 +808,24 @@ def commissions():
         ORDER BY balance DESC
     ''').fetchall()
     return render_template('affiliates/commissions.html', rows=rows, totals=totals,
+                           failures=db.execute("SELECT * FROM affiliate_commission_jobs WHERE status = 'pending' ORDER BY id").fetchall(),
                            rates=rates,
                            grand=round(sum(float(t['balance'] or 0) for t in totals), 2))
+
+
+@affiliates_bp.route('/hq/affiliates/commission-jobs/<int:job_id>/retry', methods=['POST'])
+@hq_admin_required
+def retry_commission(job_id):
+    from blueprints.hq_billing import _run_commission_job
+    db = get_db()
+    if not db.execute('SELECT id FROM affiliate_commission_jobs WHERE id = ?', (job_id,)).fetchone():
+        abort(404)
+    _run_commission_job(db, job_id)
+    status = db.execute('SELECT status FROM affiliate_commission_jobs WHERE id = ?', (job_id,)).fetchone()['status']
+    db.commit()
+    flash('Commission processing completed.' if status == 'complete' else 'Processing still failed; the job remains pending.',
+          'success' if status == 'complete' else 'warning')
+    return redirect(url_for('affiliates.commissions'))
 
 
 @affiliates_bp.route('/hq/affiliates/rates', methods=['POST'])
@@ -955,7 +994,7 @@ def statement_context(db, affiliate):
 def _send_statement_link(db, aff, token):
     link = f"{_base_url()}{url_for('affiliates.statement', token=token)}"
     html = f"""
-      <p>Hello {aff['full_name']},</p>
+      <p>Hello {escape(aff['full_name'])},</p>
       <p>Here is the link to your CoopMS affiliate statement. It works for the next
          {PORTAL_TOKEN_MINUTES} minutes; request another whenever you need one.</p>
       <p style="margin:22px 0">
@@ -966,8 +1005,7 @@ def _send_statement_link(db, aff, token):
          the link only shows your own introductions and earnings.</p>
     """
     try:
-        send_email(aff['email'], 'Your CoopMS affiliate statement', html)
-        return True
+        return bool(send_email(aff['email'], 'Your CoopMS affiliate statement', html))
     except Exception as exc:                      # pragma: no cover - network
         current_app.logger.warning('Statement link email failed for %s: %s', aff['email'], exc)
         return False

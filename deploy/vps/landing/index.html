@@ -836,6 +836,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <input type="checkbox" name="consent_accepted" value="1" required style="width:auto;margin-top:3px;">
         <span>By submitting this form, you agree that CoopMS may contact you about product demos, pricing, onboarding, and related cooperative management services.</span>
       </label>
+      <input type="hidden" name="affiliate_code">
       <input type="hidden" name="utm_source">
       <input type="hidden" name="utm_medium">
       <input type="hidden" name="utm_campaign">
@@ -950,7 +951,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if(!form) return;
     const status = document.getElementById('demoFormStatus');
     const params = new URLSearchParams(window.location.search);
+    let referral = (params.get('affiliate_code') || params.get('ref') || '').trim().slice(0, 40);
+    try {
+      if (referral) sessionStorage.setItem('coopms_affiliate_code', referral);
+      else referral = sessionStorage.getItem('coopms_affiliate_code') || '';
+    } catch (_) { /* Referral capture still works when browser storage is disabled. */ }
     const meta = {
+      affiliate_code: referral,
       utm_source: params.get('utm_source') || '',
       utm_medium: params.get('utm_medium') || '',
       utm_campaign: params.get('utm_campaign') || '',
@@ -989,7 +996,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         society_type:'Cooperative type', member_count:'Approx. members', current_system:'Current records',
         priority:'Priority', message:'Message', utm_source:'UTM source', utm_medium:'UTM medium',
         utm_campaign:'UTM campaign', utm_term:'UTM term', utm_content:'UTM content',
-        referrer:'Referrer', landing_page:'Landing page'
+        referrer:'Referrer', landing_page:'Landing page', affiliate_code:'Affiliate code'
       };
       return Object.keys(labels).map(function(key){
         return labels[key] + ': ' + (payload[key] || '');
@@ -1001,7 +1008,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       const mailto = (form.dataset.mailto || 'hello@cooperativems.com').trim();
       const payload = Object.fromEntries(new FormData(form).entries());
       payload.submitted_at = new Date().toISOString();
-      trackLead(payload);
       if(endpoint){
         setStatus('Sending your request...', '');
         try{
@@ -1011,6 +1017,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             body:JSON.stringify(payload)
           });
           if(!response.ok) throw new Error('Request failed');
+          trackLead({society_type: payload.society_type, member_count: payload.member_count, priority: payload.priority});
           form.reset();
           Object.keys(meta).forEach(function(key){
             const field = form.querySelector('[name="' + key + '"]');

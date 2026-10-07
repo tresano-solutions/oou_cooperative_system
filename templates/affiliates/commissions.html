@@ -17,6 +17,18 @@
         </div>
     </div>
 
+    {% if failures %}
+    <section class="border-bottom mb-3 pb-3" aria-label="Pending commission processing">
+        <h3 class="h5">Pending commission processing</h3>
+        {% for job in failures %}
+        <form method="post" action="{{ url_for('affiliates.retry_commission', job_id=job.id) }}" class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <span>Invoice #{{ job.invoice_id }} &middot; {{ job.operation }} &middot; {{ job.attempts }} attempt(s) &middot; {{ job.last_error or 'Pending' }}</span>
+            <button class="btn btn-sm btn-outline-primary"><i class="fas fa-redo" aria-hidden="true"></i> Retry</button>
+        </form>
+        {% endfor %}
+    </section>
+    {% endif %}
     <div class="collapse mb-3" id="rateForm"><div class="card"><div class="card-body">
         <form method="post" action="{{ url_for('affiliates.save_rates') }}" class="row g-2 align-items-end">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

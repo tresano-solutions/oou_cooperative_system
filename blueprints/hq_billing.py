@@ -32,7 +32,7 @@ from flask import (Blueprint, abort, current_app, flash, make_response,
                    redirect, render_template, request, url_for)
 from flask_login import current_user, login_required
 
-from database import get_db, last_insert_id
+from database import get_db, last_insert_id, USE_POSTGRES
 from email_service import send_email
 from blueprints.marketing import marketing_hq_enabled
 from payments import get_gateway, generate_reference
@@ -111,28 +111,59 @@ def setup_paid(db, client_id):
 
 def _accrue_affiliate_commission(db, invoice_id):
     """Earn affiliate commission on a newly paid invoice. Late import because
-    the affiliates module imports this one. Never blocks the payment: a billing
-    record must not fail because the commission ledger did."""
-    try:
-        from blueprints.affiliates import accrue_for_invoice
-        rows = accrue_for_invoice(db, invoice_id,
-                                  created_by=getattr(current_user, 'id', None))
-        return round(sum(r['amount'] for r in rows), 2)
-    except Exception as exc:                      # pragma: no cover - defensive
-        current_app.logger.warning('Affiliate accrual failed for invoice %s: %s',
-                                   invoice_id, exc)
-        return 0.0
+    the affiliates module imports this one. Commission write failures are queued;
+    an inability to persist the recovery snapshot must abort the payment."""
+    from blueprints.affiliates import commission_plan
+    # Preparing a durable payment-time snapshot must succeed before payment can
+    # commit. After that, a commission write failure can safely be retried.
+    payload = {'plan': commission_plan(db, invoice_id)}
+    job_id = _queue_commission_job(db, invoice_id, 'accrue', payload)
+    rows = _run_commission_job(db, job_id)
+    return round(sum(r['amount'] for r in rows), 2)
 
 
 def _reverse_affiliate_commission(db, invoice_id, reason):
-    try:
-        from blueprints.affiliates import reverse_for_invoice
-        return reverse_for_invoice(db, invoice_id, reason=reason,
-                                   created_by=getattr(current_user, 'id', None))
-    except Exception as exc:                      # pragma: no cover - defensive
-        current_app.logger.warning('Affiliate clawback failed for invoice %s: %s',
-                                   invoice_id, exc)
+    job_id = _queue_commission_job(db, invoice_id, 'reverse', {'reason': reason})
+    return _run_commission_job(db, job_id)
+
+
+def _queue_commission_job(db, invoice_id, operation, payload):
+    db.execute('''INSERT INTO affiliate_commission_jobs (invoice_id, operation, payload, attempts)
+                  VALUES (?, ?, ?, 0) ON CONFLICT(invoice_id, operation) DO NOTHING''',
+               (invoice_id, operation, json.dumps(payload)))
+    return db.execute('SELECT id FROM affiliate_commission_jobs WHERE invoice_id = ? AND operation = ?',
+                      (invoice_id, operation)).fetchone()['id']
+
+
+def _run_commission_job(db, job_id):
+    from blueprints.affiliates import accrue_for_invoice, reverse_for_invoice
+    job = db.execute('SELECT * FROM affiliate_commission_jobs WHERE id = ?' +
+                     (' FOR UPDATE' if USE_POSTGRES else ''), (job_id,)).fetchone()
+    if not job or job['status'] != 'pending':
         return []
+    payload = json.loads(job['payload'])
+    actor = getattr(current_user, 'id', None)
+    db.execute('SAVEPOINT affiliate_processing')
+    try:
+        if job['operation'] == 'accrue':
+            rows = accrue_for_invoice(db, job['invoice_id'], created_by=actor, plan=payload['plan'])
+        else:
+            rows = reverse_for_invoice(db, job['invoice_id'], reason=payload['reason'], created_by=actor)
+        db.execute('RELEASE SAVEPOINT affiliate_processing')
+    except Exception as exc:
+        db.execute('ROLLBACK TO SAVEPOINT affiliate_processing')
+        db.execute('RELEASE SAVEPOINT affiliate_processing')
+        db.execute('''UPDATE affiliate_commission_jobs SET attempts = attempts + 1,
+                      last_error = ?, updated_at = ? WHERE id = ?''',
+                   (type(exc).__name__, datetime.now(), job_id))
+        audit(db, 'AFFILIATE_COMMISSION_FAILED', 'affiliates',
+              f"Commission job {job_id} for invoice {job['invoice_id']} needs retry")
+        current_app.logger.exception('Affiliate commission job %s failed', job_id)
+        return []
+    db.execute("UPDATE affiliate_commission_jobs SET status = 'complete', attempts = attempts + 1, "
+               'last_error = NULL, updated_at = ? WHERE id = ?', (datetime.now(), job_id))
+    audit(db, 'AFFILIATE_COMMISSION_PROCESSED', 'affiliates', f'Commission job {job_id} completed')
+    return rows
 
 
 # ── Gate ────────────────────────────────────────────────────────────────────

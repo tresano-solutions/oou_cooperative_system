@@ -1,13 +1,24 @@
 import os
 import unittest
+import json
+import re
+from urllib.parse import urlparse
+from unittest.mock import patch
 
 TEST_DB = os.path.abspath('.test-affiliates.db')
 os.environ.setdefault('SECRET_KEY', 'test-secret-affiliates')
 os.environ.setdefault('ADMIN_PASSWORD', 'TestAdmin123')
 os.environ.setdefault('FLASK_DEBUG', '1')
 os.environ.setdefault('FIELD_ENCRYPTION_KEY', '05SmPJhNFMKwg9NysnBdQjKtqn3VwWDl1IiPIMAg2as=')
-os.environ.pop('DATABASE_URL', None)
-os.environ['SQLITE_DB_PATH'] = TEST_DB
+pg_test_url = os.environ.get('AFFILIATE_TEST_DATABASE_URL')
+if pg_test_url:
+    parsed = urlparse(pg_test_url)
+    if parsed.hostname not in ('localhost', '127.0.0.1') or parsed.path != '/coopms_affiliate_test':
+        raise RuntimeError('Affiliate PostgreSQL tests require an isolated local coopms_affiliate_test database.')
+    os.environ['DATABASE_URL'] = pg_test_url
+else:
+    os.environ.pop('DATABASE_URL', None)
+    os.environ['SQLITE_DB_PATH'] = TEST_DB
 try:
     os.remove(TEST_DB)
 except FileNotFoundError:
@@ -57,7 +68,10 @@ class AffiliateTests(unittest.TestCase):
             return get_db().execute('SELECT * FROM affiliates WHERE id = ?', (aff_id,)).fetchone()
 
     def _accept(self, aff):
+        page = self.client.get(f"/affiliates/accept/{aff['accept_token']}")
+        version = re.search(rb'name="terms_version" value="([^"]+)"', page.data)
         return self.client.post(f"/affiliates/accept/{aff['accept_token']}", data={
+            'terms_version': version[1].decode() if version else '',
             'accept_terms': '1', 'signature_name': aff['full_name']}, follow_redirects=True)
 
     def _onboard(self, name, email, tier='member', parent_id=''):
@@ -68,6 +82,77 @@ class AffiliateTests(unittest.TestCase):
             return get_db().execute('SELECT * FROM affiliates WHERE id = ?', (aff['id'],)).fetchone()
 
     # ── recruitment ──────────────────────────────────────────────────────────
+
+    def test_acceptance_keeps_signature_and_exact_terms(self):
+        import hashlib
+        from blueprints.affiliates import MOU_TERMS
+        self.login_admin()
+        aff = self._onboard('Evidence Partner', 'evidence@example.test')
+        self.assertEqual(aff['signature_name'], 'Evidence Partner')
+        self.assertEqual(json.loads(aff['accepted_terms']), [list(t) for t in MOU_TERMS])
+        self.assertEqual(aff['accepted_terms_version'], hashlib.sha256(aff['accepted_terms'].encode()).hexdigest())
+        original_time = aff['accepted_at']
+        self._accept(aff)
+        with self.app.app_context():
+            saved = get_db().execute('SELECT * FROM affiliates WHERE id = ?', (aff['id'],)).fetchone()
+            self.assertEqual(saved['accepted_at'], original_time)
+
+    def test_stale_terms_cannot_be_accepted(self):
+        self.login_admin()
+        aff = self._approve(self._apply('Stale Terms', 'stale@example.test')['id'])
+        response = self.client.post(f"/affiliates/accept/{aff['accept_token']}", data={
+            'accept_terms': '1', 'signature_name': 'Stale Terms', 'terms_version': 'old'})
+        self.assertEqual(response.status_code, 400)
+
+    def test_email_failures_are_not_reported_as_success_and_names_are_escaped(self):
+        from blueprints.affiliates import _send_appointment, _send_statement_link
+        self.login_admin()
+        aff = self._approve(self._apply('<b>Partner</b>', 'mailfailure@example.test')['id'])
+        with self.app.test_request_context('/'), patch('blueprints.affiliates.send_email', return_value=False) as send:
+            db = get_db()
+            self.assertFalse(_send_appointment(db, aff))
+            self.assertIn('&lt;b&gt;Partner&lt;/b&gt;', send.call_args.args[2])
+            self.assertFalse(_send_statement_link(db, aff, 'test-token'))
+
+    def test_failed_commission_rolls_back_partial_work_and_retries_original_rates(self):
+        from blueprints.affiliates import accrue_for_invoice
+        self.login_admin()
+        aff = self._onboard('Retry Partner', 'retry@example.test')
+        _, invoice = self._client_with_setup('Retry Cooperative', aff, pay=False)
+        def fail_after_writing(db, *args, **kwargs):
+            accrue_for_invoice(db, *args, **kwargs)
+            db.execute('SELECT * FROM deliberately_missing_commission_table')
+        with patch('blueprints.affiliates.accrue_for_invoice', side_effect=fail_after_writing):
+            response = self.client.post(f'/hq/invoices/{invoice}/mark-paid')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self._commissions(invoice), [])
+        with self.app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute('SELECT status FROM hq_invoices WHERE id = ?', (invoice,)).fetchone()['status'], 'paid')
+            job = db.execute("SELECT * FROM affiliate_commission_jobs WHERE invoice_id = ? AND operation = 'accrue'", (invoice,)).fetchone()
+            self.assertEqual(job['status'], 'pending')
+            expected = sum(r['basis'] * r['rate'] / 100 for r in json.loads(job['payload'])['plan'])
+        page = self.client.get('/hq/affiliates/commissions')
+        self.assertIn(b'Pending commission processing', page.data)
+        with patch('blueprints.affiliates._earner_split', side_effect=AssertionError('Do not recalculate rates')):
+            response = self.client.post(f"/hq/affiliates/commission-jobs/{job['id']}/retry")
+        self.assertEqual(response.status_code, 302)
+        self.assertAlmostEqual(sum(r['amount'] for r in self._commissions(invoice)), expected)
+        self.client.post(f"/hq/affiliates/commission-jobs/{job['id']}/retry")
+        self.assertAlmostEqual(sum(r['amount'] for r in self._commissions(invoice)), expected)
+
+    def test_failed_reversal_can_be_retried_after_invoice_deletion(self):
+        self.login_admin()
+        aff = self._onboard('Reverse Retry', 'reverse-retry@example.test')
+        _, invoice = self._client_with_setup('Reverse Retry Cooperative', aff)
+        with patch('blueprints.affiliates.reverse_for_invoice', side_effect=RuntimeError('temporary')):
+            self.client.post(f'/hq/invoices/{invoice}/delete')
+        with self.app.app_context():
+            db = get_db()
+            self.assertIsNone(db.execute('SELECT id FROM hq_invoices WHERE id = ?', (invoice,)).fetchone())
+            job = db.execute("SELECT id FROM affiliate_commission_jobs WHERE invoice_id = ? AND operation = 'reverse'", (invoice,)).fetchone()
+        self.client.post(f"/hq/affiliates/commission-jobs/{job['id']}/retry")
+        self.assertAlmostEqual(sum(r['amount'] for r in self._commissions(invoice)), 0)
 
     def test_an_applicant_is_not_in_the_programme_until_they_accept(self):
         self.login_admin()

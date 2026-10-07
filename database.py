@@ -1057,6 +1057,20 @@ def init_db():
         )
     '''))
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_affiliates_status ON affiliates(status)')
+    _add_col(db, 'affiliates', 'signature_name', 'TEXT')
+    _add_col(db, 'affiliates', 'accepted_terms', 'TEXT')
+    _add_col(db, 'affiliates', 'accepted_terms_version', 'TEXT')
+    db.execute(_adapt('''CREATE TABLE IF NOT EXISTS affiliate_commission_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 1,
+        last_error TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(invoice_id, operation)
+    )'''))
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_affiliates_parent ON affiliates(parent_id)')
     _exec_ignore(db, "CREATE UNIQUE INDEX IF NOT EXISTS uq_affiliates_email ON affiliates(email) WHERE email IS NOT NULL AND email != ''")
 
@@ -1643,6 +1657,21 @@ def init_db():
         )
     '''))
 
+    # Create journal headers before vouchers, which reference them on PostgreSQL.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS journal_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_number TEXT UNIQUE,
+            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            description TEXT,
+            reference TEXT,
+            source_module TEXT,
+            source_id INTEGER,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+
     # Unified receipt, payment and journal vouchers. A submission token makes
     # retrying the same form safe without duplicating its financial effects.
     db.execute(_adapt('''
@@ -1775,20 +1804,6 @@ def init_db():
             parent_code TEXT,
             is_active INTEGER DEFAULT 1,
             description TEXT
-        )
-    '''))
-    # Journal entry headers
-    db.execute(_adapt('''
-        CREATE TABLE IF NOT EXISTS journal_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_number TEXT UNIQUE,
-            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            description TEXT,
-            reference TEXT,
-            source_module TEXT,
-            source_id INTEGER,
-            created_by INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     '''))
     # Journal entry lines (debits and credits)
