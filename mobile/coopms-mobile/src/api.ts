@@ -24,10 +24,12 @@ const TENANT_CODE_ALIASES: Record<string, string> = {
 
 export class ApiError extends Error {
   status: number;
+  code: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code = '') {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -68,7 +70,7 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
   const payload = await parseResponse(response);
   if (!response.ok || payload.success === false) {
-    throw new ApiError((payload.error as string) || `Request failed (${response.status})`, response.status);
+    throw new ApiError((payload.error as string) || `Request failed (${response.status})`, response.status, (payload.code as string) || '');
   }
   return payload as T;
 }
@@ -129,10 +131,10 @@ export async function clearToken() {
   await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 
-export async function login(username: string, password: string) {
+export async function login(username: string, password: string, otp = '') {
   const payload = await request<{ success: boolean; token: string; user: unknown }>('/api/mobile/login', {
     method: 'POST',
-    body: { username, password }
+    body: otp ? { username, password, otp } : { username, password }
   });
   await saveToken(payload.token);
   return payload;

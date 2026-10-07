@@ -25,7 +25,7 @@ from loan_pdf import build_loan_application_pdf
 from crypto import encrypt_member_sensitive_fields, mask_member_sensitive_fields
 from database import get_db, last_insert_id
 from email_service import send_guarantor_request_email, send_password_reset_email
-from security import generate_account_setup_token, validate_password_strength
+from security import generate_account_setup_token, user_2fa_secret, validate_password_strength, verify_2fa_code
 from utils import (
     finite_float,
     audit,
@@ -470,6 +470,17 @@ def mobile_login():
     if not user or not check_password_hash(user['password_hash'], password):
         record_failed_login(login_key)
         return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+
+    # Two-factor: a password alone must not be enough for an account that has 2FA on
+    # (the web login already demands the code; the app used to skip it).
+    if user['two_factor_enabled'] and user_2fa_secret(db, user['id']):
+        otp = str(data.get('otp') or '').strip()
+        if not otp:
+            return _json_error('Enter the 6-digit code from your authenticator app.', 401, 'otp_required')
+        if not verify_2fa_code(db, user['id'], otp):
+            record_failed_login(login_key)
+            db.commit()
+            return _json_error('That code was not valid.', 401, 'otp_invalid')
 
     clear_login_attempts(login_key)
     db.execute('UPDATE users SET last_login = ? WHERE id = ?', (datetime.now(), user['id']))

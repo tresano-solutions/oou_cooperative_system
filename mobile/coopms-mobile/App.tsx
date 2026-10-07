@@ -210,6 +210,8 @@ function TenantScreen({ onReady }: { onReady: () => void }) {
 function LoginScreen({ onLogin, coopName, onChangeCooperative }: { onLogin: (token: string) => void; coopName: string; onChangeCooperative: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
+  const [needOtp, setNeedOtp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showReset, setShowReset] = useState(false);
   const [resetIdentifier, setResetIdentifier] = useState('');
@@ -222,11 +224,16 @@ function LoginScreen({ onLogin, coopName, onChangeCooperative }: { onLogin: (tok
     }
     setBusy(true);
     try {
-      const response = await login(username.trim(), password);
+      const response = await login(username.trim(), password, otp.trim());
       onLogin(response.token);
       void tryRegisterPushToken(response.token);
     } catch (error) {
-      Alert.alert('Login failed', error instanceof Error ? error.message : 'Please try again.');
+      if (error instanceof ApiError && (error.code === 'otp_required' || error.code === 'otp_invalid')) {
+        setNeedOtp(true);
+        Alert.alert(error.code === 'otp_invalid' ? 'Code not accepted' : 'Two-factor code needed', error.message);
+      } else {
+        Alert.alert('Login failed', error instanceof Error ? error.message : 'Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -276,6 +283,16 @@ function LoginScreen({ onLogin, coopName, onChangeCooperative }: { onLogin: (tok
             placeholder="Password"
             style={styles.input}
           />
+          {needOtp ? (
+            <TextInput
+              value={otp}
+              onChangeText={setOtp}
+              keyboardType="number-pad"
+              autoCapitalize="none"
+              placeholder="6-digit code (or backup code)"
+              style={styles.input}
+            />
+          ) : null}
           <Pressable style={[styles.primaryButton, busy && styles.disabled]} onPress={submit} disabled={busy}>
             {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Sign In</Text>}
           </Pressable>
