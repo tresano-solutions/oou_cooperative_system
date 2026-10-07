@@ -1,7 +1,9 @@
 """
 FIN-01 NaN / Infinity accepted as an amount (savings, repayment)
 FIN-02 double-submit of the same savings deposit posts twice (no idempotency token)
-FIN-03 one admin can push a loan through every approval stage alone (no segregation of duties)
+FIN-03 one admin can push a loan through every approval stage alone (no segregation of duties).
+        After the F-07 fix this still FAILS for cooperatives with 3 or fewer active officers - by design
+        (permissive for small societies; every such approval is audited). It passes with 4+ officers.
 FIN-04 money columns are binary floating point
 FIN-05 savings reversal / deposit by a single user, no second approver
 """

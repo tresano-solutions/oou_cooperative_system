@@ -361,3 +361,7 @@ The harness drops/recreates `coop_sectest` on each module and aborts if `DATABAS
 ## 9. Phase 1 stop point
 
 Per the instructions I have **stopped after writing this report**. No application code was modified; no remediation has been started. Phase 2 begins only on your approval of specific findings.
+
+## Phase 2 status note — F-07
+
+Loan separation of duties is enforced automatically when a cooperative has **more than 3 active officers** (admin/treasurer/secretary/exco) and is permissive at 3 or fewer, where each same-officer multi-stage approval is audited as `LOAN_SAME_OFFICER_MULTI_STAGE`. Operators can force either way with `ENFORCE_SEGREGATION_OF_DUTIES=1|0`. Residual risk for small cooperatives is accepted by the owner. Second-approver control for deposits, reversals, adjustments, payouts and bulk uploads remains open.

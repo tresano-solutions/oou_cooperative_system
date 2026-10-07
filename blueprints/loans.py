@@ -743,6 +743,17 @@ def loan_act(loan_id):
                   'A different officer must review it.', 'danger')
             return redirect(url_for('loans.loan_detail', loan_id=loan_id))
         conflict = lw.sod_conflict(db, loan, current_user.id, stage) if action == 'approve' else ''
+        if action == 'approve' and not conflict and not lw.segregation_enforced(db):
+            # Permissive (small cooperative): allowed, but leave a trail when one
+            # person is covering more than one stage of the same loan.
+            earlier = db.execute(
+                "SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? AND action = 'approved'",
+                (loan['id'], current_user.id)).fetchone()
+            if earlier:
+                audit(db, 'LOAN_SAME_OFFICER_MULTI_STAGE', 'loans',
+                      f"Loan {loan['loan_number']}: {current_user.username} approved {earlier['stage']} "
+                      f"and now {stage} (separation of duties not enforced: "
+                      f"{lw.active_officer_count(db)} active officer(s))")
         if conflict:
             audit(db, 'LOAN_SOD_BLOCKED', 'loans', f"Loan {loan['loan_number']} stage {stage}: {conflict}")
             db.commit()

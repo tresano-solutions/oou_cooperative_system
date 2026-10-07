@@ -52,12 +52,31 @@ def can_act(role, stage):
     return role == 'admin' or role == STAGE_ROLE[stage]
 
 
-def same_user_approvals_allowed():
-    """Operator override (server environment, not editable from the app):
-    ALLOW_SAME_USER_APPROVALS=1 lets one person approve several stages of a loan.
-    Off by default - a cooperative with a single officer must opt in explicitly."""
+STRICT_ABOVE_OFFICERS = 3      # strict when there are MORE active officers than this
+
+
+def active_officer_count(db):
+    row = db.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE role IN ('admin', 'treasurer', 'secretary', 'exco') "
+        "AND COALESCE(is_active, 1) = 1").fetchone()
+    return int(row['c'] or 0)
+
+
+def segregation_enforced(db):
+    """Is one-person-one-stage enforced for this cooperative?
+
+    Automatic: strict once the cooperative has more than three active officers,
+    permissive below that so a society with one or two officers can still run.
+    The server operator can force it either way in the client .env:
+    ENFORCE_SEGREGATION_OF_DUTIES=1 (always strict) or =0 (always permissive).
+    """
     import os
-    return os.environ.get('ALLOW_SAME_USER_APPROVALS') == '1'
+    forced = os.environ.get('ENFORCE_SEGREGATION_OF_DUTIES')
+    if forced == '1':
+        return True
+    if forced == '0':
+        return False
+    return active_officer_count(db) > STRICT_ABOVE_OFFICERS
 
 
 def sod_conflict(db, loan, user_id, stage):
@@ -67,7 +86,7 @@ def sod_conflict(db, loan, user_id, stage):
     officer who completed the due-diligence checks cannot give the final approval
     that releases the money.
     """
-    if same_user_approvals_allowed():
+    if not segregation_enforced(db):
         return ''
     prior = db.execute(
         "SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? AND action = 'approved'",
