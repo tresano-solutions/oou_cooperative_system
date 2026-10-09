@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Application Fee Refunds - {{ coop_name }}{% endblock %}
+{% block content %}
+<div class="container-fluid">
+
+  <div class="row mb-3">
+    <div class="col-md-8">
+      <h2><i class="fas fa-rotate-left"></i> Application Fee Refunds</h2>
+      <p class="text-muted mb-0">
+        Disbursement used to withhold 1% of every loan as an application fee, whatever
+        amount your cooperative had actually configured. These members were charged a
+        fee that was never due, and this is what has to go back to them.
+      </p>
+    </div>
+    <div class="col-md-4 text-end">
+      {% if pending %}
+      <a href="{{ url_for('loans.fee_refunds_export') }}" class="btn btn-outline-primary">
+        <i class="fas fa-file-csv"></i> Download the list
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="alert alert-info">
+    <i class="fas fa-info-circle me-1"></i>
+    <strong>Nothing on this page moves money.</strong> It is here so you can check the
+    figures against your own records first. The payout itself is a separate step.
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="card h-100"><div class="card-body">
+        <div class="text-muted small">Still to refund</div>
+        <div class="h3 mb-0">&#8358;{{ "{:,.2f}".format(total_pending) }}</div>
+        <small class="text-muted">across {{ pending|length }} loan(s)</small>
+      </div></div>
+    </div>
+    <div class="col-md-4">
+      <div class="card h-100"><div class="card-body">
+        <div class="text-muted small">Already refunded</div>
+        <div class="h3 mb-0">&#8358;{{ "{:,.2f}".format(total_done) }}</div>
+        <small class="text-muted">{{ done|length }} loan(s)</small>
+      </div></div>
+    </div>
+    <div class="col-md-4">
+      <div class="card h-100 {% if missing_bank %}border-warning{% endif %}">
+        <div class="card-body">
+          <div class="text-muted small">Missing bank details</div>
+          <div class="h3 mb-0">{{ missing_bank }}</div>
+          <small class="text-muted">
+            {% if missing_bank %}Collect these before paying out{% else %}Every member can be paid{% endif %}
+          </small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if pending %}
+  <div class="card mb-4">
+    <div class="card-header"><i class="fas fa-list me-1"></i> Owed to members</div>
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle">
+          <thead>
+            <tr>
+              <th>Member</th>
+              <th>Loan</th>
+              <th class="text-end">Loan amount</th>
+              <th class="text-end">They received</th>
+              <th class="text-end">Should have received</th>
+              <th class="text-end">Refund due</th>
+              <th>Bank</th>
+              <th>Disbursed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in pending %}
+            <tr>
+              <td class="small">{{ p.member_name }}
+                <span class="text-muted">({{ p.member_number }})</span></td>
+              <td class="small font-monospace">{{ p.loan_number }}</td>
+              <td class="text-end small">&#8358;{{ "{:,.2f}".format(p.loan_amount) }}</td>
+              <td class="text-end small text-muted">&#8358;{{ "{:,.2f}".format(p.disbursed) }}</td>
+              <td class="text-end small">&#8358;{{ "{:,.2f}".format(p.should_have_been) }}</td>
+              <td class="text-end fw-semibold">&#8358;{{ "{:,.2f}".format(p.fee) }}</td>
+              <td class="small">
+                {% if p.has_bank %}
+                  {{ p.bank_name }}<br>
+                  <span class="text-muted font-monospace">{{ p.account_masked }}</span>
+                {% else %}
+                  <span class="badge bg-warning text-dark">no account on file</span>
+                {% endif %}
+              </td>
+              <td class="small text-nowrap">{{ p.disbursed_on | fmtdt }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr class="table-light">
+              <th colspan="5" class="text-end">Total to refund</th>
+              <th class="text-end">&#8358;{{ "{:,.2f}".format(total_pending) }}</th>
+              <th colspan="2"></th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p class="text-muted small mb-0">
+        Account numbers are masked here. The downloaded list carries them in full, because
+        that is the file you pay from &mdash; every download is recorded in the audit log.
+      </p>
+    </div>
+  </div>
+  {% else %}
+  <div class="card mb-4"><div class="card-body text-center py-5">
+    <i class="fas fa-circle-check fa-2x text-success mb-3"></i>
+    <h5>Nothing outstanding</h5>
+    <p class="text-muted mb-0">No loan is carrying an application fee that still needs refunding.</p>
+  </div></div>
+  {% endif %}
+
+  {% if done %}
+  <div class="card">
+    <div class="card-header"><i class="fas fa-check me-1"></i> Already refunded</div>
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Member</th><th>Loan</th><th class="text-end">Amount</th>
+                <th>Paid from</th><th>When</th></tr>
+          </thead>
+          <tbody>
+            {% for d in done %}
+            <tr>
+              <td class="small">{{ d.first_name }} {{ d.last_name }}
+                <span class="text-muted">({{ d.member_number }})</span></td>
+              <td class="small font-monospace">{{ d.loan_number }}</td>
+              <td class="text-end">&#8358;{{ "{:,.2f}".format(d.amount or 0) }}</td>
+              <td class="small">{{ d.bank_account or '—' }}</td>
+              <td class="small text-nowrap">{{ d.created_at | fmtdt }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

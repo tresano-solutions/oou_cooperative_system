@@ -204,6 +204,16 @@ PERMISSIONS = [
         'endpoints': ('loans.loan_corrections',),
     },
     {
+        'key': 'loans.fee_refunds',
+        'label': 'Refund wrongly charged loan fees',
+        'group': 'Loans',
+        'description': 'Review and pay back application fees that were withheld at '
+                       'disbursement without being configured. Its own duty because the '
+                       'money leaves the bank and the list carries member account numbers.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('loans.fee_refunds', 'loans.fee_refunds_export'),
+    },
+    {
         'key': 'loans.repayments',
         'label': 'Record loan repayments',
         'group': 'Loans',

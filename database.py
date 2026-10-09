@@ -944,6 +944,32 @@ def init_db():
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_vaa_receipt '
                      'ON virtual_account_allocations(receipt_id)')
 
+    # ── Loan application-fee refunds ──────────────────────────────────────────
+    # Disbursement once charged 1% of the loan as an application fee regardless
+    # of the configured amount. This records putting that money back, one row
+    # per loan: the UNIQUE index is what makes a second refund impossible, which
+    # matters more here than anywhere else because the money leaves the bank.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS loan_fee_refunds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            bank_account TEXT,
+            journal_entry_id INTEGER,
+            status TEXT DEFAULT 'paid',
+            note TEXT,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reversed_at TIMESTAMP,
+            FOREIGN KEY (loan_id) REFERENCES loans (id),
+            FOREIGN KEY (member_id) REFERENCES members (id)
+        )
+    '''))
+    _exec_ignore(db, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_loan_fee_refund_loan '
+                     'ON loan_fee_refunds(loan_id)')
+
+
     # Every SMS attempt, so a cooperative can see what its credit was spent on.
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS sms_log (

@@ -9,8 +9,8 @@ import loan_limits
 from datetime import datetime, timedelta
 from io import StringIO, TextIOWrapper
 
-from flask import (Blueprint, render_template, redirect, url_for, request, flash,
-                   make_response, jsonify)
+from flask import (Blueprint, Response, render_template, redirect, url_for, request,
+                   flash, make_response, jsonify)
 from flask_login import login_required, current_user
 
 from database import get_db, last_insert_id, USE_POSTGRES, for_update
@@ -1436,3 +1436,128 @@ def repay_loan(loan_id):
         flash(f'Error recording repayment: {str(e)}', 'danger')
 
     return redirect(url_for('loans.loans_list'))
+
+
+# ── Application-fee refunds ───────────────────────────────────────────────────
+#
+# Disbursement used to withhold 1% of every loan as an "application fee",
+# ignoring the configured amount. Cooperatives running with the fee set to zero
+# still had it taken off, so the money has to go back. This is the review side:
+# it reads, totals and exports, and posts nothing.
+
+def _fee_refund_bank(row):
+    """(masked, full) bank details. Members' account numbers are encrypted at
+    rest, so they are decrypted only where an officer genuinely needs them —
+    masked on screen, in full only in the payment file they act on."""
+    from crypto import decrypt_field, mask_field
+    account = decrypt_field(row['account_number'] or '')
+    return {
+        'bank_name': decrypt_field(row['bank_name'] or ''),
+        'account_name': decrypt_field(row['account_name'] or ''),
+        'account_number': account,
+        'account_masked': mask_field(account) if account else '',
+    }
+
+
+def _fee_refund_rows(db):
+    """Loans still carrying a wrongly charged application fee.
+
+    A loan already refunded drops out via the LEFT JOIN, so the list is always
+    what is still owed rather than what was ever owed.
+    """
+    return db.execute('''
+        SELECT l.id, l.loan_number, l.amount, l.application_fee, l.disbursed_amount,
+               l.disbursement_date, l.status,
+               m.id AS member_id, m.member_number, m.first_name, m.last_name,
+               m.bank_name, m.account_name, m.account_number
+        FROM loans l
+        JOIN members m ON m.id = l.member_id
+        LEFT JOIN loan_fee_refunds r ON r.loan_id = l.id AND r.reversed_at IS NULL
+        WHERE COALESCE(l.application_fee, 0) > 0
+          AND l.status IN ('active', 'completed')
+          AND r.id IS NULL
+        ORDER BY l.disbursement_date DESC, l.id DESC
+    ''').fetchall()
+
+
+def _fee_refunds_done(db):
+    return db.execute('''
+        SELECT r.*, l.loan_number, m.member_number, m.first_name, m.last_name
+        FROM loan_fee_refunds r
+        JOIN loans l ON l.id = r.loan_id
+        JOIN members m ON m.id = r.member_id
+        WHERE r.reversed_at IS NULL
+        ORDER BY r.id DESC
+    ''').fetchall()
+
+
+@loans.route('/loans/fee-refunds')
+@login_required
+@role_required('admin', 'treasurer')
+def fee_refunds():
+    """Read-only: who is owed an application fee back, and how much."""
+    db = get_db()
+    rows = _fee_refund_rows(db)
+    pending = []
+    for r in rows:
+        bank = _fee_refund_bank(r)
+        fee = round(float(r['application_fee'] or 0), 2)
+        disbursed = round(float(r['disbursed_amount'] or 0), 2)
+        pending.append({
+            'loan_id': r['id'],
+            'loan_number': r['loan_number'],
+            'member_number': r['member_number'],
+            'member_name': f"{r['first_name']} {r['last_name']}",
+            'loan_amount': round(float(r['amount'] or 0), 2),
+            'fee': fee,
+            'disbursed': disbursed,
+            'should_have_been': round(disbursed + fee, 2),
+            'disbursed_on': r['disbursement_date'],
+            'status': r['status'],
+            'bank_name': bank['bank_name'],
+            'account_masked': bank['account_masked'],
+            'has_bank': bool(bank['account_number']),
+        })
+    done = _fee_refunds_done(db)
+    return render_template(
+        'loans/fee-refunds.html',
+        pending=pending,
+        done=done,
+        total_pending=round(sum(p['fee'] for p in pending), 2),
+        total_done=round(sum(float(d['amount'] or 0) for d in done), 2),
+        missing_bank=sum(1 for p in pending if not p['has_bank']),
+    )
+
+
+@loans.route('/loans/fee-refunds/export.csv')
+@login_required
+@role_required('admin', 'treasurer')
+def fee_refunds_export():
+    """The same list as a CSV, to check against your own records before paying."""
+    db = get_db()
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(['member_number', 'member_name', 'loan_number', 'loan_amount',
+                     'fee_charged', 'amount_disbursed', 'should_have_been_disbursed',
+                     'disbursed_on', 'loan_status', 'bank_name', 'account_name',
+                     'account_number'])
+    for r in _fee_refund_rows(db):
+        fee = float(r['application_fee'] or 0)
+        disbursed = float(r['disbursed_amount'] or 0)
+        bank = _fee_refund_bank(r)
+        writer.writerow([
+            r['member_number'], f"{r['first_name']} {r['last_name']}", r['loan_number'],
+            f"{float(r['amount'] or 0):.2f}", f"{fee:.2f}", f"{disbursed:.2f}",
+            f"{disbursed + fee:.2f}",
+            str(r['disbursement_date'] or '')[:10], r['status'],
+            bank['bank_name'], bank['account_name'], bank['account_number'],
+        ])
+    audit(db, 'EXPORT_FEE_REFUNDS', 'loans',
+          'Exported the application-fee refund list, including bank details')
+    db.commit()
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition':
+                 f'attachment; filename=application-fee-refunds-'
+                 f'{datetime.now().strftime("%Y%m%d")}.csv'})
