@@ -1363,8 +1363,11 @@ class HardeningFeatureTests(unittest.TestCase):
             # Insurance (1% of 50000 = 500) is a payable, not income.
             self.assertIn(INSURANCE_PAYABLE, by_code)
             self.assertAlmostEqual(by_code[INSURANCE_PAYABLE]['credit'], 500, places=2)
-            # Fee Income carries only the application fee (500), not insurance + fee.
-            self.assertAlmostEqual(by_code[FEE_INCOME]['credit'], 500, places=2)
+            # Fee Income carries only the application fee, not insurance + fee.
+            # The fee is the flat 'loan_application_fee' setting (default 1000),
+            # never a percentage of the loan — charging 1% regardless of the
+            # setting was the bug this asserts against.
+            self.assertAlmostEqual(by_code[FEE_INCOME]['credit'], 1000, places=2)
             # Insurance is not booked as revenue.
             rev = db.execute(
                 "SELECT COUNT(*) AS c FROM revenue "

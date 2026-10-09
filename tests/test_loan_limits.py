@@ -68,3 +68,39 @@ class LoanLimitTests(unittest.TestCase):
             validate_settings({'max_tenure_months': '0'})
         self.assertIsNotNone(application_error(self.db, 'Regular', float('nan'), 1))
         self.assertIsNotNone(application_error(self.db, 'Regular', float('inf'), 1))
+
+
+class LoanFeeSettingsTests(unittest.TestCase):
+    """Fees withheld at disbursement must come from settings.
+
+    Both were hard-coded at 1% of the loan, so a cooperative that set its
+    application fee to zero still had 1% taken off every member's disbursement.
+    """
+
+    def _fees(self, amount, fee, rate):
+        from blueprints.loans import _loan_fees
+        db = sqlite3.connect(':memory:')
+        db.row_factory = sqlite3.Row
+        db.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)')
+        db.executemany('INSERT INTO settings (key, value) VALUES (?, ?)',
+                       [('loan_application_fee', str(fee)), ('insurance_rate', str(rate))])
+        return _loan_fees(db, amount)
+
+    def test_zero_application_fee_deducts_nothing(self):
+        insurance, fee = self._fees(500000, 0, 1)
+        self.assertEqual(fee, 0)
+        self.assertEqual(insurance, 5000)
+
+    def test_application_fee_is_flat_not_a_percentage(self):
+        # A flat 1000 stays 1000 whatever the loan is worth.
+        self.assertEqual(self._fees(500000, 1000, 1)[1], 1000)
+        self.assertEqual(self._fees(50000, 1000, 1)[1], 1000)
+
+    def test_insurance_follows_its_configured_rate(self):
+        self.assertEqual(self._fees(200000, 0, 2.5)[0], 5000)
+        self.assertEqual(self._fees(200000, 0, 0)[0], 0)
+
+    def test_fees_can_never_exceed_the_loan(self):
+        # Otherwise the member is "disbursed" a negative amount.
+        insurance, fee = self._fees(50000, 99999, 1)
+        self.assertGreaterEqual(50000 - insurance - fee, 0)

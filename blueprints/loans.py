@@ -96,6 +96,37 @@ def _acting_on_own_loan(db, loan):
     return bool(me and loan and me['id'] == loan['member_id'])
 
 
+def _loan_fees(db, amount):
+    """What is withheld at disbursement, read from settings rather than assumed.
+
+    The two settings are different kinds of number and must not be confused:
+      * ``insurance_rate``        — a percentage ("Insurance Premium Rate (%)")
+      * ``loan_application_fee``  — a flat naira amount ("Loan Application Fee (₦)")
+
+    Both used to be hard-coded at 1% of the loan. That silently charged members
+    an application fee their cooperative had set to zero, so the configured
+    value is the only thing trusted here.
+    """
+    amount = round(float(amount or 0), 2)
+
+    def _setting(key, default):
+        row = db.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+        try:
+            value = float(row['value']) if row and row['value'] not in (None, '') else default
+        except (TypeError, ValueError):
+            return default
+        return value if value >= 0 else default
+
+    insurance = round(amount * _setting('insurance_rate', 1.0) / 100.0, 2)
+    application_fee = round(_setting('loan_application_fee', 0.0), 2)
+
+    # A member must never be disbursed a negative amount because the fees were
+    # set higher than the loan itself.
+    if insurance + application_fee > amount:
+        application_fee = max(0.0, round(amount - insurance, 2))
+    return insurance, application_fee
+
+
 def _disburse_loan(db, loan, cash_account, posting_date=None):
     """Final approval: book fees, disburse, post the GL entry, notify the member.
 
@@ -105,8 +136,7 @@ def _disburse_loan(db, loan, cash_account, posting_date=None):
     bank's reconciliation and the one that really paid wrong.
 
     Expects `loan` row; assumes caller commits."""
-    insurance = round(loan['amount'] * 0.01, 2)
-    application_fee = round(loan['amount'] * 0.01, 2)
+    insurance, application_fee = _loan_fees(db, loan['amount'])
     disbursed = round(loan['amount'] - insurance - application_fee, 2)
     posting_date = posting_date or datetime.now()
     # The balance is created here, not at application. Until this moment the
@@ -124,16 +154,25 @@ def _disburse_loan(db, loan, cash_account, posting_date=None):
     # The application fee is the cooperative's income. The 1% insurance is withheld
     # on behalf of the insurer — a pass-through liability, not income — so it posts
     # to Insurance Payable and is NOT logged in the revenue table.
-    record_revenue(db, 'Loan Application Fee', application_fee,
-                   description=f"Application fee on loan {loan['loan_number']}",
-                   source=f"Loan {loan['loan_number']}", received_by=current_user.id)
-    post_journal(db, f"Loan disbursement — {loan['loan_number']}", [
+    if application_fee:
+        record_revenue(db, 'Loan Application Fee', application_fee,
+                       description=f"Application fee on loan {loan['loan_number']}",
+                       source=f"Loan {loan['loan_number']}", received_by=current_user.id)
+    # A fee set to zero is a real choice, not a missing value, so it contributes
+    # no line at all rather than a ₦0.00 one cluttering the entry.
+    _lines = [
         {'account': LOANS_RECEIVABLE, 'debit': loan['amount'], 'memo': loan['loan_number']},
         {'account': cash_account, 'credit': disbursed, 'memo': 'Net disbursed'},
-        {'account': FEE_INCOME, 'credit': application_fee, 'memo': 'Application fee'},
-        {'account': INSURANCE_PAYABLE, 'credit': insurance, 'memo': 'Insurance premium held for insurer'},
-    ], date=posting_date, reference=loan['loan_number'], source_module='loan_disbursement',
-       source_id=loan['id'], created_by=current_user.id)
+    ]
+    if application_fee:
+        _lines.append({'account': FEE_INCOME, 'credit': application_fee, 'memo': 'Application fee'})
+    if insurance:
+        _lines.append({'account': INSURANCE_PAYABLE, 'credit': insurance,
+                       'memo': 'Insurance premium held for insurer'})
+    post_journal(db, f"Loan disbursement — {loan['loan_number']}", _lines,
+                 date=posting_date, reference=loan['loan_number'],
+                 source_module='loan_disbursement',
+                 source_id=loan['id'], created_by=current_user.id)
     member = db.execute('SELECT * FROM members WHERE id = ?', (loan['member_id'],)).fetchone()
     if member and member['email']:
         send_loan_approval_email(member['email'], member, loan)
