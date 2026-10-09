@@ -1080,7 +1080,8 @@ def loan_calculator():
     rates  = _interest_rates(db)
     return render_template('member/loan-calculator.html',
                            member=_member_extras(member, db) if member else None,
-                           interest_rates=rates)
+                           interest_rates=rates,
+                           policy=loan_limits.limits(db))
 
 
 # ── My Member Card ────────────────────────────────────────────────────────────────

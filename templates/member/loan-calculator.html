@@ -23,43 +23,59 @@
                     <h5 class="mb-0">Loan Parameters</h5>
                 </div>
                 <div class="card-body">
+                    {% if not member %}
+                    {# The page is reachable by any signed-in user, but only a member has
+                       savings to calculate against. Say so instead of failing. #}
+                    <p class="text-muted mb-0">
+                        <i class="fas fa-info-circle me-1"></i>
+                        This calculator works from your own savings balance, and your
+                        sign-in is not linked to a member record. Ask your secretary to
+                        link it, then come back.
+                    </p>
+                    {% else %}
                     <form id="calculatorForm">
                         <div class="mb-3">
-                            <label class="form-label">Loan Amount (₦)</label>
-                            <input type="number" class="form-control" id="amount" 
-                                   value="{{ request.args.amount or 100000 }}" min="1000" step="1000">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Interest Rate (% per annum)</label>
-                            <input type="number" class="form-control" id="rate" 
-                                   value="{{ settings.loan_interest_rate or 11 }}" min="1" max="30" step="0.1" readonly>
-                            <small class="text-muted">Fixed rate as per Bye-laws</small>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Tenure (months)</label>
-                            <select class="form-select" id="tenure">
-                                <option value="3">3 months</option>
-                                <option value="6">6 months</option>
-                                <option value="9">9 months</option>
-                                <option value="12" selected>12 months</option>
-                                <option value="15">15 months</option>
-                                <option value="18">18 months (max)</option>
+                            <label class="form-label" for="loanType">Loan Type</label>
+                            <select class="form-select" id="loanType" onchange="applyLoanType()">
+                                {% for name, rate in interest_rates.items() %}
+                                <option value="{{ name }}">{{ name }} — {{ rate }}% p.a.</option>
+                                {% endfor %}
                             </select>
+                            <small class="text-muted">Rate, maximum amount and maximum tenure all follow the type.</small>
                         </div>
-                        
+
                         <div class="mb-3">
-                            <label class="form-label">Your Total Savings</label>
-                            <input type="number" class="form-control" id="savings" 
-                                   value="{{ member.total_savings }}" readonly>
-                            <small class="text-muted">Maximum loan = 2x savings (₦{{ "{:,.2f}".format(member.total_savings * 2) }})</small>
+                            <label class="form-label" for="amount">Loan Amount (₦)</label>
+                            <input type="number" class="form-control" id="amount"
+                                   value="{{ request.args.amount or 100000 }}" min="1000" step="1000">
+                            <small class="text-muted">You can borrow up to <span id="maxLoanText">—</span>.</small>
+                            <div id="amountWarning" class="alert alert-warning py-2 px-3 mt-2 mb-0 small d-none"
+                                 role="alert"></div>
                         </div>
-                        
+
+                        <div class="mb-3">
+                            <label class="form-label" for="rate">Interest Rate (% per annum)</label>
+                            <input type="number" class="form-control" id="rate"
+                                   value="" min="1" max="30" step="0.1" readonly>
+                            <small class="text-muted">Set by your cooperative for this loan type.</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="tenure">Tenure (months)</label>
+                            <select class="form-select" id="tenure"></select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="savings">Your Total Savings</label>
+                            <input type="number" class="form-control" id="savings"
+                                   value="{{ member.total_savings }}" readonly>
+                        </div>
+
                         <button type="button" class="btn btn-primary w-100" onclick="calculate()">
                             Calculate
                         </button>
                     </form>
+                    {% endif %}
                 </div>
             </div>
             
@@ -69,7 +85,8 @@
                 </div>
                 <div class="card-body">
                     <ul class="list-unstyled">
-                        <li><i class="fas fa-check text-success"></i> Maximum loan: 2x your savings</li>
+                        <li><i class="fas fa-check text-success"></i> Maximum loan:
+                            {{ "%g"|format(policy.multiplier) }}× your savings</li>
                         <li><i class="fas fa-check text-success"></i> Minimum savings required: ₦50,000</li>
                         <li><i class="fas fa-check text-success"></i> Membership: at least 6 months</li>
                         <li><i class="fas fa-check text-success"></i> Interest rate: max 11% per annum</li>
@@ -179,23 +196,84 @@
 </div>
 
 <script>
+{% if member %}
+// The same limits the application itself applies, so this page can never promise
+// an amount or tenure the form would then reject.
+const LOAN_RATES  = {{ interest_rates | tojson }};
+const LOAN_LIMITS = {{ (member.loan_type_limits or {}) | tojson }};
+
+function currentType() {
+    const select = document.getElementById('loanType');
+    return select ? select.value : Object.keys(LOAN_RATES)[0];
+}
+
+function limitsFor(type) {
+    return LOAN_LIMITS[type] || { eligible_amount: 0, max_tenure_months: 18 };
+}
+
+function naira(value) {
+    return '₦' + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2,
+                                                           maximumFractionDigits: 2 });
+}
+
+/** Rate, tenure choices and the ceiling all follow the chosen loan type. */
+function applyLoanType() {
+    const type = currentType();
+    const limit = limitsFor(type);
+
+    document.getElementById('rate').value = LOAN_RATES[type];
+    document.getElementById('maxLoanText').textContent = naira(limit.eligible_amount);
+
+    const amount = document.getElementById('amount');
+    amount.max = limit.eligible_amount;
+
+    // Only offer tenures this loan type actually allows.
+    const tenure = document.getElementById('tenure');
+    const previous = parseInt(tenure.value, 10);
+    const maxTenure = limit.max_tenure_months || 18;
+    tenure.innerHTML = '';
+    for (let months = 3; months <= maxTenure; months += 3) {
+        const option = document.createElement('option');
+        option.value = months;
+        option.textContent = months + ' months' + (months === maxTenure ? ' (max)' : '');
+        tenure.appendChild(option);
+    }
+    if (tenure.options.length === 0) {
+        tenure.innerHTML = '<option value="' + maxTenure + '">' + maxTenure + ' months</option>';
+    }
+    tenure.value = (previous && previous <= maxTenure) ? previous
+                 : Math.min(12, maxTenure);
+}
+
+// Set the rate and tenure choices first, then show an opening estimate. Running
+// calculate() before applyLoanType() would read an empty rate field.
+document.addEventListener('DOMContentLoaded', function () {
+    applyLoanType();
+    calculate();
+});
+
 function calculate() {
     const amount = parseFloat(document.getElementById('amount').value) || 0;
     const rate = parseFloat(document.getElementById('rate').value) / 100;
     const tenure = parseInt(document.getElementById('tenure').value);
     const savings = parseFloat(document.getElementById('savings').value);
-    
-    // Check if amount exceeds maximum
-    const maxLoan = savings * 2;
-    if (amount > maxLoan) {
-        Swal.fire({
-            icon: 'warning',
-            title: 'Loan Amount Exceeds Limit',
-            text: `Maximum loan amount is ₦${maxLoan.toLocaleString()} (2x your savings)`
-        });
-        return;
+
+    // Warn inline rather than in a modal. SweetAlert2 is not loaded anywhere in
+    // this app, so the old Swal.fire call could only ever throw — which meant an
+    // over-limit amount silently did nothing at all. An inline hint also lets the
+    // member watch the figures update as they correct the amount.
+    const warning = document.getElementById('amountWarning');
+    const limit = limitsFor(currentType());
+    const maxLoan = limit.eligible_amount;
+    if (maxLoan && amount > maxLoan) {
+        warning.textContent =
+            `The most you can borrow for a ${currentType()} loan is ${naira(maxLoan)}. `
+            + 'The figures below are an estimate only — an application for this amount would be declined.';
+        warning.classList.remove('d-none');
+    } else {
+        warning.classList.add('d-none');
     }
-    
+
     // Calculate monthly interest rate
     const monthlyRate = rate / 12;
     
@@ -205,10 +283,10 @@ function calculate() {
     const totalInterest = totalRepayment - amount;
     
     // Update summary
-    document.getElementById('principal').innerHTML = '₦' + amount.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('totalInterest').innerHTML = '₦' + totalInterest.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('totalRepayment').innerHTML = '₦' + totalRepayment.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('monthlyPayment').innerHTML = '₦' + monthlyPayment.toLocaleString(undefined, {minimumFractionDigits: 2});
+    document.getElementById('principal').innerHTML = naira(amount);
+    document.getElementById('totalInterest').innerHTML = naira(totalInterest);
+    document.getElementById('totalRepayment').innerHTML = naira(totalRepayment);
+    document.getElementById('monthlyPayment').innerHTML = naira(monthlyPayment);
     document.getElementById('effectiveRate').innerHTML = ((totalInterest / amount) * 100).toFixed(2) + '%';
     
     // Fees
@@ -216,10 +294,10 @@ function calculate() {
     const appFee = amount * 0.01;
     const received = amount - insurance - appFee;
     
-    document.getElementById('feeAmount').innerHTML = '₦' + amount.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('insurance').innerHTML = '₦' + insurance.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('appFee').innerHTML = '₦' + appFee.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('received').innerHTML = '₦' + received.toLocaleString(undefined, {minimumFractionDigits: 2});
+    document.getElementById('feeAmount').innerHTML = naira(amount);
+    document.getElementById('insurance').innerHTML = naira(insurance);
+    document.getElementById('appFee').innerHTML = naira(appFee);
+    document.getElementById('received').innerHTML = naira(received);
     
     // Generate amortization schedule
     let balance = amount;
@@ -239,8 +317,6 @@ function calculate() {
     }
     document.getElementById('scheduleBody').innerHTML = scheduleBody;
 }
-
-// Initialize on page load
-calculate();
+{% endif %}
 </script>
 {% endblock %}
