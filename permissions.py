@@ -211,7 +211,8 @@ PERMISSIONS = [
                        'disbursement without being configured. Its own duty because the '
                        'money leaves the bank and the list carries member account numbers.',
         'default_roles': ('admin', 'treasurer'),
-        'endpoints': ('loans.fee_refunds', 'loans.fee_refunds_export'),
+        'endpoints': ('loans.fee_refunds', 'loans.fee_refunds_export',
+                      'loans.fee_refunds_pay'),
     },
     {
         'key': 'loans.repayments',

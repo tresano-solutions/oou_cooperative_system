@@ -1019,6 +1019,22 @@ def _reverse_member_receipt(db, e, receipt_id):
 # source_module -> the function that undoes its operational record. A module
 # posting to the GL that appears in neither this registry nor
 # LEDGER_ONLY_MODULES cannot be reversed from the journal.
+def _reverse_loan_fee_refund(db, e, loan_id):
+    """Undo an application-fee refund: the money comes back and the loan
+    returns to the list of fees still owed."""
+    row = db.execute(
+        'SELECT * FROM loan_fee_refunds WHERE loan_id = ? AND reversed_at IS NULL',
+        (loan_id,)).fetchone()
+    if not row:
+        return None
+    db.execute('UPDATE loan_fee_refunds SET reversed_at = ?, status = ? WHERE id = ?',
+               (datetime.now(), 'reversed', row['id']))
+    # Cancel the contra revenue row so the income report nets back to the original.
+    db.execute("DELETE FROM revenue WHERE revenue_number = ?", (f'REV/REFUND/{loan_id}',))
+    amt = float(row['amount'] or 0)
+    return (f"₦{amt:,.2f} refund undone; the loan is owed the fee again.")
+
+
 REVERSAL_HANDLERS = {
     'savings_deposit': _reverse_savings_deposit,
     # An adjustment is a savings row like any other, so the deposit handler
@@ -1026,6 +1042,7 @@ REVERSAL_HANDLERS = {
     'savings_adjustment': _reverse_savings_deposit,
     'savings_payout':  _reverse_savings_payout,
     'loan_repayment':  _reverse_loan_repayment,
+    'loan_fee_refund': _reverse_loan_fee_refund,
     'loan_adjustment': _reverse_loan_adjustment,
     'va_savings':      _reverse_va_savings,
     'va_loan':         _reverse_va_loan,

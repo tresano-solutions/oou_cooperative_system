@@ -1469,7 +1469,7 @@ def _fee_refund_rows(db):
         SELECT l.id, l.loan_number, l.amount, l.application_fee, l.disbursed_amount,
                l.disbursement_date, l.status,
                m.id AS member_id, m.member_number, m.first_name, m.last_name,
-               m.bank_name, m.account_name, m.account_number
+               m.email, m.bank_name, m.account_name, m.account_number
         FROM loans l
         JOIN members m ON m.id = l.member_id
         LEFT JOIN loan_fee_refunds r ON r.loan_id = l.id AND r.reversed_at IS NULL
@@ -1522,6 +1522,7 @@ def fee_refunds():
     return render_template(
         'loans/fee-refunds.html',
         pending=pending,
+        cash_accounts=get_postable_cash_accounts(db),
         done=done,
         total_pending=round(sum(p['fee'] for p in pending), 2),
         total_done=round(sum(float(d['amount'] or 0) for d in done), 2),
@@ -1561,3 +1562,105 @@ def fee_refunds_export():
         headers={'Content-Disposition':
                  f'attachment; filename=application-fee-refunds-'
                  f'{datetime.now().strftime("%Y%m%d")}.csv'})
+
+
+def _refund_one_fee(db, row, cash_account, created_by):
+    """Put one member's application fee back. Caller commits.
+
+    Returns (ok, message). Posts nothing and returns False if this loan has
+    already been refunded — the UNIQUE index would reject it anyway, but a
+    clear answer beats an integrity error for an officer paying a batch.
+    """
+    loan_id = row['id']
+    amount = round(float(row['application_fee'] or 0), 2)
+    if amount <= 0:
+        return False, f"{row['loan_number']}: no fee to refund."
+
+    already = db.execute(
+        'SELECT id FROM loan_fee_refunds WHERE loan_id = ? AND reversed_at IS NULL',
+        (loan_id,)).fetchone()
+    if already:
+        return False, f"{row['loan_number']}: already refunded."
+
+    reference = f"FEEREF-{row['loan_number']}"
+    # Dr Fee Income reverses income that was never due; Cr the bank the money
+    # actually leaves. post_journal (not _safe) so a failure aborts the loan
+    # rather than silently recording a payment with no entry behind it.
+    post_journal(db, f"Application fee refund — {row['loan_number']}", [
+        {'account': FEE_INCOME, 'debit': amount, 'memo': f"Fee refund {row['member_number']}"},
+        {'account': cash_account, 'credit': amount, 'memo': 'Refund paid to member'},
+    ], date=datetime.now(), reference=reference,
+       source_module='loan_fee_refund', source_id=loan_id, created_by=created_by)
+    entry = db.execute(
+        'SELECT id FROM journal_entries WHERE reference = ?', (reference,)).fetchone()
+
+    # Offset the original income row rather than deleting it, so the revenue
+    # report nets to what was really earned and both sides stay on record.
+    db.execute(
+        '''INSERT INTO revenue (revenue_number, category, amount, description, source,
+                                date, received_by, notes)
+           VALUES (?, 'Loan Application Fee', ?, ?, ?, ?, ?, ?)''',
+        (f'REV/REFUND/{loan_id}', -amount,
+         f"Refund of application fee wrongly charged on loan {row['loan_number']}",
+         f"Loan {row['loan_number']}", datetime.now(), created_by,
+         'Fee was withheld at 1% despite the configured amount.'))
+
+    db.execute(
+        '''INSERT INTO loan_fee_refunds
+               (loan_id, member_id, amount, bank_account, journal_entry_id,
+                status, note, created_by)
+           VALUES (?, ?, ?, ?, ?, 'paid', ?, ?)''',
+        (loan_id, row['member_id'], amount, cash_account,
+         entry['id'] if entry else None,
+         'Application fee withheld at 1% without being configured.', created_by))
+
+    notify_member(db, row['email'] if 'email' in row.keys() else '',
+                  'Application fee refunded',
+                  f"₦{amount:,.2f} charged in error as an application fee on loan "
+                  f"{row['loan_number']} has been refunded to you.",
+                  notification_type='success', action_url='/my-loans')
+    return True, f"{row['loan_number']}: ₦{amount:,.2f} refunded."
+
+
+@loans.route('/loans/fee-refunds/pay', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def fee_refunds_pay():
+    """Pay back the selected application fees from a chosen bank account."""
+    db = get_db()
+    cash_account = (request.form.get('cash_account') or '').strip()
+    selected = {int(v) for v in request.form.getlist('loan_ids') if str(v).isdigit()}
+
+    postable = {a['code'] for a in get_postable_cash_accounts(db)}
+    if cash_account not in postable:
+        flash('Choose the bank account the refunds are paid from.', 'danger')
+        return redirect(url_for('loans.fee_refunds'))
+    if not selected:
+        flash('Tick at least one member to refund.', 'warning')
+        return redirect(url_for('loans.fee_refunds'))
+
+    paid, failures, total = 0, [], 0.0
+    try:
+        for row in _fee_refund_rows(db):
+            if row['id'] not in selected:
+                continue
+            ok, message = _refund_one_fee(db, row, cash_account, current_user.id)
+            if ok:
+                paid += 1
+                total += round(float(row['application_fee'] or 0), 2)
+            else:
+                failures.append(message)
+        audit(db, 'REFUND_LOAN_FEES', 'loans',
+              f'Refunded {paid} application fee(s) totalling ₦{total:,.2f} from {cash_account}')
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        flash(f'Nothing was refunded — the batch failed: {exc}', 'danger')
+        return redirect(url_for('loans.fee_refunds'))
+
+    if paid:
+        flash(f'Refunded ₦{total:,.2f} to {paid} member(s) from {cash_account}. '
+              f'Pay them by transfer using the downloaded list.', 'success')
+    for message in failures[:5]:
+        flash(message, 'warning')
+    return redirect(url_for('loans.fee_refunds'))

@@ -21,10 +21,12 @@
     </div>
   </div>
 
-  <div class="alert alert-info">
-    <i class="fas fa-info-circle me-1"></i>
-    <strong>Nothing on this page moves money.</strong> It is here so you can check the
-    figures against your own records first. The payout itself is a separate step.
+  <div class="alert alert-warning">
+    <i class="fas fa-triangle-exclamation me-1"></i>
+    <strong>Refunding records the money as paid.</strong> It reverses the fee in your books
+    and credits nobody's bank automatically &mdash; you still make the transfers yourself
+    from the downloaded list. Tick a member here only once you have paid them, or are
+    about to in the same sitting.
   </div>
 
   <div class="row g-3 mb-4">
@@ -56,13 +58,36 @@
   </div>
 
   {% if pending %}
+  <form method="post" action="{{ url_for('loans.fee_refunds_pay') }}"
+        onsubmit="return confirm('Record these refunds as paid? This posts to the ledger and cannot be done twice.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="card mb-4">
-    <div class="card-header"><i class="fas fa-list me-1"></i> Owed to members</div>
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span><i class="fas fa-list me-1"></i> Owed to members</span>
+      <div class="d-flex align-items-center gap-2">
+        <label class="small text-muted mb-0" for="cash_account">Paid from</label>
+        <select class="form-select form-select-sm" name="cash_account" id="cash_account"
+                style="width:auto" required>
+          <option value="">— choose the bank —</option>
+          {% for a in cash_accounts %}
+          <option value="{{ a.code }}">{{ a.code }} — {{ a.name }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-sm btn-primary" type="submit">
+          <i class="fas fa-rotate-left"></i> Record selected as refunded
+        </button>
+      </div>
+    </div>
     <div class="card-body">
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle">
           <thead>
             <tr>
+              <th style="width:1%">
+                <input type="checkbox" class="form-check-input" id="checkAll"
+                       onclick="document.querySelectorAll('.refund-tick').forEach(c => c.checked = this.checked)"
+                       aria-label="Select every member">
+              </th>
               <th>Member</th>
               <th>Loan</th>
               <th class="text-end">Loan amount</th>
@@ -76,6 +101,8 @@
           <tbody>
             {% for p in pending %}
             <tr>
+              <td><input type="checkbox" class="form-check-input refund-tick" name="loan_ids"
+                         value="{{ p.loan_id }}" aria-label="Refund {{ p.member_name }}"></td>
               <td class="small">{{ p.member_name }}
                 <span class="text-muted">({{ p.member_number }})</span></td>
               <td class="small font-monospace">{{ p.loan_number }}</td>
@@ -97,7 +124,7 @@
           </tbody>
           <tfoot>
             <tr class="table-light">
-              <th colspan="5" class="text-end">Total to refund</th>
+              <th colspan="6" class="text-end">Total to refund</th>
               <th class="text-end">&#8358;{{ "{:,.2f}".format(total_pending) }}</th>
               <th colspan="2"></th>
             </tr>
@@ -110,6 +137,7 @@
       </p>
     </div>
   </div>
+  </form>
   {% else %}
   <div class="card mb-4"><div class="card-body text-center py-5">
     <i class="fas fa-circle-check fa-2x text-success mb-3"></i>
