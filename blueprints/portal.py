@@ -1044,18 +1044,32 @@ def change_savings_request():
                        (member['id'], current_amt, new_amount_val, reason))
             db.commit()
 
-            # Notify staff who can act on it.
-            staff = db.execute(
-                "SELECT email FROM users WHERE role IN ('admin', 'treasurer', 'secretary')").fetchall()
-            for s in staff:
-                notify_member(db, s['email'],
-                              'Savings Amount Change Request',
-                              f"{member['first_name']} {member['last_name']} (#{member['member_number']}) "
-                              f"requests to change monthly savings from "
-                              f"₦{current_amt:,.2f} to ₦{new_amount_val:,.2f}. "
-                              f"Reason: {reason or '—'}",
-                              notification_type='info',
-                              action_url=url_for('members.savings_requests'))
+            # Notify the officers who can actually act on it — resolved from the
+            # duty rather than a fixed role list, so the alert follows the
+            # Task Assignment settings instead of drifting out of step with them.
+            import permissions as perms
+            from email_service import send_savings_change_request_email
+
+            officers = perms.users_with_permission(db, 'members.savings_requests')
+            # Built here, in the request: the email goes out on a background
+            # thread, which has no request context to derive a host from.
+            review_url = url_for('members.savings_requests', _external=True)
+            member_name = f"{member['first_name']} {member['last_name']}"
+            summary = (f"{member_name} (#{member['member_number']}) "
+                       f"requests to change monthly savings from "
+                       f"₦{current_amt:,.2f} to ₦{new_amount_val:,.2f}. "
+                       f"Reason: {reason or '—'}")
+
+            for officer in officers:
+                notify(db, officer['id'], 'Savings Amount Change Request', summary,
+                       notification_type='info',
+                       action_url=url_for('members.savings_requests'))
+                if officer['email']:
+                    send_savings_change_request_email(
+                        officer['email'],
+                        {'full_name': member_name,
+                         'member_number': member['member_number']},
+                        current_amt, new_amount_val, reason, review_url)
 
             audit(db, 'SAVINGS_CHANGE_REQUEST', 'members',
                   f"Member {member['id']} requested savings change to ₦{new_amount_val:,.2f}")

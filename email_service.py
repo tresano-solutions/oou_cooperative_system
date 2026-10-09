@@ -522,6 +522,39 @@ def send_member_onboarding_email(recipient: str, member: dict, username: str,
                background=True)
 
 
+def send_savings_change_request_email(recipient: str, member: dict,
+                                      current_amount: float, requested_amount: float,
+                                      reason: str = '', review_url: str = '') -> None:
+    """Tell an officer a member wants to change their monthly savings.
+
+    `review_url` is built by the caller, inside the request. Background email
+    threads have no request context, so url_for(_external=True) cannot be called
+    from in here.
+    """
+    name = member.get('full_name') or f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+    number = member.get('member_number', '')
+    direction = 'an increase' if requested_amount > current_amount else 'a reduction'
+    button = (f'<p style="margin:22px 0"><a href="{review_url}" '
+              f'style="background:#1a3a6c;color:#fff;padding:11px 20px;border-radius:6px;'
+              f'text-decoration:none;font-weight:600">Review this request</a></p>'
+              if review_url else '')
+    html = (
+        f'<p>{name} ({number}) has requested <strong>{direction}</strong> '
+        f'to their monthly savings.</p>'
+        f'<table cellpadding="6" style="border-collapse:collapse;margin:14px 0">'
+        f'<tr><td style="color:#5f6d86">Currently</td>'
+        f'<td style="font-weight:600">&#8358;{current_amount:,.2f}</td></tr>'
+        f'<tr><td style="color:#5f6d86">Requested</td>'
+        f'<td style="font-weight:600">&#8358;{requested_amount:,.2f}</td></tr>'
+        f'<tr><td style="color:#5f6d86">Reason</td><td>{reason or "—"}</td></tr>'
+        f'</table>'
+        f'{button}'
+        f'<p style="color:#5f6d86;font-size:13px">The change does not take effect until '
+        f'an officer approves it.</p>'
+    )
+    send_email(recipient, f'Savings change request — {name}', html, background=True)
+
+
 def send_loan_approval_email(recipient: str, member: dict,
                               loan: dict, loan_url: str = '') -> None:
     try:

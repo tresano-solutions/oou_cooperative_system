@@ -195,6 +195,15 @@ PERMISSIONS = [
         'endpoints': ('loans.cancel_loan_application',),
     },
     {
+        'key': 'loans.corrections',
+        'label': 'Correct a loan balance',
+        'group': 'Loans',
+        'description': 'Adjust a loan balance to fix a posting error. Separate from '
+                       'recording repayments, so a cooperative can grant one without the other.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('loans.loan_corrections',),
+    },
+    {
         'key': 'loans.repayments',
         'label': 'Record loan repayments',
         'group': 'Loans',
@@ -457,9 +466,19 @@ PERMISSIONS = [
         'default_roles': ('admin',),
         'endpoints': ('admin_panel.settings', 'admin_panel.update_settings',
                       'admin_panel.update_security_settings', 'admin_panel.update_mail_settings',
-                      'admin_panel.test_mail', 'admin_panel.update_sms_settings',
+                      'admin_panel.test_mail', 'cards.test_email',
+                      'admin_panel.update_sms_settings',
                       'admin_panel.test_sms', 'admin_panel.reconcile_savings',
                       'admin_panel.readiness_status', 'admin_panel.test_db'),
+    },
+    {
+        'key': 'system.upload_history',
+        'label': 'View upload history',
+        'group': 'System',
+        'description': 'See past data uploads and why rows failed. A General Secretary '
+                       'sees only their own uploads; others see every one.',
+        'default_roles': ('admin', 'treasurer', 'secretary'),
+        'endpoints': ('admin_panel.upload_history',),
     },
     {
         'key': 'system.users',
@@ -612,6 +631,38 @@ def permission_matrix(db, user_id, role):
             'assignable': assignable(key, role),
         }
     return matrix
+
+
+def users_with_permission(db, permission):
+    """Active staff who actually hold `permission`.
+
+    Resolved the same way a live request resolves it — role defaults, role
+    overrides and per-officer overrides — so an alert reaches whoever can really
+    act on it. Addressing a fixed role instead would go silently wrong the
+    moment a cooperative reassigns the duty.
+    """
+    if permission not in PERMISSION_BY_KEY:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT id, username, email, full_name, role, "
+            "       COALESCE(is_super_admin, 0) AS is_super_admin "
+            "FROM users WHERE COALESCE(is_active, 1) = 1 AND role <> 'member'"
+        ).fetchall()
+    except Exception:
+        log.exception('Could not list users for permission %s', permission)
+        return []
+
+    holders = []
+    for row in rows:
+        try:
+            allowed = effective_permissions(db, row['id'], row['role'] or '',
+                                            bool(row['is_super_admin']))
+        except Exception:
+            allowed = {k for k in PERMISSION_KEYS if default_allowed(k, row['role'] or '')}
+        if permission in allowed:
+            holders.append(row)
+    return holders
 
 
 # ── Runtime checks ────────────────────────────────────────────────────────────
