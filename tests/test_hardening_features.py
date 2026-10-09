@@ -80,7 +80,8 @@ class HardeningFeatureTests(unittest.TestCase):
         page = self.client.get(f'/members/edit/{mid}')
         self.assertEqual(page.status_code, 200)
         self.assertIn(b'name="date_joined"', page.data)
-        base = dict(first_name='Ada', last_name='Audit', phone='08000000001')
+        base = dict(first_name='Ada', last_name='Audit', phone='08000000001',
+                    email='ada.audit@example.com', employee_id='EMP001')
         response = self.client.post(f'/members/edit/{mid}',
                                     data={**base, 'date_joined': '2020-01-15'})
         self.assertEqual(response.status_code, 302)

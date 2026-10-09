@@ -29,7 +29,10 @@ def read_env(path):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            data[k.strip()] = v.strip()
+            value = v.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            data[k.strip()] = value
     return data
 
 
@@ -90,7 +93,8 @@ def render_compose(clients):
             # alone, so reading it from one container cannot control the others.
             *(
                 ["      HQ_SYNC_TOKEN: ${HQ_SYNC_TOKEN:-}"] if (n == "hq" or not master) else
-                [f"      HQ_TENANT_TOKEN: {derive_tenant_token(master, n)}"]
+                ['      HQ_SYNC_TOKEN: ""',
+                 f"      HQ_TENANT_TOKEN: {derive_tenant_token(master, n)}"]
             ),
             "    volumes:",
             # Persist uploaded files (member photos, payout evidence) across
@@ -236,6 +240,7 @@ def main():
     clients = load_clients()
     with open(os.path.join(HERE, "docker-compose.override.yml"), "w", encoding="utf-8") as f:
         f.write(render_compose(clients))
+    os.chmod(os.path.join(HERE, "docker-compose.override.yml"), 0o600)
     with open(os.path.join(HERE, "Caddyfile"), "w", encoding="utf-8") as f:
         f.write(render_caddyfile(clients))
     if clients:

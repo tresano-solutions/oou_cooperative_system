@@ -5,7 +5,6 @@ from flask import Blueprint, render_template, redirect, url_for, request, flash,
 from flask_login import login_required, current_user
 
 from database import get_db
-from email_service import send_welcome_email
 from utils import role_required, can_access_member
 
 cards = Blueprint('cards', __name__)
@@ -112,7 +111,6 @@ def verify_card(token):
 
 @cards.route('/test-email')
 @login_required
+@role_required('admin')
 def test_email():
-    member = {'full_name': 'Test User', 'member_number': 'T123', 'coop_name': 'Cooperative'}
-    send_welcome_email('your-test-email@gmail.com', member)
-    return 'Test email sent. Check your inbox.'
+    return redirect(url_for('admin_panel.settings'))

@@ -92,9 +92,13 @@ class AuthzTests(unittest.TestCase):
                     allowed.append((method, rule.rule, rule.endpoint, f'HTTP {resp.status_code}'))
         # Endpoints members legitimately use (portal, payments, mobile etc.) are reviewed by hand below.
         member_ok_prefixes = ('portal.', 'main.', 'auth.', 'payments.', 'virtual_accounts.', 'member_receipts.',
-                              'ctas.my_', 'ctas.member_', 'feedback.', 'help.', 'training.', 'communications.my',
+                              'ctas.my_', 'ctas.member_', 'feedback.', 'help.', 'help_bp.', 'training.', 'communications.my',
                               'mobile_api.', 'governance.')
-        suspicious = [a for a in allowed if not a[2].startswith(member_ok_prefixes)]
+        member_self_service = {'session_ping', 'security.index', 'security.setup_2fa',
+                               'security.show_backup_codes', 'security.regenerate_backup_codes_route',
+                               'security.disable_2fa'}
+        suspicious = [a for a in allowed if not a[2].startswith(member_ok_prefixes)
+                      and a[2] not in member_self_service]
         print('\nAUTHZ-02 routes a plain MEMBER session was NOT refused on (outside member areas):')
         for a in suspicious:
             print('   ', *a)

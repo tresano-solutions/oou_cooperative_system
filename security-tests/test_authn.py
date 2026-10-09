@@ -127,8 +127,11 @@ class IdentityLinkTests(unittest.TestCase):
     but case-sensitively on the uniqueness check. A member can edit their own e-mail."""
     @classmethod
     def setUpClass(cls):
-        import _harness
-        cls.members, cls.loans = _harness.seed(app)
+        from database import get_db
+        with app.app_context():
+            exists = get_db().execute("SELECT id FROM members WHERE member_number='SEC001'").fetchone()
+        if not exists:
+            H.seed(app)
 
     def test_auth07_email_case_takeover(self):
         from database import get_db

@@ -11,6 +11,14 @@ MASTER = 'm' * 64
 
 
 class HqTokens(unittest.TestCase):
+    def test_quoted_master_matches_runtime_value(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '.env'
+            path.write_text(f"HQ_SYNC_TOKEN='{MASTER}'\n", encoding='utf-8')
+            self.assertEqual(generate.read_env(path)['HQ_SYNC_TOKEN'], MASTER)
+
     def setUp(self):
         for k in ('HQ_TENANT_TOKEN',):
             os.environ.pop(k, None)
@@ -62,7 +70,8 @@ class HqTokens(unittest.TestCase):
         self.assertIn(hq_tokens.derive_tenant_token(MASTER, 'smtcoop'), out)
         hq_block = out.split('app-ooucoop:')[0]
         self.assertIn('HQ_SYNC_TOKEN: ${HQ_SYNC_TOKEN:-}', hq_block)   # only the HQ app gets the master
-        self.assertEqual(out.count('HQ_SYNC_TOKEN: '), 1)
+        self.assertEqual(out.count('HQ_SYNC_TOKEN: ${HQ_SYNC_TOKEN:-}'), 1)
+        self.assertEqual(out.count('HQ_SYNC_TOKEN: ""'), 2)
 
 
 if __name__ == '__main__':

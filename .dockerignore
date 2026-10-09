@@ -8,6 +8,11 @@
 deploy/vps/backups
 deploy/vps/clients
 deploy/vps/.env
+deploy/vps/docker-compose.override.yml
+deploy/vps/.env.*
+.env
+.env.*
+outputs
 *.pptx
 tree_output.txt
 architecture_report.txt
