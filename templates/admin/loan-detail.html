@@ -197,6 +197,61 @@
                 </div>
             </div>
 
+            {% if loan.status == 'active' %}
+            {# The repayment route existed from the start but nothing ever called
+               it, so the only way to record a repayment was the bulk upload —
+               leaving no way to enter a single member missed from a batch. #}
+            <div class="card mb-3 border-success">
+                <div class="card-header bg-success text-white">
+                    <h6 class="mb-0"><i class="fas fa-hand-holding-dollar" aria-hidden="true"></i>
+                        Record a Repayment</h6>
+                </div>
+                <div class="card-body">
+                    <form method="post" action="{{ url_for('loans.repay_loan', loan_id=loan.id) }}"
+                          class="row g-3 align-items-end"
+                          onsubmit="return confirm('Record this repayment against {{ loan.loan_number }}?')">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="submission_token" value="{{ new_submission_token() }}">
+                        <div class="col-md-3">
+                            <label class="form-label" for="repay_amount">Amount (&#8358;) *</label>
+                            <input type="number" step="0.01" min="0.01" class="form-control"
+                                   id="repay_amount" name="amount" required
+                                   max="{{ '%.2f'|format(loan.balance or 0) }}">
+                            <small class="text-muted">Outstanding
+                                &#8358;{{ "{:,.2f}".format(loan.balance or 0) }}. Paying the full
+                                balance settles the loan.</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="repay_method">Method</label>
+                            <select class="form-select" id="repay_method" name="method">
+                                <option value="cash">Cash</option>
+                                <option value="bank_transfer">Bank transfer</option>
+                                <option value="salary_deduction">Salary deduction</option>
+                                <option value="cheque">Cheque</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="repay_bank">Received into *</label>
+                            <select class="form-select" id="repay_bank" name="bank_account" required>
+                                {% for a in bank_accounts %}
+                                <option value="{{ a.code }}"
+                                    {{ 'selected' if a.code == default_cash_account else '' }}>
+                                    {{ a.code }} — {{ a.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-success w-100">Record</button>
+                        </div>
+                    </form>
+                    <p class="text-muted small mt-3 mb-0">
+                        The principal and interest split is worked out for you, the balance is
+                        reduced, and the member is emailed a receipt.
+                    </p>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="card mb-3">
                 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
                     <h6 class="mb-0">Loan Statement &amp; Corrections</h6>
