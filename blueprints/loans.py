@@ -775,7 +775,7 @@ def loan_act(loan_id):
         stage = loan['approval_stage'] or 'secretary'
         if not lw.can_act(current_user.role, stage):
             flash(f'Only the {lw.STAGE_ACTOR_LABEL.get(stage, "authorised approver")} '
-                  f'(or an admin) can act at this stage.', 'danger')
+                  f'can act at this stage. Each stage is signed by its own officer.', 'danger')
             return redirect(url_for('loans.loan_detail', loan_id=loan_id))
         if _acting_on_own_loan(db, loan):
             flash('You cannot approve or reject your own loan application. '

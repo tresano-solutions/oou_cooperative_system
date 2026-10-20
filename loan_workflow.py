@@ -46,10 +46,19 @@ NEXT_STAGE = {
 
 
 def can_act(role, stage):
-    """True if a user with `role` may approve/reject a loan at `stage`."""
+    """True if a user with `role` may approve/reject a loan at `stage`.
+
+    The role must match the stage exactly. The President used to be able to sign
+    the Secretary and Treasurer stages as well, which quietly collapsed a
+    three-officer control into one person: the same signature could carry a loan
+    from application to disbursement.
+
+    The President still approves the President stage — STAGE_ROLE maps it to
+    'admin' — but only that one.
+    """
     if stage not in STAGE_ROLE:
         return False
-    return role == 'admin' or role == STAGE_ROLE[stage]
+    return role == STAGE_ROLE[stage]
 
 
 STRICT_ABOVE_OFFICERS = 3      # strict when there are MORE active officers than this

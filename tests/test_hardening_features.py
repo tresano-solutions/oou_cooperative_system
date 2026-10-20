@@ -1703,8 +1703,8 @@ class HardeningFeatureTests(unittest.TestCase):
             db.commit()
 
     def test_officer_cannot_approve_own_loan(self):
-        """Separation of duties: an officer (even an admin) who is the loan's
-        applicant must not be able to approve/advance their own loan."""
+        """Separation of duties: an officer (even an admin, at the stage their own
+        role signs) must not be able to approve/advance their own loan."""
         from datetime import datetime
         from database import last_insert_id
         email = 'self.approver@example.com'
@@ -1724,7 +1724,7 @@ class HardeningFeatureTests(unittest.TestCase):
                 "INSERT INTO loans (loan_number, member_id, amount, purpose, tenure, interest_rate, "
                 "interest_method, total_repayment, balance, status, approval_stage, date_applied) "
                 "VALUES ('LOAN/SELF/0001', ?, 100000, 'Regular', 6, 11, 'reducing_annual', 104000, 104000, "
-                "'pending', 'secretary', ?)", (member_id, datetime.now()))
+                "'pending', 'president', ?)", (member_id, datetime.now()))
             loan_id = db.execute("SELECT id FROM loans WHERE loan_number = 'LOAN/SELF/0001'").fetchone()['id']
             db.commit()
 
@@ -1737,7 +1737,7 @@ class HardeningFeatureTests(unittest.TestCase):
             db = get_db()
             loan = db.execute("SELECT status, approval_stage FROM loans WHERE id = ?", (loan_id,)).fetchone()
             self.assertEqual(loan['status'], 'pending')            # not activated
-            self.assertEqual(loan['approval_stage'], 'secretary')  # stage did not advance
+            self.assertEqual(loan['approval_stage'], 'president')  # stage did not advance
             db.execute("DELETE FROM loans WHERE id = ?", (loan_id,))
             db.execute("DELETE FROM members WHERE id = ?", (member_id,))
             db.execute("DELETE FROM users WHERE username = 'selfadmin'")

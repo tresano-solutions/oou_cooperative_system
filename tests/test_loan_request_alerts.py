@@ -629,3 +629,38 @@ class LoanRequestAlertTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StageRoleTests(unittest.TestCase):
+    """Each approval stage is signed by its own officer, and only that officer.
+
+    The President used to be able to act at every stage, which collapsed a
+    three-officer control into one signature carrying a loan from application
+    all the way to disbursement.
+    """
+
+    def test_each_stage_has_exactly_one_approving_role(self):
+        roles = ('admin', 'secretary', 'treasurer', 'exco', 'member')
+        for stage in (lw.STAGE_SECRETARY, lw.STAGE_TREASURER, lw.STAGE_PRESIDENT):
+            allowed = [r for r in roles if lw.can_act(r, stage)]
+            self.assertEqual(len(allowed), 1,
+                             f'{stage} should be signable by exactly one role, got {allowed}')
+
+    def test_the_president_cannot_sign_the_other_stages(self):
+        self.assertFalse(lw.can_act('admin', lw.STAGE_SECRETARY))
+        self.assertFalse(lw.can_act('admin', lw.STAGE_TREASURER))
+        # But still signs their own.
+        self.assertTrue(lw.can_act('admin', lw.STAGE_PRESIDENT))
+
+    def test_officers_sign_only_their_own_stage(self):
+        self.assertTrue(lw.can_act('secretary', lw.STAGE_SECRETARY))
+        self.assertFalse(lw.can_act('secretary', lw.STAGE_TREASURER))
+        self.assertFalse(lw.can_act('secretary', lw.STAGE_PRESIDENT))
+        self.assertTrue(lw.can_act('treasurer', lw.STAGE_TREASURER))
+        self.assertFalse(lw.can_act('treasurer', lw.STAGE_SECRETARY))
+
+    def test_a_stage_nobody_signs_is_refused(self):
+        # Guarantor consent is not an officer approval.
+        for role in ('admin', 'secretary', 'treasurer'):
+            self.assertFalse(lw.can_act(role, lw.STAGE_GUARANTORS))
+            self.assertFalse(lw.can_act(role, lw.STAGE_APPROVED))
