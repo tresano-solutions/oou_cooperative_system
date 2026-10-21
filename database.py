@@ -2074,6 +2074,13 @@ def init_db():
         ('loan_alert_reminder_hours', '12', 'Minimum hours between repeat reminders on the same loan'),
         ('loan_alert_escalate_hours', '48', 'Hours before an untouched loan request is escalated to the President and all exco'),
         ('app_base_url',             '',   'Public URL of this system, e.g. https://coop.example.org — used for links in alert emails'),
+        # Written once, on this cooperative's first boot of the version that made
+        # each approval stage role-exact. Approvals older than this were made when
+        # the President could sign any stage, so the one-officer-per-stage rule
+        # leaves them alone — otherwise every loan in flight would be stranded.
+        # See loan_workflow.sod_cutover(). Never reset it: that would re-strand them.
+        ('sod_cutover_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+         'Approvals before this moment do not count towards the one-officer-per-stage rule'),
     ]
 
     for key, value, desc in default_settings:

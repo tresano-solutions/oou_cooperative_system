@@ -664,3 +664,149 @@ class StageRoleTests(unittest.TestCase):
         for role in ('admin', 'secretary', 'treasurer'):
             self.assertFalse(lw.can_act(role, lw.STAGE_GUARANTORS))
             self.assertFalse(lw.can_act(role, lw.STAGE_APPROVED))
+
+
+class SodCutoverTests(unittest.TestCase):
+    """Signatures made before the stage-role rule do not block the same officer.
+
+    The rule arrived with loans already in flight that the President had signed
+    at the Secretary stage, back when that was allowed. Reading one-officer-per-
+    stage backwards would have stranded every one of them for good: only the
+    President signs the final stage, and the President is exactly who signed the
+    earlier ones. So the cutover is the line — before it, left alone; on or
+    after it, enforced.
+    """
+
+    CUTOVER = datetime(2026, 10, 20, 12, 0, 0)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = app_module.app
+        cls.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+
+    def setUp(self):
+        # The rule only bites when separation of duties is enforced at all.
+        strict = patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '1'})
+        strict.start()
+        self.addCleanup(strict.stop)
+        with self.app.app_context():
+            db = get_db()
+            row = db.execute("SELECT value FROM settings WHERE key = 'sod_cutover_at'").fetchone()
+            self.addCleanup(self._restore, row['value'] if row else '')
+            self._set_cutover(db, self.CUTOVER.strftime('%Y-%m-%d %H:%M:%S'))
+            self.officer = db.execute(
+                "SELECT id FROM users WHERE role = 'admin' LIMIT 1").fetchone()['id']
+            db.commit()
+
+    def _restore(self, value):
+        with self.app.app_context():
+            db = get_db()
+            self._set_cutover(db, value)
+            db.commit()
+
+    @staticmethod
+    def _set_cutover(db, value):
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES ('sod_cutover_at', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (value,))
+
+    def _loan_awaiting_president(self, signed_at, stage=lw.STAGE_SECRETARY):
+        """A loan at the President stage that this officer already signed at `stage`."""
+        with self.app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO members (member_number, first_name, last_name, status, "
+                "date_joined, email) VALUES (?, 'Sod', 'Cutover', 'active', '2024-01-01', ?)",
+                (f'SOD/{datetime.now().strftime("%H%M%S%f")}',
+                 f'sod{datetime.now().strftime("%H%M%S%f")}@coop.test'))
+            member_id = last_insert_id(db)
+            db.execute(
+                "INSERT INTO loans (loan_number, member_id, amount, purpose, tenure, "
+                "interest_rate, total_repayment, balance, status, approval_stage, date_applied) "
+                "VALUES (?, ?, 1000000, 'Regular', 12, 7.5, 1041089, 1041089, 'pending', ?, ?)",
+                (f'LOAN/SOD/{datetime.now().strftime("%H%M%S%f")}', member_id,
+                 lw.STAGE_PRESIDENT, datetime.now()))
+            loan_id = last_insert_id(db)
+            lw.record_action(db, loan_id, stage, 'approved', self.officer, 'president')
+            db.execute('UPDATE loan_approvals SET acted_at = ? WHERE loan_id = ?',
+                       (signed_at, loan_id))
+            db.commit()
+            return db.execute('SELECT * FROM loans WHERE id = ?', (loan_id,)).fetchone()
+
+    # ── the earlier signature ────────────────────────────────────────────────
+
+    def test_a_signature_from_before_the_cutover_does_not_block(self):
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=1))
+        with self.app.app_context():
+            self.assertEqual(
+                lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT), '',
+                'a loan signed under the old rules must still be able to finish')
+
+    def test_a_signature_from_after_the_cutover_still_blocks(self):
+        loan = self._loan_awaiting_president(self.CUTOVER + timedelta(days=1))
+        with self.app.app_context():
+            self.assertIn('Secretary',
+                          lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT))
+
+    def test_the_grandfathered_stage_is_named_for_the_audit_trail(self):
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=1))
+        with self.app.app_context():
+            self.assertEqual(lw.grandfathered_prior(get_db(), loan, self.officer), 'secretary')
+
+    def test_nothing_is_grandfathered_when_the_signature_is_recent(self):
+        loan = self._loan_awaiting_president(self.CUTOVER + timedelta(days=1))
+        with self.app.app_context():
+            self.assertEqual(lw.grandfathered_prior(get_db(), loan, self.officer), '')
+
+    def test_without_a_cutover_every_earlier_signature_blocks(self):
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=365))
+        with self.app.app_context():
+            db = get_db()
+            self._set_cutover(db, '')
+            db.commit()
+            self.assertIn('Secretary',
+                          lw.sod_conflict(db, loan, self.officer, lw.STAGE_PRESIDENT),
+                          'a missing cutover must enforce the rule, not disable it')
+
+    # ── the due-diligence checks ─────────────────────────────────────────────
+
+    def _with_due_diligence(self, loan, when):
+        with self.app.app_context():
+            db = get_db()
+            db.execute('UPDATE loans SET due_diligence_updated_by = ?, '
+                       'due_diligence_updated_at = ? WHERE id = ?',
+                       (self.officer, when, loan['id']))
+            db.commit()
+            return db.execute('SELECT * FROM loans WHERE id = ?', (loan['id'],)).fetchone()
+
+    def test_due_diligence_done_before_the_cutover_does_not_block(self):
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
+        with self.app.app_context():
+            get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
+            get_db().commit()
+        loan = self._with_due_diligence(loan, self.CUTOVER - timedelta(days=2))
+        with self.app.app_context():
+            self.assertEqual(
+                lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT), '')
+
+    def test_due_diligence_with_no_timestamp_still_blocks(self):
+        # The two columns are written together, so a date-less check is an
+        # oddity, not an old record. Grandfather only what can be dated.
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
+        with self.app.app_context():
+            get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
+            get_db().commit()
+        loan = self._with_due_diligence(loan, None)
+        with self.app.app_context():
+            self.assertIn('due-diligence',
+                          lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT))
+
+    def test_due_diligence_done_after_the_cutover_still_blocks(self):
+        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
+        with self.app.app_context():
+            get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
+            get_db().commit()
+        loan = self._with_due_diligence(loan, self.CUTOVER + timedelta(days=2))
+        with self.app.app_context():
+            self.assertIn('due-diligence',
+                          lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT))

@@ -793,6 +793,14 @@ def loan_act(loan_id):
                       f"Loan {loan['loan_number']}: {current_user.username} approved {earlier['stage']} "
                       f"and now {stage} (separation of duties not enforced: "
                       f"{lw.active_officer_count(db)} active officer(s))")
+        if action == 'approve' and not conflict:
+            # Allowed only because the earlier signature predates the stage-role
+            # rule. Say so in the trail rather than letting it pass unremarked.
+            old = lw.grandfathered_prior(db, loan, current_user.id)
+            if old:
+                audit(db, 'LOAN_SOD_GRANDFATHERED', 'loans',
+                      f"Loan {loan['loan_number']}: {current_user.username} approved {stage} "
+                      f"having also approved {old} before the stage-role rule took effect")
         if conflict:
             audit(db, 'LOAN_SOD_BLOCKED', 'loans', f"Loan {loan['loan_number']} stage {stage}: {conflict}")
             db.commit()

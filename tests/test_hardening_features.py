@@ -51,6 +51,19 @@ class HardeningFeatureTests(unittest.TestCase):
         )
         self.assertIn(response.status_code, (302, 303))
 
+    def ignore_separation_of_duties(self):
+        """Let one officer carry a loan through, for tests not about that rule.
+
+        Separation of duties turns itself on once a cooperative has more than
+        three active officers, and these suites share a database — so whether it
+        is on here depends on which other suite ran first. Pinning it off keeps
+        a test of something else from depending on that. The rule has its own
+        tests: SodCutoverTests and security-tests/test_f07.
+        """
+        guard = patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '0'})
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_idle_session_timeout_logs_user_out_and_audits(self):
         self.login_admin()
         with self.client.session_transaction() as sess:
@@ -1209,6 +1222,7 @@ class HardeningFeatureTests(unittest.TestCase):
             self.assertIsNone(loan)
 
     def test_final_loan_approval_requires_completed_due_diligence(self):
+        self.ignore_separation_of_duties()
         self.login_admin()
         with self.app.app_context():
             db = get_db()
@@ -1302,6 +1316,7 @@ class HardeningFeatureTests(unittest.TestCase):
         (2110), leave Fee Income to the application fee only, and never be logged
         in the revenue table."""
         from ledger import INSURANCE_PAYABLE, FEE_INCOME
+        self.ignore_separation_of_duties()
         self.login_admin()
         with self.app.app_context():
             db = get_db()

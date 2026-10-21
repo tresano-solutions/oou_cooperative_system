@@ -88,25 +88,85 @@ def segregation_enforced(db):
     return active_officer_count(db) > STRICT_ABOVE_OFFICERS
 
 
+def _as_datetime(value):
+    """DB timestamps arrive as datetime on PostgreSQL and as text on SQLite."""
+    if value is None or isinstance(value, datetime):
+        return value
+    text = str(value).strip().replace('T', ' ')
+    for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def sod_cutover(db):
+    """When the one-officer-per-stage rule started applying at this cooperative.
+
+    Until October 2026 the President could sign any stage, so officers are
+    carrying approvals that the rule now reads as a conflict. Enforcing it
+    backwards would strand those loans for good: only the President signs the
+    final stage, and the President is exactly who signed the earlier ones.
+    Approvals recorded before this moment are therefore left alone.
+
+    The stamp is written once, the first time this version boots, so every
+    cooperative grandfathers its own history and nothing newer slips through.
+    Returns None if the setting is missing, which enforces the rule in full.
+    """
+    row = db.execute("SELECT value FROM settings WHERE key = 'sod_cutover_at'").fetchone()
+    return _as_datetime(row['value']) if row and row['value'] else None
+
+
+def grandfathered_prior(db, loan, user_id):
+    """The stage this user signed before the cutover, or '' — for the audit trail.
+
+    Only meaningful when sod_conflict() has already allowed the approval: it
+    names the old signature that the rule is choosing to overlook.
+    """
+    cutover = sod_cutover(db)
+    if cutover is None:
+        return ''
+    row = db.execute(
+        "SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? "
+        "AND action = 'approved' AND acted_at < ?",
+        (loan['id'], user_id, cutover)).fetchone()
+    return row['stage'] if row else ''
+
+
 def sod_conflict(db, loan, user_id, stage):
     """Why `user_id` may not act at `stage` of this loan, or '' if they may.
 
     Segregation of duties: nobody approves two stages of the same loan, and the
     officer who completed the due-diligence checks cannot give the final approval
-    that releases the money.
+    that releases the money. Both tests ignore anything that happened before
+    sod_cutover() — see there for why.
     """
     if not segregation_enforced(db):
         return ''
-    prior = db.execute(
-        "SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? AND action = 'approved'",
-        (loan['id'], user_id)).fetchone()
+    cutover = sod_cutover(db)
+
+    sql = ("SELECT stage FROM loan_approvals WHERE loan_id = ? AND acted_by = ? "
+           "AND action = 'approved'")
+    args = [loan['id'], user_id]
+    if cutover is not None:
+        sql += ' AND acted_at >= ?'
+        args.append(cutover)
+    prior = db.execute(sql, args).fetchone()
     if prior:
         return (f"You already approved this loan at the {STAGE_ACTOR_LABEL.get(prior['stage'], prior['stage'])} "
                 f"stage. A different officer must approve each stage.")
+
     if (stage == STAGE_PRESIDENT and 'due_diligence_updated_by' in loan.keys()
             and loan['due_diligence_updated_by'] == user_id):
-        return ('You completed the due-diligence checks on this loan, so a different officer '
-                'must give the final approval.')
+        checked_at = _as_datetime(loan['due_diligence_updated_at']
+                                  if 'due_diligence_updated_at' in loan.keys() else None)
+        # Grandfather only what we can date to before the cutover. The two
+        # columns are always written together, so a missing timestamp is an
+        # oddity rather than an old record — stay strict on it.
+        if cutover is None or checked_at is None or checked_at >= cutover:
+            return ('You completed the due-diligence checks on this loan, so a different officer '
+                    'must give the final approval.')
     return ''
 
 
