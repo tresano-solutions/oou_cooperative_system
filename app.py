@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
 from flask_login import LoginManager, current_user, logout_user
 
 from database import init_db, get_db, close_db
@@ -101,6 +101,26 @@ def load_user(user_id):
 # ── Database ──────────────────────────────────────────────────────────────────
 
 init_db()
+
+# Payout vouchers used to be written under static/, which is public. Move any
+# that are still there, and refuse the old public URLs for whatever could not
+# be moved — a file left behind must not stay readable by a stranger.
+from private_files import migrate_legacy_payouts, LEGACY_PAYOUT_DIR  # noqa: E402
+
+try:
+    with app.app_context():
+        _db = get_db()
+        if migrate_legacy_payouts(_db):
+            _db.commit()
+except Exception as _exc:                                   # never block boot
+    print(f'  [uploads] payout evidence move deferred: {_exc}')
+
+
+@app.before_request
+def _refuse_public_payout_evidence():
+    """static/uploads/payouts/ is no longer a place anything may be read from."""
+    if request.path.startswith('/static/uploads/payouts/'):
+        abort(404)
 
 # ── Blueprints ────────────────────────────────────────────────────────────────
 

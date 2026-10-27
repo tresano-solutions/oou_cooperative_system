@@ -97,9 +97,10 @@ def render_compose(clients):
                  f"      HQ_TENANT_TOKEN: {derive_tenant_token(master, n)}"]
             ),
             "    volumes:",
-            # Persist uploaded files (member photos, payout evidence) across
-            # rebuilds. One volume per client so societies stay isolated.
-            f"      - uploads-{n}:/app/static/uploads",
+            # Persist uploaded files across rebuilds. One volume per client so
+            # societies stay isolated.
+            f"      - uploads-{n}:/app/static/uploads",       # public: photos, logo
+            f"      - private-{n}:/app/private_uploads",      # never served directly
             "    depends_on:",
             "      postgres:",
             "        condition: service_healthy",
@@ -109,6 +110,7 @@ def render_compose(clients):
         lines.append("volumes:")
         for c in clients:
             lines.append(f"  uploads-{c['name']}:")
+            lines.append(f"  private-{c['name']}:")
         lines.append("")
     return "\n".join(lines) + "\n"
 

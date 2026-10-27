@@ -5,11 +5,13 @@ import random
 from datetime import datetime
 from io import StringIO, TextIOWrapper
 
-from flask import Blueprint, render_template, redirect, url_for, request, flash, make_response
+from flask import (Blueprint, render_template, redirect, url_for, request, flash,
+                   make_response, send_file, abort)
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 
 from database import get_db, last_insert_id
+from private_files import save_private, private_path
 from email_service import send_payment_confirmation_email
 from utils import (claim_submission, finite_float, role_required, audit, notify_member, record_revenue, share_capital_split,
                    member_savings_balance)
@@ -570,29 +572,38 @@ def add_saving():
 
 
 _PAYOUT_EVIDENCE_EXTS = {'pdf', 'png', 'jpg', 'jpeg'}
+_PAYOUT_EVIDENCE_MAX = 8 * 1024 * 1024
 
 
 def _save_payout_evidence(f):
-    """Validate + save a payout evidence file under static/uploads/payouts/.
-    Returns (True, db_path) or (False, error_message)."""
-    name = secure_filename(f.filename or '')
-    if '.' not in name:
-        return False, 'file must be a PDF or image (PDF, PNG, JPG).'
-    ext = name.rsplit('.', 1)[1].lower()
-    if ext not in _PAYOUT_EVIDENCE_EXTS:
-        return False, 'only PDF, PNG or JPG files are allowed.'
-    f.seek(0, os.SEEK_END)
-    size = f.tell()
-    f.seek(0)
-    if size > 8 * 1024 * 1024:
-        return False, 'file is larger than 8 MB.'
-    unique = f"payout_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}.{ext}"
-    rel = f"uploads/payouts/{unique}"
-    disk = os.path.join('static', 'uploads', 'payouts', unique)
-    os.makedirs(os.path.dirname(disk), exist_ok=True)
-    f.save(disk)
-    return True, rel
+    """Store payout evidence where only a permission-checked view can reach it.
 
+    This used to land in static/uploads/payouts/, which Flask serves to anyone
+    who asks, under a name built from the clock plus four random digits — a
+    small enough space to walk through. Returns (True, db_path) or
+    (False, error_message).
+    """
+    return save_private(f, 'payouts', _PAYOUT_EVIDENCE_EXTS, _PAYOUT_EVIDENCE_MAX)
+
+
+@savings.route('/savings/<int:saving_id>/evidence')
+@login_required
+@role_required('admin', 'treasurer', 'secretary', 'exco')
+def payout_evidence(saving_id):
+    """Hand an officer the voucher behind one payout."""
+    db = get_db()
+    row = db.execute('SELECT evidence_path FROM savings WHERE id = ?', (saving_id,)).fetchone()
+    if not row or not row['evidence_path']:
+        abort(404)
+    disk = private_path(row['evidence_path'])
+    if not disk or not os.path.exists(disk):
+        abort(404)
+    audit(db, 'PAYOUT_EVIDENCE_VIEW', 'savings',
+          f'Downloaded the payout evidence for savings row {saving_id}')
+    db.commit()
+    return send_file(disk, as_attachment=True,
+                     download_name=f'payout-evidence-{saving_id}'
+                                   f'{os.path.splitext(disk)[1]}')
 
 
 @savings.route('/savings/adjust', methods=['POST'])

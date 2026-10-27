@@ -69,3 +69,4 @@ functions/venv/
 # copied to the server directly (see deploy/vps/landing/app/README.txt).
 deploy/vps/landing/download/*.apk
 deploy/vps/landing/download/*.aab
+private_uploads/

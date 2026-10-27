@@ -446,7 +446,12 @@ class LoanRequestAlertTests(unittest.TestCase):
         import loan_limits
         member_id = self._member('0098', email='limits@coop.test')
         username, password = self._member_user('limits@coop.test', 'limitsmember')
-        policy = {'max_amount': 0, 'amounts': {'Regular': 100000}, 'multiplier': 2, 'tenures': {'Regular': 6}}
+        # Mirrors the shape of loan_limits.limits(); the templates read every key,
+        # so a stub that is missing one fails in Jinja rather than in the check.
+        policy = {'max_amount': 0, 'amounts': {'Regular': 100000}, 'multiplier': 2,
+                  'tenures': {'Regular': 6},
+                  'products': {'Regular': {'label': 'Regular', 'rate': 11.0,
+                                           'method': 'reducing_annual'}}}
         payloads = [({'amount': 100001, 'tenure': 6, 'purpose': 'Regular'}, b'Maximum loan amount'),
                     ({'amount': 100000, 'tenure': 7, 'purpose': 'Regular'}, b'Maximum tenure')]
         with patch.object(loan_limits, 'limits', return_value=policy):

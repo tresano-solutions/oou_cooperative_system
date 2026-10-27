@@ -134,7 +134,7 @@ PERMISSIONS = [
         'description': 'See savings contributions and salary-deduction batches.',
         'default_roles': ('admin', 'treasurer', 'secretary', 'exco'),
         'endpoints': ('savings.savings_list', 'savings.salary_batch_detail',
-                      'savings.salary_batch_export'),
+                      'savings.salary_batch_export', 'savings.payout_evidence'),
     },
     {
         'key': 'savings.manage',
