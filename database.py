@@ -347,6 +347,19 @@ def init_db():
         )
     '''))
 
+    # Throttling for public forms. Kept in the database, not in each worker's
+    # memory: with several gunicorn workers an in-process counter lets a caller
+    # through once per worker, so the advertised limit was never the real one.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS throttle_hits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket TEXT NOT NULL,
+            hit_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_throttle_bucket ON throttle_hits(bucket)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_throttle_hit_at ON throttle_hits(hit_at)')
+
     # In-app feedback / NPS survey (also recruits referral / sales partners).
     _add_col(db, 'users', 'feedback_dismissed_at', 'TIMESTAMP')
     db.execute(_adapt('''

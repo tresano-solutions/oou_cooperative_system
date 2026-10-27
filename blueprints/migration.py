@@ -4,6 +4,7 @@ Handles bulk import/export for migrating from the old cooperative app.
 All imports use atomic transactions — the whole file succeeds or rolls back.
 """
 import csv
+from csv_safe import safe_writer
 import os
 from upload_history import record_upload
 import random
@@ -174,7 +175,7 @@ def template_opening():
     """CSV pre-listing every ledger account for the admin to fill with amounts."""
     db = get_db()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['account_code', 'account_name', 'normal_balance', 'debit', 'credit'])
     for a in get_accounts(db, active_only=True):
         w.writerow([a['code'], a['name'], a['normal_balance'], '', ''])
@@ -469,7 +470,7 @@ def import_members():
 @role_required('admin', 'secretary')
 def template_members():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(MEMBERS_COLUMNS)
     w.writerow(['John', 'Doe', 'john@example.com', '08012345678',
                 'MEM/2024/0001', '2020-01-15', '5000',
@@ -502,7 +503,7 @@ def export_members():
         FROM members ORDER BY member_number
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow([
         'member_number', 'first_name', 'last_name', 'email', 'phone',
         'address', 'occupation', 'date_of_birth', 'date_joined', 'monthly_savings',
@@ -642,7 +643,7 @@ def import_savings():
 @role_required('admin', 'treasurer')
 def template_savings():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(SAVINGS_COLUMNS)
     w.writerow(['MEM/2024/0001', 'john@example.com', '5000', '2024-01', 'monthly',
                 '0', 'salary_deduction', 'RCPT/20240115/0001', '2024-01-10', ''])
@@ -665,7 +666,7 @@ def export_savings():
         ORDER BY m.member_number, s.month
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['member_number', 'email', 'amount', 'month', 'late_fee',
                 'payment_method', 'receipt_number', 'date', 'notes'])
     for r in rows:
@@ -799,7 +800,7 @@ def import_loans():
 @role_required('admin', 'treasurer')
 def template_loans():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(LOANS_COLUMNS)
     # Active loan — already disbursed, partially repaid
     w.writerow(['MEM/2024/0001', 'john@example.com', 'LOAN/20240201/0001',
@@ -829,7 +830,7 @@ def export_loans():
         ORDER BY l.date_applied DESC
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['member_number', 'email', 'loan_number', 'amount', 'purpose',
                 'tenure', 'interest_rate', 'total_repayment', 'balance', 'status',
                 'date_applied', 'date_approved', 'disbursement_date', 'disbursed_amount', 'notes'])
@@ -1001,7 +1002,7 @@ def import_repayments():
 @role_required('admin', 'treasurer')
 def template_repayments():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(REPAYMENTS_COLUMNS)
     # Full repayment breakdown known
     w.writerow(['LOAN/20240201/0001', 'MEM/2024/0001', 'john@example.com',
@@ -1033,7 +1034,7 @@ def export_repayments():
         ORDER BY r.date DESC
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['loan_number', 'member_number', 'email',
                 'amount', 'principal_paid', 'interest_paid', 'penalty_paid',
                 'payment_method', 'receipt_number', 'date', 'notes'])
@@ -1126,7 +1127,7 @@ def import_expenses():
 @role_required('admin', 'treasurer')
 def template_expenses():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(EXPENSES_COLUMNS)
     w.writerow(['Stationery', '5000', 'Office supplies', 'Balogun Market',
                 'cash', '2024-01-10', ''])
@@ -1146,7 +1147,7 @@ def export_expenses():
         FROM expenses ORDER BY date DESC
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['expense_number', 'category', 'amount', 'description',
                 'vendor', 'payment_method', 'date', 'notes'])
     for r in rows:
@@ -1232,7 +1233,7 @@ def import_revenue():
 @role_required('admin', 'treasurer')
 def template_revenue():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(REVENUE_COLUMNS)
     w.writerow(['Entrance Fee', '2000', 'New member entrance fee', 'Member payments',
                 '2024-01-05', ''])
@@ -1251,7 +1252,7 @@ def export_revenue():
         'FROM revenue ORDER BY date DESC'
     ).fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['revenue_number', 'category', 'amount', 'description', 'source', 'date', 'notes'])
     for r in rows:
         w.writerow(list(r))
@@ -1351,7 +1352,7 @@ def import_investments():
 @role_required('admin', 'treasurer')
 def template_investments():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(INVESTMENTS_COLUMNS)
     w.writerow(['GTBank Fixed Deposit', 'Fixed Deposit', '500000', 'GTBank',
                 '9', 'low', '2024-01-01', '2024-07-01',
@@ -1373,7 +1374,7 @@ def export_investments():
         FROM investments ORDER BY date DESC
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['investment_number', 'name', 'type', 'amount', 'institution',
                 'interest_rate', 'risk_level', 'start_date', 'maturity_date',
                 'description', 'approval_status', 'date'])
@@ -1465,7 +1466,7 @@ def import_honorarium():
 @role_required('admin')
 def template_honorarium():
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(HONORARIUM_COLUMNS)
     w.writerow(['Ade Afolabi', 'MEM/2024/0001', 'ade@example.com',
                 '15000', 'Executive allowance', '2024-01', '2024-01-31'])
@@ -1487,7 +1488,7 @@ def export_honorarium():
         ORDER BY h.date DESC
     ''').fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['recipient_name', 'member_number', 'email',
                 'amount', 'description', 'month', 'date'])
     for r in rows:

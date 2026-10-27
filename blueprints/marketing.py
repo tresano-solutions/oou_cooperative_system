@@ -3,6 +3,7 @@ Marketing lead capture and admin lead inbox for CoopMS.
 """
 
 import csv
+from csv_safe import safe_writer
 import io
 import json
 import os
@@ -17,7 +18,7 @@ from markupsafe import escape
 from database import get_db, last_insert_id
 from email_service import send_email_detailed
 from extensions import csrf
-from utils import audit, role_required
+from utils import audit, client_ip, role_required, throttle
 
 
 marketing = Blueprint('marketing', __name__)
@@ -25,7 +26,6 @@ marketing = Blueprint('marketing', __name__)
 LEAD_STATUSES = ('new', 'contacted', 'demo_booked', 'demo_completed', 'proposal_sent', 'negotiation', 'won', 'lost')
 ACTIVITY_TYPES = ('call', 'email', 'whatsapp', 'demo', 'proposal', 'note')
 PROPOSAL_STATUSES = ('not_started', 'drafting', 'sent', 'accepted', 'rejected')
-_RECENT_SUBMISSIONS = {}
 
 
 def marketing_hq_enabled() -> bool:
@@ -38,23 +38,11 @@ def _require_marketing_hq():
 
 
 def _client_ip() -> str:
-    forwarded = request.headers.get('X-Forwarded-For', '')
-    if forwarded:
-        return forwarded.split(',')[0].strip()[:80]
-    return (request.remote_addr or '')[:80]
+    return client_ip()
 
 
 def _rate_limited(ip: str) -> bool:
-    now = time.time()
-    window_seconds = 15 * 60
-    max_hits = 8
-    hits = [ts for ts in _RECENT_SUBMISSIONS.get(ip, []) if now - ts < window_seconds]
-    if len(hits) >= max_hits:
-        _RECENT_SUBMISSIONS[ip] = hits
-        return True
-    hits.append(now)
-    _RECENT_SUBMISSIONS[ip] = hits
-    return False
+    return throttle(f'lead:{ip}', max_hits=8, window_seconds=15 * 60)
 
 
 def _clean(value, limit=500):
@@ -580,7 +568,7 @@ def export_leads():
     db = get_db()
     rows = db.execute('SELECT * FROM marketing_leads ORDER BY created_at DESC').fetchall()
     buf = io.StringIO()
-    writer = csv.writer(buf)
+    writer = safe_writer(buf)
     headers = [
         'created_at', 'status', 'lead_score', 'lead_temperature', 'score_reason',
         'full_name', 'email', 'phone', 'society_name',

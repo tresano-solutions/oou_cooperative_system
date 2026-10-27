@@ -1,4 +1,5 @@
 import csv
+from csv_safe import safe_writer
 import io
 from datetime import datetime
 
@@ -29,7 +30,7 @@ def _get_val(db, query, params=()):
 
 def _csv_response(filename, columns, rows):
     out = io.StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     writer.writerow([c['label'] for c in columns])
     for row in rows:
         writer.writerow([row.get(c['key'], '') for c in columns])

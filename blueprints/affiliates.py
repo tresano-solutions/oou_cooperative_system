@@ -27,7 +27,7 @@ from email_service import send_email
 from blueprints.marketing import marketing_hq_enabled
 from blueprints.hq_billing import (hq_admin_required, setup_paid, setup_charged,
                                    SETUP_ITEM_TYPE)
-from utils import audit
+from utils import audit, client_ip
 
 affiliates_bp = Blueprint('affiliates', __name__)
 
@@ -1021,7 +1021,7 @@ def request_statement():
                                minutes=PORTAL_TOKEN_MINUTES)
 
     db = get_db()
-    ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()
+    ip = client_ip()
     # The same reply either way, so this page cannot be used to find out who is
     # an affiliate.
     done = render_template('affiliates/statement-request.html',

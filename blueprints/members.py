@@ -1,4 +1,5 @@
 import csv
+from csv_safe import safe_writer
 from upload_history import record_upload
 import os
 import secrets
@@ -39,7 +40,7 @@ def financial_statement(member_id):
         abort(400, description=str(exc))
     if request.args.get('format') == 'csv':
         output = StringIO()
-        writer = csv.writer(output)
+        writer = safe_writer(output)
         def safe(value):
             text = str(value)
             return "'" + text if text.lstrip().startswith(('=', '+', '-', '@')) else text
@@ -618,7 +619,7 @@ def bulk_upload_members():
 @role_required('admin', 'secretary')
 def download_template():
     output = StringIO()
-    writer = csv.writer(output)
+    writer = safe_writer(output)
     writer.writerow(['first_name', 'last_name', 'email', 'phone', 'address', 'occupation', 'monthly_savings', 'date_joined'])
     writer.writerow(['John', 'Doe', 'john@example.com', '08012345678', 'Lagos', 'Teacher', '5000', '2024-01-15'])
     writer.writerow(['Jane', 'Smith', 'jane@example.com', '08087654321', 'Ibadan', 'Engineer', '10000', '2024-02-01'])
@@ -641,7 +642,7 @@ def export_members():
     ''').fetchall()
 
     output = StringIO()
-    writer = csv.writer(output)
+    writer = safe_writer(output)
     writer.writerow([
         'Member Number', 'First Name', 'Last Name', 'Email', 'Phone',
         'Address', 'Occupation', 'Status', 'Total Savings', 'Date Joined'

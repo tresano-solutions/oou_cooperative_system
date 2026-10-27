@@ -4,6 +4,7 @@ and the journal register. This is the auditable face of the double-entry ledger.
 """
 
 import csv
+from csv_safe import safe_writer
 import io
 import secrets
 from datetime import datetime
@@ -471,7 +472,7 @@ def bank_accounts():
 
     if request.args.get('format') == 'csv':
         out = io.StringIO()
-        writer = csv.writer(out)
+        writer = safe_writer(out)
         writer.writerow([
             'account_code', 'account_name', 'opening_balance', 'cash_in',
             'cash_out', 'closing_balance', 'entries', 'is_default',
@@ -600,7 +601,7 @@ def bank_account_detail(code):
 
     if request.args.get('format') == 'csv':
         out = io.StringIO()
-        writer = csv.writer(out)
+        writer = safe_writer(out)
         writer.writerow(['account_code', data['account']['code']])
         writer.writerow(['account_name', data['account']['name']])
         writer.writerow(['from_date', from_date])
@@ -867,7 +868,7 @@ def account_ledger_export(code):
         return redirect(url_for('accounting.chart_of_accounts'))
 
     out = io.StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     writer.writerow([
         'account_code', 'account_name', 'account_type', 'normal_balance',
         'from_date', 'to_date', 'opening_balance',
@@ -1095,7 +1096,7 @@ def journal_register_export():
     ''', tuple(params)).fetchall()
 
     out = io.StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     writer.writerow([
         'entry_number', 'date', 'description', 'reference', 'source_module',
         'source_id', 'account_code', 'account_name', 'line_memo', 'debit', 'credit',

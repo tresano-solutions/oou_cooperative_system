@@ -756,3 +756,47 @@ def audit(db, action: str, module: str, description: str, data: str = '') -> Non
     ip    = request.remote_addr or ''
     ua    = request.user_agent.string if request.user_agent else ''
     log_audit(db, uid, uname, action, module, description, ip, ua, data)
+
+
+def client_ip() -> str:
+    """The caller's address, as the proxy in front of us reported it.
+
+    ProxyFix (app.py) already resolves request.remote_addr from the rightmost
+    X-Forwarded-For entry, which is the one Caddy observed and the only one a
+    caller cannot write for themselves. Reading the raw header instead and
+    taking the first entry — as the lead form used to — lets anyone choose
+    which bucket they are throttled in, which is the same as not throttling.
+    """
+    from flask import request
+    return (request.remote_addr or '')[:80]
+
+
+def throttle(bucket: str, max_hits: int, window_seconds: int) -> bool:
+    """True if `bucket` has already used up its allowance in the window.
+
+    Counts in the database so every worker sees the same tally. Expired rows
+    are pruned on the write path, as the login throttle does, so the table
+    stays the size of its own window.
+    """
+    from database import get_db
+    db = get_db()
+    now = datetime.now()
+    cutoff = now - timedelta(seconds=window_seconds)
+    try:
+        db.execute('DELETE FROM throttle_hits WHERE hit_at < ?', (cutoff,))
+        used = db.execute(
+            'SELECT COUNT(*) AS n FROM throttle_hits WHERE bucket = ? AND hit_at >= ?',
+            (bucket, cutoff)).fetchone()['n']
+        if used >= max_hits:
+            db.commit()
+            return True
+        db.execute('INSERT INTO throttle_hits (bucket, hit_at) VALUES (?, ?)', (bucket, now))
+        db.commit()
+        return False
+    except Exception:
+        # A throttle-store problem must not take the form down with it.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False

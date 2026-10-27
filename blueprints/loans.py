@@ -1,4 +1,5 @@
 import csv
+from csv_safe import safe_writer
 import hmac
 import os
 import random
@@ -37,7 +38,7 @@ loans = Blueprint('loans', __name__)
 
 def _adapter_csv(headers, rows, filename):
     out = StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     def safe(value):
         text = str(value if value is not None else '')
         return "'" + text if text.lstrip().startswith(('=', '+', '-', '@')) else text
@@ -325,7 +326,7 @@ def _disburse_loan(db, loan, cash_account, posting_date=None):
 @role_required('admin', 'treasurer')
 def download_repayment_template():
     output = StringIO()
-    writer = csv.writer(output)
+    writer = safe_writer(output)
     writer.writerow(['loan_number', 'amount', 'payment_date', 'payment_method', 'counter_account', 'receipt_number', 'notes'])
     writer.writerow(['LOAN/20250428/0001', '25000', '2025-04-28', 'transfer', '1000', 'RCPT-001', 'First repayment'])
     writer.writerow(['LOAN/20250428/0002', '50000', '2025-04-29', 'cash', '1000', '', 'Partial payment'])
@@ -1303,7 +1304,7 @@ def export_loans():
     ''').fetchall()
 
     output = StringIO()
-    writer = csv.writer(output)
+    writer = safe_writer(output)
     writer.writerow(['Loan Number', 'Member Name', 'Original Amount',
                      'Outstanding Balance', 'Status', 'Date Applied'])
     for loan in all_loans:
@@ -1343,7 +1344,7 @@ def export_loan_statements():
     ''').fetchall()
 
     output = StringIO()
-    writer = csv.writer(output)
+    writer = safe_writer(output)
     writer.writerow([
         'member_number', 'member_name', 'member_email', 'loan_number',
         'loan_status', 'movement_date', 'movement_type', 'movement_reference',
@@ -1669,7 +1670,7 @@ def fee_refunds_export():
     """The same list as a CSV, to check against your own records before paying."""
     db = get_db()
     buf = StringIO()
-    writer = csv.writer(buf)
+    writer = safe_writer(buf)
     writer.writerow(['member_number', 'member_name', 'loan_number', 'loan_amount',
                      'fee_charged', 'amount_disbursed', 'should_have_been_disbursed',
                      'disbursed_on', 'loan_status', 'bank_name', 'account_name',

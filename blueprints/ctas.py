@@ -16,6 +16,7 @@ every CTAS view with @ctas_required.
 """
 
 import csv
+from csv_safe import safe_writer
 import hmac
 import os
 import secrets
@@ -28,7 +29,7 @@ from flask import (Blueprint, abort, current_app, flash, jsonify, make_response,
 from flask_login import current_user, login_required
 
 from database import get_db, last_insert_id
-from utils import finite_float, audit, role_required, member_for_user, notify_member
+from utils import audit, client_ip, finite_float, member_for_user, notify_member, role_required
 from ledger import post_journal_safe, get_default_cash_account, MEMBER_DEPOSITS, SHARE_CAPITAL
 from payments import get_gateway, generate_reference
 import permissions as perms
@@ -1427,7 +1428,7 @@ def payroll_export(cycle_id):
         WHERE s.cycle_id = ? AND s.status IN ('enrolled', 'scheduled', 'active_recovery')
         ORDER BY m.member_number''', (cycle_id,)).fetchall()
     out = StringIO()
-    w = csv.writer(out)
+    w = safe_writer(out)
     w.writerow(['subscription_id', 'member_number', 'employee_id', 'name', 'status', 'period',
                 'expected_amount', 'actual_amount'])
     for s in subs:
@@ -1915,7 +1916,7 @@ def autopay_setup(sub_id):
              consent_text, consent_signature, consent_ip, consented_at, setup_reference)
             VALUES (?, ?, 'paystack', 'card', ?, ?, 'pending', ?, ?, ?, ?, ?)''',
         (member['id'], sub_id, email, amount, _consent_text(cycle, amount), signature,
-         (request.headers.get('X-Forwarded-For', '') or request.remote_addr or '')[:80],
+         client_ip(),
          datetime.now(), reference))
     audit(db, 'CTAS_MANDATE_START', 'ctas', f"Autopay authorisation started for subscription #{sub_id}")
     db.commit()

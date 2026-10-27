@@ -1,4 +1,5 @@
 import csv
+from csv_safe import safe_writer
 from upload_history import record_upload
 import os
 import random
@@ -171,7 +172,7 @@ def salary_batch_export(batch_ref):
         return redirect(url_for('savings.savings_list'))
 
     out = StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     writer.writerow([
         'batch_ref', 'member_number', 'employee_id', 'name', 'email',
         'month', 'date', 'receipt_number', 'amount', 'late_fee',
@@ -261,7 +262,7 @@ def salary_batch_reverse(batch_ref):
 @role_required('admin', 'treasurer')
 def download_salary_template():
     out = StringIO()
-    writer = csv.writer(out)
+    writer = safe_writer(out)
     writer.writerow([
         'member_number', 'employee_id', 'email', 'phone', 'amount',
         'month', 'date', 'counter_account', 'receipt_number', 'notes',

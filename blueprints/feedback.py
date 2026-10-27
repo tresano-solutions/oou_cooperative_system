@@ -9,6 +9,7 @@ and email, which an admin can export as CSV to feed the external commission
 platform.
 """
 import csv
+from csv_safe import safe_writer
 import io
 from datetime import datetime, timedelta
 
@@ -213,7 +214,7 @@ def export_referrals():
     ''').fetchall()
 
     buf = io.StringIO()
-    writer = csv.writer(buf)
+    writer = safe_writer(buf)
     writer.writerow(['submitted_at', 'app_username', 'role',
                      'referral_name', 'referral_email', 'recommend_score'])
     for r in rows:
