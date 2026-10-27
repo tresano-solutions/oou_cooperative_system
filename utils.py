@@ -350,7 +350,8 @@ PURPOSE_SETTING_KEY = {
 }
 
 METHOD_LABELS = {
-    'flat':             'Flat Rate',
+    'flat':             'Flat Rate (Annual, Prorated)',
+    'flat_term':        'Flat Rate (Whole Loan Term)',
     'reducing_monthly': 'Declining Balance (Monthly Rate)',
     'reducing_annual':  'Declining Balance (Annual Rate)',
 }
@@ -384,8 +385,8 @@ def compute_loan_schedule(principal, rate, tenure, method='reducing_annual'):
     if n <= 0 or P <= 0:
         return 0.0, 0.0, []
 
-    if method == 'flat':
-        total_interest  = P * (r_pct / 100) * (n / 12)
+    if method in ('flat', 'flat_term'):
+        total_interest  = P * (r_pct / 100) * (1 if method == 'flat_term' else n / 12)
         total_repayment = P + total_interest
         mp       = total_repayment / n          # equal monthly payment
         prin_pm  = P / n
@@ -394,12 +395,15 @@ def compute_loan_schedule(principal, rate, tenure, method='reducing_annual'):
         balance  = P
         schedule = []
         for i in range(1, n + 1):
-            balance = round(max(0.0, balance - prin_pm), 2)
+            principal_part = round(P - round(prin_pm, 2) * (n - 1), 2) if i == n else round(prin_pm, 2)
+            regular_interest = round(round(mp, 2) - round(prin_pm, 2), 2)
+            interest_part = round(total_interest - regular_interest * (n - 1), 2) if i == n else regular_interest
+            balance = round(max(0.0, balance - principal_part), 2)
             schedule.append({
                 'month':     i,
-                'payment':   round(mp, 2),
-                'principal': round(prin_pm, 2),
-                'interest':  round(int_pm, 2),
+                'payment':   round(principal_part + interest_part, 2),
+                'principal': principal_part,
+                'interest':  interest_part,
                 'balance':   balance,
             })
 

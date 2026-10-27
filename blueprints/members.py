@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime, timedelta
 from io import StringIO, TextIOWrapper
 from types import SimpleNamespace
+import json
 
 from flask import Blueprint, render_template, redirect, url_for, request, flash, make_response
 from flask_login import login_required
@@ -18,6 +19,72 @@ from utils import (role_required, validate_image, audit, notify_member,
                    member_prefix, coop_name, parse_member_joined)
 
 members = Blueprint('members', __name__)
+
+
+@members.route('/members/<int:member_id>/financial-statement')
+@login_required
+@role_required('admin', 'secretary', 'treasurer', 'exco')
+def financial_statement(member_id):
+    from flask import abort
+    from member_financials import statement
+    db = get_db()
+    member = db.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    if not member:
+        abort(404)
+    start = request.args.get('from_date') or f'{datetime.now().year}-01-01'
+    end = request.args.get('to_date') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        report = statement(db, member_id, start, end)
+    except ValueError as exc:
+        abort(400, description=str(exc))
+    if request.args.get('format') == 'csv':
+        output = StringIO()
+        writer = csv.writer(output)
+        def safe(value):
+            text = str(value)
+            return "'" + text if text.lstrip().startswith(('=', '+', '-', '@')) else text
+        writer.writerow(['Member', safe(member['member_number']), safe(member['first_name'] + ' ' + member['last_name'])])
+        writer.writerow(['Period', start, end])
+        writer.writerow(['Date', 'Type', 'Reference', 'Description', 'Savings movement', 'Share movement', 'Loan movement', 'Savings balance', 'Share balance', 'Loan balance'])
+        writer.writerow([start, 'Opening', '', '', '', '', '', *report['opening'].values()])
+        for row in report['rows']:
+            writer.writerow([row['date'], row['category'], safe(row['reference']), safe(row['description']),
+                             row['savings'], row['shares'], row['loan'], row['savings_balance'], row['shares_balance'], row['loan_balance']])
+        writer.writerow([end, 'Closing', '', '', '', '', '', *report['closing'].values()])
+        writer.writerow([])
+        writer.writerow(['Loan', 'Purpose', 'Principal', 'Agreed total', 'Period balance', 'Current balance', 'Reconciliation difference'])
+        for loan in report['loans']:
+            writer.writerow([safe(loan['number']), safe(loan['purpose']), loan['principal'], loan['agreed_total'], loan['period_balance'], loan['current_balance'], loan['reconciliation_difference']])
+        response = make_response('\ufeff' + output.getvalue())
+        response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+        response.headers['Content-Disposition'] = f'attachment; filename=member-{member_id}-statement-{end}.csv'
+        return response
+    return render_template('admin/member-financial-statement.html', member=member, report=report)
+
+
+@members.route('/members/<int:member_id>/savings-history')
+@login_required
+@role_required('admin', 'secretary', 'treasurer', 'exco')
+def savings_history(member_id):
+    from flask import abort
+    db = get_db()
+    member = db.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    if not member:
+        abort(404)
+    requests = db.execute('SELECT * FROM savings_change_requests WHERE member_id = ? ORDER BY requested_at DESC, id DESC', (member_id,)).fetchall()
+    changes = []
+    for row in db.execute("SELECT * FROM audit_log WHERE action = 'CHANGE_MONTHLY_SAVINGS' ORDER BY id DESC").fetchall():
+        try:
+            data = json.loads(row['data'] or '{}')
+        except (ValueError, TypeError):
+            continue
+        if data.get('member_id') == member_id:
+            changes.append(dict(row, details=data))
+    entries = db.execute('''SELECT s.*, u.username AS recorded_by FROM savings s
+                            LEFT JOIN users u ON u.id = s.created_by
+                            WHERE s.member_id = ? ORDER BY s.date DESC, s.id DESC''', (member_id,)).fetchall()
+    return render_template('admin/member-savings-history.html', member=member,
+                           changes=changes, requests=requests, entries=entries)
 
 # Reasons a member's record moves to the Former Members archive.
 EXIT_REASONS = ('Resigned', 'Deceased', 'Retired', 'Relocated', 'Expelled', 'Other')
@@ -329,6 +396,11 @@ def edit_member(member_id):
                 member_id
             ))
             old_joined = str(member['date_joined'] or '')[:10]
+            new_savings = float(request.form.get('monthly_savings') or 5000)
+            if new_savings != float(member['monthly_savings'] or 0):
+                audit(db, 'CHANGE_MONTHLY_SAVINGS', 'members',
+                      f'Member {member_id}: monthly savings changed from {member["monthly_savings"]} to {new_savings}',
+                      json.dumps(dict(member_id=member_id, before=member['monthly_savings'], after=new_savings), default=str))
             new_joined = str(joined_value or '')[:10]
             if old_joined != new_joined:
                 audit(db, 'CHANGE_MEMBER_JOIN_DATE', 'members',
@@ -676,6 +748,7 @@ def savings_request_act(req_id):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     if action == 'approve':
+        previous = db.execute('SELECT monthly_savings FROM members WHERE id = ?', (req['member_id'],)).fetchone()['monthly_savings']
         # Apply the new monthly savings amount to the member record.
         db.execute("UPDATE members SET monthly_savings = ? WHERE id = ?",
                    (req['requested_amount'], req['member_id']))
@@ -686,6 +759,10 @@ def savings_request_act(req_id):
         db.commit()
         audit(db, 'SAVINGS_CHANGE_APPROVED', 'members',
               f"Member {req['member_id']} monthly savings set to ₦{req['requested_amount']:,.2f}")
+        audit(db, 'CHANGE_MONTHLY_SAVINGS', 'members',
+              f'Member {req["member_id"]}: monthly savings changed through request {req_id}',
+              json.dumps(dict(member_id=req['member_id'], before=previous,
+                              after=req['requested_amount'], request_id=req_id), default=str))
         msg = (f"Your request to change your monthly savings to "
                f"₦{req['requested_amount']:,.2f} has been approved and now takes effect.")
         notify_member(db, req['email'], 'Savings Change Approved', msg,

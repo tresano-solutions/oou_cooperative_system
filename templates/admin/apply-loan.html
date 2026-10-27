@@ -43,11 +43,9 @@
                             <label class="form-label fw-bold">Loan Purpose *</label>
                             <select class="form-select" name="purpose" id="purpose" required>
                                 <option value="">-- Select purpose --</option>
-                                <option value="Regular">Regular / Personal</option>
-                                <option value="Housing">Housing</option>
-                                <option value="Emergency">Emergency</option>
-                                <option value="Asset Purchase">Asset Purchase</option>
-                                <option value="School Fees">School Fees</option>
+                                {% for name, product in loan_limits.products.items() %}
+                                <option value="{{ name }}">{{ product.label }}</option>
+                                {% endfor %}
                             </select>
                         </div>
                     </div>
@@ -56,7 +54,7 @@
                             <label class="form-label fw-bold">Loan Tenure (months) *</label>
                             <select class="form-select" name="tenure" id="tenure" required>
                                 <option value="">-- Select tenure --</option>
-                                {% for month in range(3, max_tenure+1, 3) %}
+                                {% for month in range(1, max_tenure+1) %}
                                 <option value="{{ month }}">{{ month }} months</option>
                                 {% endfor %}
                             </select>
@@ -173,8 +171,11 @@ function calculateLoan() {
     const tenure  = parseInt(document.getElementById('tenure').value)    || 0;
     const purpose = document.getElementById('purpose').value;
 
-    const rate   = interestRates[purpose]   !== undefined ? interestRates[purpose]   : (interestRates['Regular'] || 11);
-    const method = interestMethods[purpose] !== undefined ? interestMethods[purpose] : 'reducing_annual';
+    const products = {{ loan_limits.products|tojson }};
+    const product = products[purpose] || {};
+    const tier = (product.tiers || []).find(t => tenure <= t.max_months);
+    const rate = tier ? tier.rate : product.rate;
+    const method = product.method;
     const label  = methodLabels[method] || method;
 
     // Update method badge
@@ -187,7 +188,9 @@ function calculateLoan() {
     }
 
     if (amount > 0 && tenure > 0 && purpose) {
-        const { mp, total } = computeMonthlyPayment(amount, rate, tenure, method);
+        const { mp, total } = method === 'flat_term'
+            ? {mp: amount * (1 + rate / 100) / tenure, total: amount * (1 + rate / 100)}
+            : computeMonthlyPayment(amount, rate, tenure, method);
         const interest = total - amount;
         document.getElementById('calcPrincipal').textContent = fmt(amount);
         document.getElementById('calcInterest').textContent  = fmt(Math.max(0, interest));

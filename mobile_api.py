@@ -73,27 +73,11 @@ PROFILE_COMPLETION_FIELDS = (
 
 
 def _interest_rates(db):
-    rows = db.execute("SELECT key, value FROM settings WHERE key LIKE 'interest_%'").fetchall()
-    raw = {row['key']: row['value'] for row in rows}
-    return {
-        'Regular': float(raw.get('interest_regular', 11)),
-        'Housing': float(raw.get('interest_housing', 9)),
-        'Emergency': float(raw.get('interest_emergency', 10)),
-        'Asset Purchase': float(raw.get('interest_asset', 10)),
-        'School Fees': float(raw.get('interest_school_fees', 9)),
-    }
+    return {name: p['rate'] for name, p in loan_limits.products(db).items()}
 
 
 def _interest_methods(db):
-    rows = db.execute("SELECT key, value FROM settings WHERE key LIKE 'interest_method_%'").fetchall()
-    raw = {row['key']: row['value'] for row in rows}
-    return {
-        'Regular': raw.get('interest_method_regular', 'reducing_annual'),
-        'Housing': raw.get('interest_method_housing', 'reducing_annual'),
-        'Emergency': raw.get('interest_method_emergency', 'reducing_annual'),
-        'Asset Purchase': raw.get('interest_method_asset', 'reducing_annual'),
-        'School Fees': raw.get('interest_method_school_fees', 'flat'),
-    }
+    return {name: p['method'] for name, p in loan_limits.products(db).items()}
 
 
 def _loan_purpose_options(db):
@@ -102,7 +86,7 @@ def _loan_purpose_options(db):
     return [
         {
             'value': purpose,
-            'label': purpose,
+            'label': loan_limits.products(db)[purpose]['label'],
             'interest_rate': float(rates[purpose]),
             'interest_method': methods.get(purpose, 'reducing_annual'),
         }
@@ -154,11 +138,7 @@ def _mobile_member_is_staff(member):
 
 
 def _max_tenure(db):
-    row = db.execute("SELECT value FROM settings WHERE key = 'max_tenure_months'").fetchone()
-    try:
-        return int(row['value']) if row and row['value'] else 18
-    except (TypeError, ValueError):
-        return 18
+    return max(loan_limits.limits(db)['tenures'].values())
 
 
 def _generate_token(user_id, username, role, session_version=0):
@@ -934,8 +914,7 @@ def mobile_loan_schedule_preview():
     if purpose not in rates:
         return jsonify({'success': False, 'error': 'Select a valid loan purpose.'}), 400
     methods = _interest_methods(g.db)
-    rate = rates.get(purpose, rates['Regular'])
-    method = methods.get(purpose, 'reducing_annual')
+    rate, method = loan_limits.terms(g.db, purpose, tenure)
     monthly_payment, total_repayment, schedule = compute_loan_schedule(amount, rate, tenure, method)
     return jsonify({
         'success': True,
@@ -1035,8 +1014,7 @@ def mobile_apply_loan():
             if any(gid not in active_ids for gid in guarantor_ids):
                 return jsonify({'success': False, 'error': 'Select guarantors from active cooperative members.'}), 400
         methods = _interest_methods(db)
-        rate = rates.get(purpose, rates['Regular'])
-        method = methods.get(purpose, 'reducing_annual')
+        rate, method = loan_limits.terms(db, purpose, tenure)
         monthly_payment, total_repayment, schedule = compute_loan_schedule(amount, rate, tenure, method)
         schedule_snapshot = json.dumps({
             'principal': round(amount, 2),

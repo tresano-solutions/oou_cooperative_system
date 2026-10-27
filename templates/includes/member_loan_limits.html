@@ -1,8 +1,9 @@
 <dl class="small mb-0 mt-2">
     {% for name, limit in member.loan_type_limits.items() %}
     <div class="border-top py-2">
-        <dt>{{ name }}</dt>
+        <dt>{{ limit.label|default(name) }}</dt>
         <dd class="mb-0">Up to {{ '{:,.2f}'.format(limit.eligible_amount) }} &middot; {{ limit.max_tenure_months }} months</dd>
+        {% if limit.tiers %}<dd class="mb-0">7.5% once up to 12 months; 9% once for 13-24 months</dd>{% endif %}
     </div>
     {% endfor %}
 </dl>

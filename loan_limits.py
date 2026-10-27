@@ -10,10 +10,46 @@ DEFAULTS = {'max_loan_amount': '0', **{
 }, **{
     f'max_loan_amount_{suffix}': '0' for suffix in LOAN_TYPES.values()
 }}
+DEFAULTS.update(loan_catalog='standard')
+
+
+def products(db):
+    values = {r['key']: r['value'] for r in db.execute('SELECT key, value FROM settings').fetchall()}
+    smt = values.get('loan_catalog') == 'smt'
+    defaults = dict(regular=11, housing=9, emergency=10, asset=10, school_fees=9)
+    result = {}
+    for name, suffix in LOAN_TYPES.items():
+        if smt and suffix in ('housing', 'emergency'):
+            continue
+        result[name] = {
+            'label': {'asset': 'Asset loan', 'school_fees': 'Back to school'}.get(suffix, name) if smt else name,
+            'rate': float(values.get('interest_' + suffix, defaults[suffix])),
+            'method': values.get('interest_method_' + suffix, 'flat' if suffix == 'school_fees' else 'reducing_annual'),
+        }
+    if smt:
+        result['Regular'].update(rate=7.5, method='flat_term', tiers=[
+            {'max_months': 12, 'rate': 7.5}, {'max_months': 24, 'rate': 9.0}])
+        result = {name: result[name] for name in ('Regular', 'School Fees', 'Asset Purchase')}
+    return result
+
+
+def terms(db, purpose, tenure):
+    product = products(db).get(purpose)
+    if product is None:
+        raise ValueError('Select an available loan type.')
+    rate = product['rate']
+    if product.get('tiers'):
+        tier = next((t for t in product['tiers'] if tenure <= t['max_months']), None)
+        if tier is None:
+            raise ValueError('Maximum tenure for Regular is 24 months.')
+        rate = tier['rate']
+    return rate, product['method']
 
 
 def validate_settings(values):
-    for key in set(DEFAULTS) | {'max_tenure_months'}:
+    if values.get('loan_catalog', 'standard') not in ('standard', 'smt'):
+        raise ValueError('Select a valid loan catalogue.')
+    for key in (set(DEFAULTS) - {'loan_catalog'}) | {'max_tenure_months'}:
         if key not in values:
             continue
         try:
@@ -54,7 +90,9 @@ def limits(db):
     general = int(values['max_tenure_months'])
     general_cap = float(values['max_loan_amount'])
     amounts = {}
-    for name, suffix in LOAN_TYPES.items():
+    available = products(db)
+    for name in available:
+        suffix = LOAN_TYPES[name]
         type_cap = float(values[f'max_loan_amount_{suffix}'])
         caps = [cap for cap in (general_cap, type_cap) if cap > 0]
         amounts[name] = min(caps) if caps else 0
@@ -62,8 +100,10 @@ def limits(db):
         'max_amount': float(values['max_loan_amount']),
         'amounts': amounts,
         'multiplier': multiplier(db),
-        'tenures': {name: min(general, int(values[f'max_tenure_{suffix}']) or general)
-                    for name, suffix in LOAN_TYPES.items()},
+        'products': available,
+        'tenures': {name: (24 if values['loan_catalog'] == 'smt' and name == 'Regular'
+                          else min(general, int(values[f'max_tenure_{LOAN_TYPES[name]}']) or general))
+                    for name in available},
     }
 
 
@@ -105,6 +145,10 @@ def member_limits(db, savings_balance):
     policy = limits(db)
     savings_limit = max(0, round(float(savings_balance or 0) * policy['multiplier'], 2))
     return {name: {
+        'label': policy['products'][name]['label'],
+        'rate': policy['products'][name]['rate'],
+        'method': policy['products'][name]['method'],
+        'tiers': policy['products'][name].get('tiers', []),
         'max_amount': cap,
         'eligible_amount': min(savings_limit, cap) if cap else savings_limit,
         'max_tenure_months': policy['tenures'][name],

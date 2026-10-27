@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Member Financial Statement{% endblock %}
+{% block content %}
+<div class="container-fluid">
+  <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-3">
+    <div><h2>Financial Statement</h2><p>{{ member.first_name }} {{ member.last_name }} &middot; {{ member.member_number }}</p></div>
+    <div class="d-flex gap-2 flex-wrap no-print">
+      <a class="btn btn-outline-secondary" href="{{ url_for('members.member_details', member_id=member.id) }}">Back</a>
+      <a class="btn btn-outline-success" href="{{ url_for('members.financial_statement', member_id=member.id, from_date=report.from_date, to_date=report.to_date, format='csv') }}"><i class="fas fa-download"></i> Download CSV</a>
+      <button class="btn btn-primary" onclick="window.print()"><i class="fas fa-print"></i> Print / Save PDF</button>
+    </div>
+  </div>
+  <form class="row g-2 mb-3 no-print" method="get">
+    <div class="col-sm-4"><label for="statementFrom" class="form-label">From</label><input id="statementFrom" name="from_date" type="date" class="form-control" value="{{ report.from_date }}" required></div>
+    <div class="col-sm-4"><label for="statementTo" class="form-label">To</label><input id="statementTo" name="to_date" type="date" class="form-control" value="{{ report.to_date }}" required></div>
+    <div class="col-sm-4 d-flex align-items-end"><button class="btn btn-primary">Apply period</button></div>
+  </form>
+  <p>Period: {{ report.from_date }} to {{ report.to_date }}. Amounts in NGN.</p>
+  <div class="table-responsive mb-4"><table class="table table-sm">
+    <thead><tr><th>Position</th><th class="text-end">Opening</th><th class="text-end">Closing</th></tr></thead>
+    <tbody>{% for key, label in [('savings', 'Savings'), ('shares', 'Share capital'), ('loan', 'Loan obligations including interest')] %}
+      <tr><th>{{ label }}</th><td class="text-end">{{ '{:,.2f}'.format(report.opening[key]) }}</td><td class="text-end">{{ '{:,.2f}'.format(report.closing[key]) }}</td></tr>
+    {% endfor %}<tr><th>Net position (savings + shares - loans)</th><td></td><td class="text-end">{{ '{:,.2f}'.format(report.net_position) }}</td></tr></tbody>
+  </table></div>
+  <h5>Account Movements</h5>
+  <div class="table-responsive"><table class="table table-sm table-striped align-middle">
+    <thead><tr><th>Date</th><th>Type / Reference</th><th>Description</th><th class="text-end">Savings</th><th class="text-end">Shares</th><th class="text-end">Loan</th><th class="text-end">Savings balance</th><th class="text-end">Loan balance</th></tr></thead>
+    <tbody>{% for row in report.rows %}<tr><td class="text-nowrap">{{ row.date }}</td><td>{{ row.category }}<br><small>{{ row.reference }}</small></td><td style="overflow-wrap:anywhere;max-width:22rem">{{ row.description }}</td>{% for key in ['savings','shares','loan','savings_balance','loan_balance'] %}<td class="text-end text-nowrap">{{ '{:,.2f}'.format(row[key]) }}</td>{% endfor %}</tr>
+    {% else %}<tr><td colspan="8">No movements in this period.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <h5 class="mt-4">Loan Accounts</h5>
+  <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Loan</th><th>Type</th><th>Principal</th><th>Agreed total</th><th>Period-end balance</th><th>Current balance</th></tr></thead>
+    <tbody>{% for loan in report.loans %}<tr><td>{{ loan.number }}</td><td>{{ loan.purpose }}</td>{% for key in ['principal','agreed_total','period_balance','current_balance'] %}<td>{{ '{:,.2f}'.format(loan[key]) }}</td>{% endfor %}</tr>
+    {% if loan.reconciliation_difference %}<tr><td colspan="6" class="text-danger">Reconciliation required for {{ loan.number }}: recorded current balance differs from transaction history by NGN {{ '{:,.2f}'.format(loan.reconciliation_difference) }}.</td></tr>{% endif %}
+    {% else %}<tr><td colspan="6">No disbursed loan accounts.</td></tr>{% endfor %}</tbody></table></div>
+  <p class="small text-muted">Loan opening obligations include agreed interest. Reversals take effect on their recorded dates. Historical balances depend on the transaction history migrated into CoopMS.</p>
+</div>
+{% endblock %}
+{% block extra_css %}<style>@media print {.no-print,.sidebar,nav,footer,.navbar {display:none!important}.main-content {margin:0!important;padding:0!important}thead {display:table-header-group}tr {break-inside:avoid}body {font-size:10px}.table-responsive {overflow:visible}}</style>{% endblock %}

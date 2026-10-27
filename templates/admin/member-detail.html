@@ -14,6 +14,8 @@
             <p class="text-muted">Member #: {{ member.member_number }} | Joined: {{ member.date_joined[:10] }}</p>
         </div>
         <div class="col-md-4 text-end d-flex gap-2 justify-content-end flex-wrap">
+            <a href="{{ url_for('members.financial_statement', member_id=member.id) }}" class="btn btn-outline-primary"><i class="fas fa-file-invoice"></i> Financial Statement</a>
+            <a href="{{ url_for('members.savings_history', member_id=member.id) }}" class="btn btn-outline-secondary"><i class="fas fa-history"></i> Savings History</a>
             <a href="{{ url_for('members.members_list') }}" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Back
             </a>

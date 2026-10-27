@@ -36,9 +36,9 @@
                     <form id="calculatorForm">
                         <div class="mb-3">
                             <label class="form-label" for="loanType">Loan Type</label>
-                            <select class="form-select" id="loanType" onchange="applyLoanType()">
+                            <select class="form-select" id="loanType" onchange="applyLoanType(); calculate()">
                                 {% for name, rate in interest_rates.items() %}
-                                <option value="{{ name }}">{{ name }} — {{ rate }}% p.a.</option>
+                                <option value="{{ name }}">{{ policy.products[name].label }}</option>
                                 {% endfor %}
                             </select>
                             <small class="text-muted">Rate, maximum amount and maximum tenure all follow the type.</small>
@@ -54,10 +54,10 @@
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="rate">Interest Rate (% per annum)</label>
+                            <label class="form-label" for="rate">Interest Rate (%)</label>
                             <input type="number" class="form-control" id="rate"
                                    value="" min="1" max="30" step="0.1" readonly>
-                            <small class="text-muted">Set by your cooperative for this loan type.</small>
+                            <small class="text-muted" id="rateMethod">Set by your cooperative for this loan type.</small>
                         </div>
 
                         <div class="mb-3">
@@ -150,11 +150,11 @@
                                     <td class="text-end" id="feeAmount">₦0</td>
                                 </tr>
                                 <tr>
-                                    <td>Insurance Premium (1%):</td>
+                                    <td>Insurance Premium:</td>
                                     <td class="text-end" id="insurance">₦0</td>
                                 </tr>
                                 <tr>
-                                    <td>Application Fee (1%):</td>
+                                    <td>Application Fee:</td>
                                     <td class="text-end" id="appFee">₦0</td>
                                 </tr>
                                 <tr class="table-warning">
@@ -232,7 +232,7 @@ function applyLoanType() {
     const previous = parseInt(tenure.value, 10);
     const maxTenure = limit.max_tenure_months || 18;
     tenure.innerHTML = '';
-    for (let months = 3; months <= maxTenure; months += 3) {
+    for (let months = 1; months <= maxTenure; months++) {
         const option = document.createElement('option');
         option.value = months;
         option.textContent = months + ' months' + (months === maxTenure ? ' (max)' : '');
@@ -252,71 +252,44 @@ document.addEventListener('DOMContentLoaded', function () {
     calculate();
 });
 
-function calculate() {
-    const amount = parseFloat(document.getElementById('amount').value) || 0;
-    const rate = parseFloat(document.getElementById('rate').value) / 100;
-    const tenure = parseInt(document.getElementById('tenure').value);
-    const savings = parseFloat(document.getElementById('savings').value);
-
-    // Warn inline rather than in a modal. SweetAlert2 is not loaded anywhere in
-    // this app, so the old Swal.fire call could only ever throw — which meant an
-    // over-limit amount silently did nothing at all. An inline hint also lets the
-    // member watch the figures update as they correct the amount.
+let calculationRequest = 0;
+async function calculate() {
+    const requestId = ++calculationRequest;
+    const amount = Number(document.getElementById('amount').value);
+    const tenure = Number(document.getElementById('tenure').value);
     const warning = document.getElementById('amountWarning');
-    const limit = limitsFor(currentType());
-    const maxLoan = limit.eligible_amount;
-    if (maxLoan && amount > maxLoan) {
-        warning.textContent =
-            `The most you can borrow for a ${currentType()} loan is ${naira(maxLoan)}. `
-            + 'The figures below are an estimate only — an application for this amount would be declined.';
-        warning.classList.remove('d-none');
-    } else {
+    const query = new URLSearchParams({amount, tenure, purpose: currentType()});
+    try {
+        const response = await fetch('/loan-schedule-preview?' + query.toString());
+        const result = await response.json();
+        if (requestId !== calculationRequest) return;
+        if (!response.ok || !result.ok) throw new Error(result.error || 'Calculation unavailable.');
         warning.classList.add('d-none');
+        document.getElementById('rate').value = result.rate;
+        document.getElementById('rateMethod').textContent = result.method;
+        document.getElementById('principal').textContent = naira(amount);
+        document.getElementById('totalInterest').textContent = naira(result.total_interest);
+        document.getElementById('totalRepayment').textContent = naira(result.total_repayment);
+        document.getElementById('monthlyPayment').textContent = naira(result.monthly_payment);
+        document.getElementById('effectiveRate').textContent = (result.total_interest / amount * 100).toFixed(2) + '%';
+        document.getElementById('feeAmount').textContent = naira(amount);
+        document.getElementById('insurance').textContent = naira(result.insurance);
+        document.getElementById('appFee').textContent = naira(result.application_fee);
+        document.getElementById('received').textContent = naira(amount - result.insurance - result.application_fee);
+        document.getElementById('scheduleBody').innerHTML = result.schedule.map(row =>
+            '<tr><td>' + row.month + '</td>' +
+            [row.payment, row.principal, row.interest, row.balance].map(n => '<td>' + naira(n) + '</td>').join('') + '</tr>').join('');
+    } catch (error) {
+        if (requestId !== calculationRequest) return;
+        warning.textContent = error.message;
+        warning.classList.remove('d-none');
+        document.getElementById('scheduleBody').innerHTML = '';
+        ['principal', 'totalInterest', 'totalRepayment', 'monthlyPayment', 'effectiveRate',
+         'feeAmount', 'insurance', 'appFee', 'received'].forEach(id => document.getElementById(id).textContent = '-');
     }
-
-    // Calculate monthly interest rate
-    const monthlyRate = rate / 12;
-    
-    // Calculate monthly payment using loan amortization formula
-    const monthlyPayment = amount * monthlyRate * Math.pow(1 + monthlyRate, tenure) / (Math.pow(1 + monthlyRate, tenure) - 1);
-    const totalRepayment = monthlyPayment * tenure;
-    const totalInterest = totalRepayment - amount;
-    
-    // Update summary
-    document.getElementById('principal').innerHTML = naira(amount);
-    document.getElementById('totalInterest').innerHTML = naira(totalInterest);
-    document.getElementById('totalRepayment').innerHTML = naira(totalRepayment);
-    document.getElementById('monthlyPayment').innerHTML = naira(monthlyPayment);
-    document.getElementById('effectiveRate').innerHTML = ((totalInterest / amount) * 100).toFixed(2) + '%';
-    
-    // Fees
-    const insurance = amount * 0.01;
-    const appFee = amount * 0.01;
-    const received = amount - insurance - appFee;
-    
-    document.getElementById('feeAmount').innerHTML = naira(amount);
-    document.getElementById('insurance').innerHTML = naira(insurance);
-    document.getElementById('appFee').innerHTML = naira(appFee);
-    document.getElementById('received').innerHTML = naira(received);
-    
-    // Generate amortization schedule
-    let balance = amount;
-    let scheduleBody = '';
-    for (let i = 1; i <= tenure; i++) {
-        const interest = balance * monthlyRate;
-        const principal = monthlyPayment - interest;
-        balance -= principal;
-        
-        scheduleBody += `<tr>
-            <td>${i}</td>
-            <td>₦${monthlyPayment.toFixed(2)}</td>
-            <td>₦${principal.toFixed(2)}</td>
-            <td>₦${interest.toFixed(2)}</td>
-            <td>₦${Math.max(0, balance).toFixed(2)}</td>
-        </tr>`;
-    }
-    document.getElementById('scheduleBody').innerHTML = scheduleBody;
 }
+document.getElementById('tenure').addEventListener('change', calculate);
+document.getElementById('amount').addEventListener('change', calculate);
 {% endif %}
 </script>
 {% endblock %}

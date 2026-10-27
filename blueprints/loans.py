@@ -440,25 +440,11 @@ def apply_loan():
 
     max_tenure_row = db.execute("SELECT value FROM settings WHERE key = 'max_tenure_months'").fetchone()
     max_tenure = int(max_tenure_row['value']) if max_tenure_row else 18
+    max_tenure = max(loan_limits.limits(db)['tenures'].values())
 
-    # Load all interest_* settings in one query
-    interest_rows = db.execute("SELECT key, value FROM settings WHERE key LIKE 'interest_%'").fetchall()
-    s_raw = {row['key']: row['value'] for row in interest_rows}
-
-    interest_rates = {
-        'Regular':        float(s_raw.get('interest_regular',    11)),
-        'Housing':        float(s_raw.get('interest_housing',     9)),
-        'Emergency':      float(s_raw.get('interest_emergency',  10)),
-        'Asset Purchase': float(s_raw.get('interest_asset',      10)),
-        'School Fees':    float(s_raw.get('interest_school_fees', 9)),
-    }
-    interest_methods = {
-        'Regular':        s_raw.get('interest_method_regular',    'reducing_annual'),
-        'Housing':        s_raw.get('interest_method_housing',    'reducing_annual'),
-        'Emergency':      s_raw.get('interest_method_emergency',  'reducing_annual'),
-        'Asset Purchase': s_raw.get('interest_method_asset',      'reducing_annual'),
-        'School Fees':    s_raw.get('interest_method_school_fees','flat'),
-    }
+    products = loan_limits.products(db)
+    interest_rates = {name: p['rate'] for name, p in products.items()}
+    interest_methods = {name: p['method'] for name, p in products.items()}
 
     if request.method == 'POST':
         member_id = request.form.get('member_id')
@@ -515,8 +501,7 @@ def apply_loan():
                 return redirect(url_for('members.member_details', member_id=member_id))
 
             # Look up rate and method for the chosen purpose
-            interest_rate   = interest_rates.get(purpose, interest_rates.get('Regular', 11))
-            interest_method = interest_methods.get(purpose, 'reducing_annual')
+            interest_rate, interest_method = loan_limits.terms(db, purpose, tenure)
 
             monthly_payment, total_repayment, _ = compute_loan_schedule(
                 amount, interest_rate, tenure, interest_method

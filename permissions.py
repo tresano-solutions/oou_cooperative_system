@@ -90,6 +90,8 @@ PERMISSIONS = [
             'members.members_list',            # was admin/secretary only — see docs
             'members.member_details',
             'members.member_savings_statement',
+            'members.financial_statement',
+            'members.savings_history',
             'members.member_card',
             'admin_panel.get_member_api',
         ),

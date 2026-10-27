@@ -116,27 +116,11 @@ def _profile_completion(member):
 
 
 def _interest_rates(db):
-    rows = db.execute("SELECT key, value FROM settings WHERE key LIKE 'interest_%'").fetchall()
-    r = {row['key']: row['value'] for row in rows}
-    return {
-        'Regular':        float(r.get('interest_regular',    11)),
-        'Housing':        float(r.get('interest_housing',     9)),
-        'Emergency':      float(r.get('interest_emergency',  10)),
-        'Asset Purchase': float(r.get('interest_asset',      10)),
-        'School Fees':    float(r.get('interest_school_fees', 9)),
-    }
+    return {name: p['rate'] for name, p in loan_limits.products(db).items()}
 
 
 def _interest_methods(db):
-    rows = db.execute("SELECT key, value FROM settings WHERE key LIKE 'interest_method_%'").fetchall()
-    r = {row['key']: row['value'] for row in rows}
-    return {
-        'Regular':        r.get('interest_method_regular',    'reducing_annual'),
-        'Housing':        r.get('interest_method_housing',    'reducing_annual'),
-        'Emergency':      r.get('interest_method_emergency',  'reducing_annual'),
-        'Asset Purchase': r.get('interest_method_asset',      'reducing_annual'),
-        'School Fees':    r.get('interest_method_school_fees','flat'),
-    }
+    return {name: p['method'] for name, p in loan_limits.products(db).items()}
 
 
 def _parse_dt(val):
@@ -816,13 +800,15 @@ def loan_schedule_preview():
         return jsonify({'ok': False, 'error': limit_error})
     rates   = _interest_rates(db)
     methods = _interest_methods(db)
-    rate    = rates.get(purpose, rates['Regular'])
-    method  = methods.get(purpose, 'reducing_annual')
+    rate, method = loan_limits.terms(db, purpose, tenure)
     mp, total, schedule = compute_loan_schedule(amount, rate, tenure, method)
+    from blueprints.loans import _loan_fees
+    insurance, application_fee = _loan_fees(db, amount)
     return jsonify({
         'ok': True, 'monthly_payment': mp, 'total_repayment': total,
         'total_interest': round(total - amount, 2), 'rate': rate,
         'method': METHOD_LABELS.get(method, method), 'schedule': schedule,
+        'insurance': insurance, 'application_fee': application_fee,
     })
 
 
@@ -837,6 +823,7 @@ def apply_loan_member():
 
     max_tenure_row = db.execute("SELECT value FROM settings WHERE key = 'max_tenure_months'").fetchone()
     max_tenure     = int(max_tenure_row['value']) if max_tenure_row else 18
+    max_tenure = max(loan_limits.limits(db)['tenures'].values())
     rates          = _interest_rates(db)
     methods        = _interest_methods(db)
     is_staff_member = bool((member['employee_id'] or '').strip()) if 'employee_id' in member.keys() else False
@@ -912,8 +899,7 @@ def apply_loan_member():
                       f'{loan_limits.eligibility_note(db, savings_balance)}', 'danger')
                 return redirect(url_for('portal.apply_loan_member'))
 
-            rate   = rates.get(purpose, rates['Regular'])
-            method = methods.get(purpose, 'reducing_annual')
+            rate, method = loan_limits.terms(db, purpose, tenure)
             mp, total_repayment, schedule = compute_loan_schedule(amount, rate, tenure, method)
             schedule_snapshot = json.dumps({
                 'principal': round(amount, 2),

@@ -596,10 +596,18 @@
                             <i class="fas fa-percent me-2"></i>Loan Interest Rates &amp; Computation Methods
                         </h5>
                         <p class="text-muted small mb-3">
-                            Configure the annual interest rate and the computation method for each loan category.
+                            Configure the interest rate and the computation method for each loan category.
                             The method determines how monthly instalments are calculated.
                         </p>
 
+                        <div class="mb-3">
+                            <label for="loanCatalog" class="form-label">Loan catalogue</label>
+                            <select id="loanCatalog" name="loan_catalog" class="form-select">
+                                <option value="standard" {% if settings.loan_catalog|default('standard') == 'standard' %}selected{% endif %}>Standard catalogue</option>
+                                <option value="smt" {% if settings.loan_catalog == 'smt' %}selected{% endif %}>SMT: Regular, Back to school, Asset loan</option>
+                            </select>
+                            <p class="form-text">SMT Regular: 7.5% once for 1-12 months; 9% once for 13-24 months. This overrides the Regular rate and tenure below. Other loan rates remain as configured. Existing loans keep their agreed terms.</p>
+                        </div>
                         <div class="table-responsive mb-3">
                             <table class="table table-bordered align-middle">
                                 <thead class="table-primary">
@@ -625,7 +633,7 @@
                                                 {% set m = settings.interest_method_regular|default('reducing_annual') %}
                                                 <option value="reducing_annual"  {% if m=='reducing_annual'  %}selected{% endif %}>Declining Balance (Annual Rate)</option>
                                                 <option value="reducing_monthly" {% if m=='reducing_monthly' %}selected{% endif %}>Declining Balance (Monthly Rate)</option>
-                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate</option>
+                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate (Annual, Prorated)</option>
                                             </select>
                                         </td>
                                         <td class="text-muted small">Bye-laws 9.3.4: Max 11% p.a.</td>
@@ -644,7 +652,7 @@
                                                 {% set m = settings.interest_method_housing|default('reducing_annual') %}
                                                 <option value="reducing_annual"  {% if m=='reducing_annual'  %}selected{% endif %}>Declining Balance (Annual Rate)</option>
                                                 <option value="reducing_monthly" {% if m=='reducing_monthly' %}selected{% endif %}>Declining Balance (Monthly Rate)</option>
-                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate</option>
+                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate (Annual, Prorated)</option>
                                             </select>
                                         </td>
                                         <td class="text-muted small">Housing / property loans</td>
@@ -663,7 +671,7 @@
                                                 {% set m = settings.interest_method_emergency|default('reducing_annual') %}
                                                 <option value="reducing_annual"  {% if m=='reducing_annual'  %}selected{% endif %}>Declining Balance (Annual Rate)</option>
                                                 <option value="reducing_monthly" {% if m=='reducing_monthly' %}selected{% endif %}>Declining Balance (Monthly Rate)</option>
-                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate</option>
+                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate (Annual, Prorated)</option>
                                             </select>
                                         </td>
                                         <td class="text-muted small">Emergency loans — faster approval</td>
@@ -682,7 +690,7 @@
                                                 {% set m = settings.interest_method_asset|default('reducing_annual') %}
                                                 <option value="reducing_annual"  {% if m=='reducing_annual'  %}selected{% endif %}>Declining Balance (Annual Rate)</option>
                                                 <option value="reducing_monthly" {% if m=='reducing_monthly' %}selected{% endif %}>Declining Balance (Monthly Rate)</option>
-                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate</option>
+                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate (Annual, Prorated)</option>
                                             </select>
                                         </td>
                                         <td class="text-muted small">Vehicle, equipment, appliances</td>
@@ -701,7 +709,7 @@
                                                 {% set m = settings.interest_method_school_fees|default('flat') %}
                                                 <option value="reducing_annual"  {% if m=='reducing_annual'  %}selected{% endif %}>Declining Balance (Annual Rate)</option>
                                                 <option value="reducing_monthly" {% if m=='reducing_monthly' %}selected{% endif %}>Declining Balance (Monthly Rate)</option>
-                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate</option>
+                                                <option value="flat"             {% if m=='flat'             %}selected{% endif %}>Flat Rate (Annual, Prorated)</option>
                                             </select>
                                         </td>
                                         <td class="text-muted small">Education / school fee loans</td>

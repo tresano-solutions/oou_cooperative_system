@@ -5,6 +5,30 @@ from loan_limits import application_error, limits, validate_settings, member_lim
 
 
 class LoanLimitTests(unittest.TestCase):
+    def test_smt_catalogue_tiers_and_tenant_isolation(self):
+        from loan_limits import products, terms
+        from utils import compute_loan_schedule
+        self.put('loan_catalog', 'smt')
+        self.assertEqual([p['label'] for p in products(self.db).values()], ['Regular', 'Back to school', 'Asset loan'])
+        for tenure, rate, total in [(6, 7.5, 537500), (12, 7.5, 537500), (13, 9, 545000), (24, 9, 545000)]:
+            self.assertEqual(terms(self.db, 'Regular', tenure), (rate, 'flat_term'))
+            self.assertEqual(compute_loan_schedule(500000, rate, tenure, 'flat_term')[1], total)
+        self.assertIsNotNone(application_error(self.db, 'Regular', 500000, 25))
+        self.assertIsNotNone(application_error(self.db, 'Housing', 500000, 6))
+        self.put('loan_catalog', 'standard')
+        self.assertIn('Housing', products(self.db))
+        self.assertEqual(terms(self.db, 'Regular', 6), (11, 'reducing_annual'))
+
+    def test_annual_flat_interest_is_prorated(self):
+        from utils import compute_loan_schedule
+        self.assertEqual(compute_loan_schedule(500000, 20, 6, 'flat')[1], 550000)
+        for method, rate, months in [('flat', 20, 6), ('flat_term', 9, 13)]:
+            monthly, total, rows = compute_loan_schedule(500000, rate, months, method)
+            self.assertAlmostEqual(sum(r['payment'] for r in rows), total, places=2)
+            self.assertAlmostEqual(sum(r['principal'] for r in rows), 500000, places=2)
+            self.assertEqual(rows[-1]['balance'], 0)
+            self.assertEqual(rows[0]['payment'], monthly)
+
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.db.row_factory = sqlite3.Row

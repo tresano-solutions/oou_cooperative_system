@@ -4,7 +4,7 @@
     {% endif %}
     <div class="d-flex flex-wrap gap-3 small">
         {% for name, months in loan_limits.tenures.items() %}
-        <span><strong>{{ name }}:</strong> {% if loan_limits.amounts[name] %}{{ '{:,.2f}'.format(loan_limits.amounts[name]) }} maximum; {% endif %}up to {{ months }} months</span>
+        <span><strong>{{ loan_limits.products[name].label }}:</strong> {% if loan_limits.amounts[name] %}{{ '{:,.2f}'.format(loan_limits.amounts[name]) }} maximum; {% endif %}up to {{ months }} months</span>
         {% endfor %}
     </div>
 </div>
