@@ -224,7 +224,8 @@ PERMISSIONS = [
         'default_roles': ('admin', 'treasurer'),
         'endpoints': ('loans.repay_loan', 'loans.bulk_loan_repayments',
                       'loans.export_loans', 'loans.export_loan_statements',
-                      'loans.download_repayment_template'),
+                      'loans.download_repayment_template', 'loans.payroll_loan_book',
+                      'loans.payroll_repayment_adapter'),
     },
 
     # ── Investments ──────────────────────────────────────────────────────────

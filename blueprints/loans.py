@@ -9,7 +9,7 @@ import loan_limits
 from datetime import datetime, timedelta
 from io import StringIO, TextIOWrapper
 
-from flask import (Blueprint, Response, render_template, redirect, url_for, request,
+from flask import (Blueprint, Response, current_app, render_template, redirect, url_for, request,
                    flash, make_response, jsonify)
 from flask_login import login_required, current_user
 
@@ -33,6 +33,129 @@ from loan_pdf import build_loan_application_pdf
 from delinquency import portfolio_delinquency
 
 loans = Blueprint('loans', __name__)
+
+
+def _adapter_csv(headers, rows, filename):
+    out = StringIO()
+    writer = csv.writer(out)
+    def safe(value):
+        text = str(value if value is not None else '')
+        return "'" + text if text.lstrip().startswith(('=', '+', '-', '@')) else text
+    writer.writerow(headers)
+    writer.writerows([[safe(v) for v in row] for row in rows])
+    response = make_response(out.getvalue())
+    response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@loans.route('/loans/payroll-book')
+@login_required
+@role_required('admin', 'treasurer')
+def payroll_loan_book():
+    import repayment_adapter as adapter
+    month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+    db = get_db()
+    try:
+        book = adapter.loan_book(db, month)
+    except ValueError as exc:
+        return str(exc), 400
+    audit(db, 'EXPORT_PAYROLL_LOAN_BOOK', 'loans', f'Exported {len(book)} active loans for {month}')
+    db.commit()
+    return _adapter_csv(
+        ['member_number', 'staff_number', 'member_name', 'loan_number', 'loan_type',
+         'recorded_loan_amount', 'outstanding_balance', 'payroll_month', 'expected_month_payment',
+         'schedule_basis', 'first_payment_date'],
+        [[l['member_number'], l['employee_id'], l['member_name'], l['loan_number'], l['purpose'],
+          l['amount'], l['balance'], month, l['expected'], l['basis'], l['first_payment_date']] for l in book],
+        f'payroll_loan_book_{month}.csv')
+
+
+@loans.route('/loans/payroll-adapter', methods=['GET', 'POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def payroll_repayment_adapter():
+    import json
+    import zipfile
+    from decimal import Decimal
+    from itsdangerous import URLSafeTimedSerializer, BadData
+    import repayment_adapter as adapter
+    db = get_db()
+    serializer = URLSafeTimedSerializer(current_app.secret_key, salt='payroll-repayment-review-v1')
+    month = request.form.get('month', datetime.now().strftime('%Y-%m'))
+    payment_date = request.form.get('payment_date', datetime.now().strftime('%Y-%m-%d'))
+    account = request.form.get('counter_account', '1400')
+    items, token = [], ''
+    try:
+        if request.method == 'POST' and request.form.get('action') == 'export':
+            payload = serializer.loads(request.form.get('review_token', ''), max_age=3600)
+            if payload['user'] != current_user.id or payload.get('host') != request.host:
+                raise ValueError('Preview belongs to another user or cooperative.')
+            month, payment_date, account = payload['month'], payload['date'], payload['account']
+            items, token = payload['items'], request.form['review_token']
+            resolve_loan_repayment_counter_account(db, account, '')
+            current = {l['id']: l for l in adapter.loan_book(db, month)}
+            lines, excluded, excluded_total = [], 0, Decimal(0)
+            for item in items:
+                row = item['row']
+                if request.form.get(f'exclude_{row}'):
+                    excluded += 1
+                    try:
+                        excluded_total += adapter.money(item['amount'])
+                    except ValueError:
+                        pass
+                    continue
+                if not request.form.get(f'confirm_{row}'):
+                    raise ValueError(f'Row {row}: confirm the allocation or explicitly exclude the row.')
+                if adapter.has_month_payment(db, item['member_id'], month):
+                    raise ValueError(f'Row {row}: repayment already exists in this month; review history.')
+                amounts = {str(l['id']): request.form.get(f'amount_{row}_{l["id"]}', '') for l in item['loans']}
+                for loan in item['loans']:
+                    loan['allocation'] = amounts[str(loan['id'])]
+                for loan, amount in adapter.validate_allocations(item, amounts, current):
+                    receipt = f'PAYROLL-LOAN/{month}/{item["member_id"]}/{loan["id"]}'
+                    if db.execute('SELECT id FROM repayments WHERE receipt_number=? AND reversed_at IS NULL', (receipt,)).fetchone():
+                        raise ValueError(f'Row {row}: this payroll receipt is already posted.')
+                    lines.append([loan['loan_number'], str(amount), payment_date, 'salary_deduction', account,
+                                  receipt, f'Payroll {month}; approved by {current_user.username}'])
+            if not lines:
+                raise ValueError('No approved allocations to export.')
+            audit(db, 'EXPORT_PAYROLL_ALLOCATIONS', 'loans',
+                  f'{month}: {len(lines)} loan lines; {sum(Decimal(l[1]) for l in lines)}; '
+                  f'{excluded} excluded rows; known excluded amount {excluded_total}',
+                  data=json.dumps({'month': month, 'payment_date': payment_date, 'account': account,
+                                   'allocations': [{'loan_number': l[0], 'amount': l[1], 'receipt': l[5]} for l in lines],
+                                   'excluded_source_rows': [i['row'] for i in items if request.form.get(f'exclude_{i["row"]}')]}))
+            db.commit()
+            return _adapter_csv(['loan_number', 'amount', 'payment_date', 'payment_method', 'counter_account',
+                                 'receipt_number', 'notes'], lines, f'approved_loan_repayments_{month}.csv')
+        if request.method == 'POST':
+            adapter.month_date(month)
+            datetime.strptime(payment_date, '%Y-%m-%d')
+            resolve_loan_repayment_counter_account(db, account, '')
+            upload = request.files.get('file')
+            if not upload or not upload.filename:
+                raise ValueError('Select a payroll file.')
+            rows = adapter.read_payroll(upload.read(5 * 1024 * 1024 + 1), upload.filename)
+            members = [dict(m) for m in db.execute("SELECT id,member_number,employee_id,first_name || ' ' || last_name AS member_name FROM members").fetchall()]
+            book = adapter.loan_book(db, month)
+            items = adapter.match_payroll(rows, members, book)
+            for item in items:
+                item['loans'] = [{k: loan[k] for k in ('id', 'loan_number', 'purpose', 'balance', 'expected', 'basis', 'allocation')} for loan in item['loans']]
+                # Existing postings can have legacy receipts; never guess that they are another deduction.
+                if item['member_id'] and adapter.has_month_payment(db, item['member_id'], month):
+                    item['error'] = 'Repayment already exists in this month. Review history; exclude this row here.'
+            token = serializer.dumps({'user': current_user.id, 'host': request.host, 'month': month, 'date': payment_date,
+                                      'account': account, 'items': items})
+    except (ValueError, BadData, UnknownCashAccountError) as exc:
+        flash(str(exc), 'danger')
+    except (UnicodeError, csv.Error, OSError, zipfile.BadZipFile, KeyError) as exc:
+        flash('Could not read the payroll file. Check the file format.', 'danger')
+    return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token,
+                           month=month, payment_date=payment_date, account=account,
+                           total=sum((adapter.money(i['amount']) for i in items if i['member_id']), Decimal(0)),
+                           accounts=get_loan_repayment_counter_accounts(db))
 
 
 LOAN_CORRECTION_COLUMNS = {
