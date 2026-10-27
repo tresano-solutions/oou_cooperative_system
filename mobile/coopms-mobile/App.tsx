@@ -452,7 +452,7 @@ function HomeScreen({ data, reload, setActive }: { data: DashboardPayload; reloa
         <Text style={styles.cardTitle}>Loan Application Limits</Text>
         {Object.entries(data.member.loan_type_limits || {}).map(([name, limit]) => (
           <QuickAction key={name} icon="calculator" label={limit.label || name}
-            helper={`Up to ${money(limit.eligible_amount)} · ${limit.max_tenure_months} months${limit.tiers?.length ? ' · 7.5% once up to 12 months; 9% once for 13-24 months' : ''}`}
+            helper={`Up to ${money(limit.eligible_amount)} · ${limit.max_tenure_months} months${limit.tiers?.length ? ' · ' + limit.tiers.map((tier, index, tiers) => `${tier.rate}% once for ${index === 0 ? 1 : tiers[index - 1].max_months + 1}-${tier.max_months} months`).join('; ') : ''}`}
             onPress={() => setActive('loans')} />
         ))}
         <Text>Subject to eligibility checks and committee approval.</Text>

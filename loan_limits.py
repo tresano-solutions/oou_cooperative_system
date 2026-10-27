@@ -11,6 +11,13 @@ DEFAULTS = {'max_loan_amount': '0', **{
     f'max_loan_amount_{suffix}': '0' for suffix in LOAN_TYPES.values()
 }}
 DEFAULTS.update(loan_catalog='standard')
+SMT_RATE_DEFAULTS = {
+    'smt_regular_rate_up_to_12': '7.5',
+    'smt_regular_rate_over_12': '9',
+    'smt_school_fees_annual_rate': '20',
+    'smt_asset_annual_rate': '20',
+}
+DEFAULTS.update(SMT_RATE_DEFAULTS)
 
 
 def products(db):
@@ -27,10 +34,13 @@ def products(db):
             'method': values.get('interest_method_' + suffix, 'flat' if suffix == 'school_fees' else 'reducing_annual'),
         }
     if smt:
-        for name in ('School Fees', 'Asset Purchase'):
-            result[name].update(rate=20.0, method='flat')
-        result['Regular'].update(rate=7.5, method='flat_term', tiers=[
-            {'max_months': 12, 'rate': 7.5}, {'max_months': 24, 'rate': 9.0}])
+        validate_settings({key: values.get(key, default) for key, default in SMT_RATE_DEFAULTS.items()})
+        rates = {key: float(values.get(key, default)) for key, default in SMT_RATE_DEFAULTS.items()}
+        result['School Fees'].update(rate=rates['smt_school_fees_annual_rate'], method='flat')
+        result['Asset Purchase'].update(rate=rates['smt_asset_annual_rate'], method='flat')
+        result['Regular'].update(rate=rates['smt_regular_rate_up_to_12'], method='flat_term', tiers=[
+            {'max_months': 12, 'rate': rates['smt_regular_rate_up_to_12']},
+            {'max_months': 24, 'rate': rates['smt_regular_rate_over_12']}])
         result = {name: result[name] for name in ('Regular', 'School Fees', 'Asset Purchase')}
     return result
 
@@ -51,7 +61,16 @@ def terms(db, purpose, tenure):
 def validate_settings(values):
     if values.get('loan_catalog', 'standard') not in ('standard', 'smt'):
         raise ValueError('Select a valid loan catalogue.')
-    for key in (set(DEFAULTS) - {'loan_catalog'}) | {'max_tenure_months'}:
+    for key in SMT_RATE_DEFAULTS:
+        if key not in values:
+            continue
+        try:
+            rate = Decimal(str(values[key]))
+        except (InvalidOperation, ValueError):
+            raise ValueError('Enter a valid SMT interest rate.')
+        if not rate.is_finite() or not 0 <= rate <= 100 or rate != rate.quantize(Decimal('0.01')):
+            raise ValueError('SMT interest rates must be between 0 and 100, with up to two decimal places.')
+    for key in (set(DEFAULTS) - {'loan_catalog'} - set(SMT_RATE_DEFAULTS)) | {'max_tenure_months'}:
         if key not in values:
             continue
         try:

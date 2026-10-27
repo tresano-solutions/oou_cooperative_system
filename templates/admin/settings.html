@@ -606,8 +606,20 @@
                                 <option value="standard" {% if settings.loan_catalog|default('standard') == 'standard' %}selected{% endif %}>Standard catalogue</option>
                                 <option value="smt" {% if settings.loan_catalog == 'smt' %}selected{% endif %}>SMT: Regular, Back to school, Asset loan</option>
                             </select>
-                            <p class="form-text">SMT Regular: 7.5% once for 1-12 months; 9% once for 13-24 months. Back to school and Asset: 20% annual flat interest, prorated by months (10% over 6 months). The SMT catalogue overrides these three rates and methods and the Regular tenure below. Existing loans keep their agreed terms.</p>
+                            <p class="form-text">The SMT catalogue uses the rates below. Regular is charged once for the whole loan term, up to 24 months. Back to school and Asset interest is annual and prorated by months. Existing loans keep their agreed terms.</p>
                         </div>
+                        <fieldset class="border-bottom pb-3 mb-3">
+                            <legend class="h6">SMT catalogue rates</legend>
+                            <div class="row g-3">
+                                {% for key, label, default in [('smt_regular_rate_up_to_12', 'Regular: 1-12 months (% once)', '7.5'), ('smt_regular_rate_over_12', 'Regular: 13-24 months (% once)', '9'), ('smt_school_fees_annual_rate', 'Back to school: annual flat rate (%)', '20'), ('smt_asset_annual_rate', 'Asset loan: annual flat rate (%)', '20')] %}
+                                <div class="col-md-6">
+                                    <label for="{{ key }}" class="form-label">{{ label }}</label>
+                                    <input id="{{ key }}" name="{{ key }}" type="number" min="0" max="100" step="0.01" required class="form-control" value="{{ settings.get(key, default) }}">
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </fieldset>
+                        <h6>Standard catalogue rates (used only when Standard is selected)</h6>
                         <div class="table-responsive mb-3">
                             <table class="table table-bordered align-middle">
                                 <thead class="table-primary">

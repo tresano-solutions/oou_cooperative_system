@@ -3,7 +3,7 @@
     <div class="border-top py-2">
         <dt>{{ limit.label|default(name) }}</dt>
         <dd class="mb-0">Up to {{ '{:,.2f}'.format(limit.eligible_amount) }} &middot; {{ limit.max_tenure_months }} months</dd>
-        {% if limit.tiers %}<dd class="mb-0">7.5% once up to 12 months; 9% once for 13-24 months</dd>{% endif %}
+        {% if limit.tiers %}<dd class="mb-0">{% for tier in limit.tiers %}{{ tier.rate }}% once for {{ 1 if loop.first else limit.tiers[loop.index0 - 1].max_months + 1 }}-{{ tier.max_months }} months{% if not loop.last %}; {% endif %}{% endfor %}</dd>{% endif %}
     </div>
     {% endfor %}
 </dl>

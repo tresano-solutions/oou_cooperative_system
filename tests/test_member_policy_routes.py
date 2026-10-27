@@ -25,6 +25,8 @@ class PolicyRouteTests(unittest.TestCase):
             db.execute("INSERT INTO members (first_name,last_name,phone,email,date_joined,monthly_savings,status) VALUES ('Test','Member','123',?,'2020-01-01',5000,'active')", (self._testMethodName + '@example.test',))
             self.member_id = last_insert_id(db)
             db.execute("INSERT INTO settings (key,value) VALUES ('loan_catalog','standard') ON CONFLICT(key) DO UPDATE SET value='standard'")
+            from loan_limits import SMT_RATE_DEFAULTS
+            db.executemany('DELETE FROM settings WHERE key = ?', [(key,) for key in SMT_RATE_DEFAULTS])
             db.commit()
 
     def test_smt_settings_preview_and_forms(self):
@@ -67,6 +69,20 @@ class PolicyRouteTests(unittest.TestCase):
         response = self.client.get('/loan-schedule-preview?amount=500000&tenure=6&purpose=Regular')
         self.assertEqual(response.json['total_interest'], 50000)
         self.assertEqual(response.json['total_repayment'], 550000)
+
+    def test_admin_can_update_smt_rates(self):
+        response = self.client.post('/settings/update', data=dict(loan_catalog='smt',
+            smt_regular_rate_up_to_12='8', smt_regular_rate_over_12='10',
+            smt_school_fees_annual_rate='24', smt_asset_annual_rate='18'))
+        self.assertEqual(response.status_code, 302)
+        for purpose, months, total in [('Regular', 12, 540000), ('Regular', 13, 550000),
+                                       ('School Fees', 6, 560000), ('Asset Purchase', 6, 545000)]:
+            result = self.client.get('/loan-schedule-preview', query_string=dict(amount=500000, tenure=months, purpose=purpose)).json
+            self.assertEqual(result['total_repayment'], total)
+        self.assertEqual(self.client.get('/settings').status_code, 200)
+        self.client.post('/settings/update', data={'smt_asset_annual_rate': '-1'})
+        result = self.client.get('/loan-schedule-preview', query_string=dict(amount=500000, tenure=6, purpose='Asset Purchase')).json
+        self.assertEqual(result['total_repayment'], 545000)
 
     def test_direct_savings_edit_is_audited(self):
         response = self.client.post(f'/members/edit/{self.member_id}', data=dict(first_name='Test', last_name='Member', phone='123', email='policy@example.test', monthly_savings='7000', status='active'))

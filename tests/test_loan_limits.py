@@ -34,6 +34,22 @@ class LoanLimitTests(unittest.TestCase):
             self.assertEqual(rows[-1]['balance'], 0)
             self.assertEqual(rows[0]['payment'], monthly)
 
+    def test_smt_rates_can_be_changed(self):
+        from loan_limits import terms, member_limits
+        self.put('loan_catalog', 'smt')
+        for key, value in [('smt_regular_rate_up_to_12', 8), ('smt_regular_rate_over_12', 10),
+                           ('smt_school_fees_annual_rate', 24), ('smt_asset_annual_rate', 18)]:
+            self.put(key, value)
+        self.assertEqual(terms(self.db, 'Regular', 12), (8, 'flat_term'))
+        self.assertEqual(terms(self.db, 'Regular', 13), (10, 'flat_term'))
+        self.assertEqual(terms(self.db, 'School Fees', 6), (24, 'flat'))
+        self.assertEqual(terms(self.db, 'Asset Purchase', 6), (18, 'flat'))
+        self.assertEqual(member_limits(self.db, 500000)['Regular']['tiers'][1]['rate'], 10)
+        for value in ('nan', 'inf', '-1', '101', '1.234', '', 'abc'):
+            with self.assertRaises(ValueError):
+                validate_settings({'smt_regular_rate_up_to_12': value})
+        validate_settings({'smt_regular_rate_up_to_12': '0'})
+
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.db.row_factory = sqlite3.Row
