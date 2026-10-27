@@ -41,8 +41,11 @@ class AffiliateTests(unittest.TestCase):
         # right in production and wrong for a test suite that files many
         # enquiries from one address, so the window is cleared per test rather
         # than the limit loosened.
-        import blueprints.marketing as mk
-        mk._RECENT_SUBMISSIONS.clear()
+        # The tally now lives in the database so every worker shares it.
+        with self.app.app_context():
+            db = get_db()
+            db.execute("DELETE FROM throttle_hits WHERE bucket LIKE 'lead:%'")
+            db.commit()
 
     def tearDown(self):
         os.environ.pop('MARKETING_HQ', None)
