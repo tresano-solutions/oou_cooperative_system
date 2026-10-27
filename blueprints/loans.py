@@ -86,75 +86,91 @@ def payroll_repayment_adapter():
     month = request.form.get('month', datetime.now().strftime('%Y-%m'))
     payment_date = request.form.get('payment_date', datetime.now().strftime('%Y-%m-%d'))
     account = request.form.get('counter_account', '1400')
-    items, token = [], ''
+    items, members, token, combined = [], [], '', False
+    source_rows = []
     try:
-        if request.method == 'POST' and request.form.get('action') == 'export':
+        action = request.form.get('action')
+        if request.method == 'POST' and action in ('export', 'rematch'):
             payload = serializer.loads(request.form.get('review_token', ''), max_age=3600)
             if payload['user'] != current_user.id or payload.get('host') != request.host:
                 raise ValueError('Preview belongs to another user or cooperative.')
             month, payment_date, account = payload['month'], payload['date'], payload['account']
             items, token = payload['items'], request.form['review_token']
+            source_rows, combined = payload['source_rows'], payload['combined']
             resolve_loan_repayment_counter_account(db, account, '')
-            current = {l['id']: l for l in adapter.loan_book(db, month)}
-            lines, excluded, excluded_total = [], 0, Decimal(0)
-            for item in items:
-                row = item['row']
-                if request.form.get(f'exclude_{row}'):
-                    excluded += 1
-                    try:
-                        excluded_total += adapter.money(item['amount'])
-                    except ValueError:
-                        pass
-                    continue
-                if not request.form.get(f'confirm_{row}'):
-                    raise ValueError(f'Row {row}: confirm the allocation or explicitly exclude the row.')
-                if adapter.has_month_payment(db, item['member_id'], month):
-                    raise ValueError(f'Row {row}: repayment already exists in this month; review history.')
-                amounts = {str(l['id']): request.form.get(f'amount_{row}_{l["id"]}', '') for l in item['loans']}
-                for loan in item['loans']:
-                    loan['allocation'] = amounts[str(loan['id'])]
-                for loan, amount in adapter.validate_allocations(item, amounts, current):
-                    receipt = f'PAYROLL-LOAN/{month}/{item["member_id"]}/{loan["id"]}'
-                    if db.execute('SELECT id FROM repayments WHERE receipt_number=? AND reversed_at IS NULL', (receipt,)).fetchone():
-                        raise ValueError(f'Row {row}: this payroll receipt is already posted.')
-                    lines.append([loan['loan_number'], str(amount), payment_date, 'salary_deduction', account,
-                                  receipt, f'Payroll {month}; approved by {current_user.username}'])
-            if not lines:
-                raise ValueError('No approved allocations to export.')
+        if request.method == 'POST' and action == 'export':
+            if combined and not la_permissions.can('savings.manage'):
+                return 'Savings management permission is required for combined payroll.', 403
+            lines, savings_lines, review = adapter.prepare_exports(
+                db, items, request.form, month, payment_date, account, current_user.username)
             audit(db, 'EXPORT_PAYROLL_ALLOCATIONS', 'loans',
-                  f'{month}: {len(lines)} loan lines; {sum(Decimal(l[1]) for l in lines)}; '
-                  f'{excluded} excluded rows; known excluded amount {excluded_total}',
+                  f'{month}: {len(lines)} loan lines ({sum(Decimal(l[1]) for l in lines)}); '
+                  f'{len(savings_lines)} savings lines ({sum(Decimal(l[2]) for l in savings_lines)})',
                   data=json.dumps({'month': month, 'payment_date': payment_date, 'account': account,
                                    'allocations': [{'loan_number': l[0], 'amount': l[1], 'receipt': l[5]} for l in lines],
-                                   'excluded_source_rows': [i['row'] for i in items if request.form.get(f'exclude_{i["row"]}')]}))
+                                   'savings': [{'member_number': l[0], 'amount': l[2], 'receipt': l[6]} for l in savings_lines],
+                                   'reconciliation': review}))
             db.commit()
-            return _adapter_csv(['loan_number', 'amount', 'payment_date', 'payment_method', 'counter_account',
-                                 'receipt_number', 'notes'], lines, f'approved_loan_repayments_{month}.csv')
-        if request.method == 'POST':
+            if combined:
+                from io import BytesIO
+                buffer = BytesIO()
+                with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+                    for filename, headers, data in [
+                        (f'loan_repayments_{month}.csv', adapter.LOAN_HEADERS, lines),
+                        (f'salary_savings_{month}.csv', adapter.SAVINGS_HEADERS, savings_lines),
+                        (f'payroll_reconciliation_{month}.csv', adapter.REVIEW_HEADERS, review),
+                    ]:
+                        archive.writestr(filename, _adapter_csv(headers, data, filename).get_data())
+                    archive.writestr('READ_ME.txt',
+                        'Extract the ZIP. Upload loan_repayments CSV in Loans > Bulk Repayments.\n'
+                        'Upload salary_savings CSV in Savings > Salary Upload, using the selected payroll month.\n'
+                        'Do not enable a late fee unless separately authorised. The savings importer applies the cooperative share-capital split.\n'
+                        'The reconciliation CSV is for review only. Subscriptions are NOT posted by these files; record them separately.\n'
+                        'Excluded deductions remain unposted. Empty files contain headers only and need not be imported.\n'
+                        'Do not resave import CSVs in Excel. Check Upload History after each import.\n')
+                response = make_response(buffer.getvalue())
+                response.headers['Content-Type'] = 'application/zip'
+                response.headers['Content-Disposition'] = f'attachment; filename=coopms_payroll_{month}.zip'
+                response.headers['Cache-Control'] = 'no-store'
+                return response
+            return _adapter_csv(adapter.LOAN_HEADERS, lines, f'approved_loan_repayments_{month}.csv')
+        if request.method == 'POST' and action != 'rematch':
             adapter.month_date(month)
             datetime.strptime(payment_date, '%Y-%m-%d')
             resolve_loan_repayment_counter_account(db, account, '')
             upload = request.files.get('file')
             if not upload or not upload.filename:
                 raise ValueError('Select a payroll file.')
-            rows = adapter.read_payroll(upload.read(5 * 1024 * 1024 + 1), upload.filename)
-            members = [dict(m) for m in db.execute("SELECT id,member_number,employee_id,first_name || ' ' || last_name AS member_name FROM members").fetchall()]
-            book = adapter.loan_book(db, month)
-            items = adapter.match_payroll(rows, members, book)
-            for item in items:
-                item['loans'] = [{k: loan[k] for k in ('id', 'loan_number', 'purpose', 'balance', 'expected', 'basis', 'allocation')} for loan in item['loans']]
-                # Existing postings can have legacy receipts; never guess that they are another deduction.
-                if item['member_id'] and adapter.has_month_payment(db, item['member_id'], month):
-                    item['error'] = 'Repayment already exists in this month. Review history; exclude this row here.'
+            source_rows = adapter.read_payroll(upload.read(5 * 1024 * 1024 + 1), upload.filename)
+            combined = any('savings_amount' in r or 'subscription_amount' in r for r in source_rows)
+        if request.method == 'POST':
+            if combined and not la_permissions.can('savings.manage'):
+                return 'Savings management permission is required for combined payroll.', 403
+            if action == 'rematch':
+                for row in source_rows:
+                    selected = request.form.get(f'member_{row["row"]}', '')
+                    if selected:
+                        row['selected_member_id'] = selected
+            items, members = adapter.prepare_review(db, source_rows, month)
             token = serializer.dumps({'user': current_user.id, 'host': request.host, 'month': month, 'date': payment_date,
-                                      'account': account, 'items': items})
+                                      'account': account, 'items': items, 'source_rows': source_rows, 'combined': combined})
     except (ValueError, BadData, UnknownCashAccountError) as exc:
         flash(str(exc), 'danger')
     except (UnicodeError, csv.Error, OSError, zipfile.BadZipFile, KeyError) as exc:
         flash('Could not read the payroll file. Check the file format.', 'danger')
-    return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token,
+    if items and not members:
+        members = [dict(m) for m in db.execute("SELECT id,member_number,employee_id,first_name || ' ' || last_name AS member_name FROM members ORDER BY first_name,last_name").fetchall()]
+    totals = {}
+    for key in ('amount', 'savings_amount', 'subscription_amount'):
+        totals[key] = Decimal(0)
+        for item in items:
+            try:
+                totals[key] += adapter.money(item[key])
+            except ValueError:
+                pass
+    return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token, members=members,
                            month=month, payment_date=payment_date, account=account,
-                           total=sum((adapter.money(i['amount']) for i in items if i['member_id']), Decimal(0)),
+                           totals=totals, combined=combined,
                            accounts=get_loan_repayment_counter_accounts(db))
 
 

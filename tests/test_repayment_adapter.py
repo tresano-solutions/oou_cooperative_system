@@ -85,6 +85,35 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 adapter.money(value)
 
+    def test_combined_hr_headers_and_verified_totals(self):
+        raw = ('Employee Number,Full name,COOPERATIVE LOAN,COOPERATIVE SAVINGS,COOPERATIVE SUBSCRIPTION\n'
+               '001,Jane Doe,150,1000,20\n002,John Doe,0,500,\n'
+               ',,150,1500,20\n,,TOTAL,1670,\n').encode()
+        rows = adapter.read_payroll(raw, 'hr.csv')
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['employee_id'], '001')
+        self.assertEqual(rows[0]['savings_amount'], '1000')
+        members = [dict(id=1, member_number='001', employee_id='', member_name='Jane Doe'),
+                   dict(id=2, member_number='002', employee_id='', member_name='John Doe')]
+        result = adapter.match_payroll(rows, members, [])
+        self.assertEqual(result[0]['member_id'], 1)
+        self.assertTrue(result[0]['loan_error'])
+        self.assertFalse(result[1]['error'])
+        self.assertFalse(result[1]['loan_error'])
+        self.assertEqual(result[1]['savings_amount'], '500.00')
+        with self.assertRaises(ValueError):
+            adapter.read_payroll(raw.replace(b',,150,1500,20', b',,150,1600,20'), 'hr.csv')
+
+    def test_manual_match_conflicts_and_duplicate_members(self):
+        members = [dict(id=1, member_number='001', employee_id='', member_name='Jane Doe')]
+        rows = [dict(row=2, employee_id='wrong', name='Different name', amount='0', savings_amount='100')]
+        self.assertTrue(adapter.match_payroll(rows, members, [])[0]['error'])
+        rows[0]['selected_member_id'] = '1'
+        result = adapter.match_payroll(rows, members, [])
+        self.assertFalse(result[0]['error'])
+        self.assertIn('Manually selected', result[0]['match'])
+        self.assertTrue(adapter.match_payroll(rows + [{**rows[0], 'row': 3}], members, [])[1]['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

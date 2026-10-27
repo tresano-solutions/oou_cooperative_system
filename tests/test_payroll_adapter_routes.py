@@ -118,6 +118,105 @@ class PayrollRoutes(unittest.TestCase):
             self.assertNotEqual(self.client.get('/loans/payroll-book').status_code, 200)
             self.assertNotEqual(self.client.get('/loans/payroll-adapter').status_code, 200)
 
+    def combined_preview(self, name='Payroll Member'):
+        return self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(('Employee Number,Full name,COOPERATIVE LOAN,COOPERATIVE SAVINGS,COOPERATIVE SUBSCRIPTION\n'
+                                f'{self._testMethodName},{name},91666.67,10000,20000\n').encode()), 'hr.csv')})
+
+    def export_combined(self, response, **overrides):
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        data = dict(action='export', review_token=token, confirm_2='on')
+        data[f'amount_2_{self.loan}'] = '91666.67'
+        data.update(overrides)
+        return self.client.post('/loans/payroll-adapter', data=data)
+
+    def test_combined_zip_savings_and_loans_subscription_separate(self):
+        import zipfile
+        response = self.combined_preview()
+        self.assertIn(b'Download Loan &amp; Savings Schedules', response.data)
+        result = self.export_combined(response)
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            loans = list(csv.DictReader(io.StringIO(archive.read('loan_repayments_2026-10.csv').decode())))
+            savings = list(csv.DictReader(io.StringIO(archive.read('salary_savings_2026-10.csv').decode())))
+            review = list(csv.DictReader(io.StringIO(archive.read('payroll_reconciliation_2026-10.csv').decode())))
+        self.assertEqual(loans[0]['amount'], '91666.67')
+        self.assertEqual(savings[0]['amount'], '10000.00')
+        self.assertEqual(savings[0]['member_number'], self._testMethodName)
+        self.assertEqual(savings[0]['counter_account'], '1400')
+        self.assertEqual(savings[0]['date'], '2026-10-27')
+        self.assertEqual(review[0]['subscription_deduction'], '20000.00')
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM savings WHERE member_id=?', (self.member,)).fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM repayments WHERE loan_id=?', (self.loan,)).fetchone()[0], 0)
+
+    def test_loan_duplicate_does_not_block_savings_when_explicitly_excluded(self):
+        import zipfile
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date) VALUES (?,'existing-combined',1,'2026-10-01')", (self.loan,))
+            db.commit()
+        response = self.combined_preview()
+        blocked = self.export_combined(response)
+        self.assertNotEqual(blocked.mimetype, 'application/zip')
+        result = self.export_combined(response, exclude_loan_2='on')
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            loans = list(csv.DictReader(io.StringIO(archive.read('loan_repayments_2026-10.csv').decode())))
+            self.assertEqual(loans, [])
+            savings = list(csv.DictReader(io.StringIO(archive.read('salary_savings_2026-10.csv').decode())))
+            self.assertEqual(len(savings), 1)
+
+    def test_member_match_can_be_resolved_in_screen(self):
+        response = self.combined_preview(name='HR alternate name')
+        self.assertIn(b'Name and identifier disagree', response.data)
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        result = self.client.post('/loans/payroll-adapter', data={
+            'action': 'rematch', 'review_token': token, 'member_2': str(self.member)})
+        self.assertIn(b'Manually selected member', result.data)
+        self.assertEqual(self.export_combined(result).mimetype, 'application/zip')
+
+    def test_generated_schedules_work_with_existing_importers(self):
+        import zipfile
+        from unittest.mock import patch
+        result = self.export_combined(self.combined_preview())
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            loan_csv = archive.read('loan_repayments_2026-10.csv')
+            savings_csv = archive.read('salary_savings_2026-10.csv')
+        with patch('blueprints.loans.send_loan_repayment_email'), patch('blueprints.loans.notify_member'), patch('blueprints.savings.notify_member'):
+            loan_result = self.client.post('/loans/bulk-repayments', data={
+                'counter_account': '1400', 'file': (io.BytesIO(loan_csv), 'loans.csv')})
+            savings_result = self.client.post('/savings/salary-upload', data={
+                'counter_account': '1400', 'month': '2026-10', 'batch_ref': 'ADAPTER-TEST',
+                'file': (io.BytesIO(savings_csv), 'savings.csv')})
+        self.assertEqual(loan_result.status_code, 302)
+        self.assertEqual(savings_result.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            repayment = db.execute('SELECT amount FROM repayments WHERE loan_id=?', (self.loan,)).fetchone()
+            self.assertIsNotNone(repayment)
+            self.assertAlmostEqual(repayment['amount'], 91666.67)
+            saving = db.execute('SELECT amount,share_capital FROM savings WHERE member_id=?', (self.member,)).fetchone()
+            self.assertIsNotNone(saving)
+            self.assertAlmostEqual(saving['amount'] + (saving['share_capital'] or 0), 10000)
+
+    def test_savings_posted_after_preview_blocks_export(self):
+        response = self.combined_preview()
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO savings (member_id,amount,month,date) VALUES (?,10000,'2026-10','2026-10-27')", (self.member,))
+            db.commit()
+        result = self.export_combined(response)
+        self.assertNotEqual(result.mimetype, 'application/zip')
+        self.assertIn(b'savings already posted', result.data)
+
+    def test_combined_requires_savings_permission(self):
+        from unittest.mock import patch
+        with patch('permissions.can', side_effect=lambda p: p != 'savings.manage'):
+            self.assertEqual(self.combined_preview().status_code, 403)
+
 
 if __name__ == '__main__':
     unittest.main()
