@@ -27,6 +27,8 @@ def products(db):
             'method': values.get('interest_method_' + suffix, 'flat' if suffix == 'school_fees' else 'reducing_annual'),
         }
     if smt:
+        for name in ('School Fees', 'Asset Purchase'):
+            result[name].update(rate=20.0, method='flat')
         result['Regular'].update(rate=7.5, method='flat_term', tiers=[
             {'max_months': 12, 'rate': 7.5}, {'max_months': 24, 'rate': 9.0}])
         result = {name: result[name] for name in ('Regular', 'School Fees', 'Asset Purchase')}

@@ -8,8 +8,10 @@ Other cooperatives retain the Standard catalogue unless explicitly changed.
 
 SMT applications offer Regular, Back to school and Asset loan. Regular uses
 a single charge on the principal: 7.5% for 1-12 months and 9% for 13-24 months.
-The preset overrides the Regular rate and tenure fields. Asset and school loan
-rates, methods and limits retain their configured values.
+The preset overrides the Regular rate and tenure fields. Asset and school loans
+use 20% annual flat interest, prorated by tenure: a six-month 500,000 loan has
+50,000 interest and 550,000 total repayment. Their configured amount and tenure
+limits still apply. The preset overrides their rate and method fields.
 
 Existing internal purpose keys remain unchanged so historical loan accounts and
 same-type borrowing checks continue to match. Existing contracts and balances

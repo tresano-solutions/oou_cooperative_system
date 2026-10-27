@@ -34,6 +34,10 @@ class PolicyRouteTests(unittest.TestCase):
             response = self.client.get(f'/loan-schedule-preview?amount=500000&tenure={months}&purpose=Regular')
             self.assertEqual(response.json['total_repayment'], total)
         self.assertFalse(self.client.get('/loan-schedule-preview?amount=500000&tenure=25&purpose=Regular').json['ok'])
+        for purpose in ('School Fees', 'Asset Purchase'):
+            result = self.client.get('/loan-schedule-preview', query_string=dict(amount=500000, tenure=6, purpose=purpose)).json
+            self.assertEqual(result['total_interest'], 50000)
+            self.assertEqual(result['total_repayment'], 550000)
         self.assertFalse(self.client.get('/loan-schedule-preview?amount=500000&tenure=6&purpose=Housing').json['ok'])
         response = self.client.get('/loans/apply')
         self.assertEqual(response.status_code, 200)

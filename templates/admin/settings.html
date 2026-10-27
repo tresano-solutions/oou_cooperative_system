@@ -606,7 +606,7 @@
                                 <option value="standard" {% if settings.loan_catalog|default('standard') == 'standard' %}selected{% endif %}>Standard catalogue</option>
                                 <option value="smt" {% if settings.loan_catalog == 'smt' %}selected{% endif %}>SMT: Regular, Back to school, Asset loan</option>
                             </select>
-                            <p class="form-text">SMT Regular: 7.5% once for 1-12 months; 9% once for 13-24 months. This overrides the Regular rate and tenure below. Other loan rates remain as configured. Existing loans keep their agreed terms.</p>
+                            <p class="form-text">SMT Regular: 7.5% once for 1-12 months; 9% once for 13-24 months. Back to school and Asset: 20% annual flat interest, prorated by months (10% over 6 months). The SMT catalogue overrides these three rates and methods and the Regular tenure below. Existing loans keep their agreed terms.</p>
                         </div>
                         <div class="table-responsive mb-3">
                             <table class="table table-bordered align-middle">

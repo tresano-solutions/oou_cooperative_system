@@ -15,6 +15,11 @@ class LoanLimitTests(unittest.TestCase):
             self.assertEqual(compute_loan_schedule(500000, rate, tenure, 'flat_term')[1], total)
         self.assertIsNotNone(application_error(self.db, 'Regular', 500000, 25))
         self.assertIsNotNone(application_error(self.db, 'Housing', 500000, 6))
+        for name in ('School Fees', 'Asset Purchase'):
+            rate, method = terms(self.db, name, 6)
+            self.assertEqual((rate, method), (20, 'flat'))
+            self.assertEqual(compute_loan_schedule(500000, rate, 6, method)[1], 550000)
+            self.assertEqual(compute_loan_schedule(500000, rate, 3, method)[1], 525000)
         self.put('loan_catalog', 'standard')
         self.assertIn('Housing', products(self.db))
         self.assertEqual(terms(self.db, 'Regular', 6), (11, 'reducing_annual'))
