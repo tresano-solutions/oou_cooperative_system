@@ -116,26 +116,40 @@
         <div class="card profile-form-card mb-3">
           <div class="card-header"><h5 class="mb-0">Bank and Identification</h5></div>
           <div class="card-body">
+            <p class="text-muted small mb-3">
+              What is already on file is shown masked. Leave a box empty to keep it as it is;
+              type a new value only when you want to change one.
+            </p>
             <div class="row">
               <div class="col-md-4 mb-3">
                 <label class="form-label">Bank Name</label>
-                <input type="text" class="form-control" name="bank_name" value="{{ member.bank_name or '' }}">
+                <input type="text" class="form-control" name="bank_name" value=""
+                       autocomplete="off"
+                       placeholder="{{ member.bank_name_masked or 'Not on file' }}">
               </div>
               <div class="col-md-4 mb-3">
                 <label class="form-label">Account Name</label>
-                <input type="text" class="form-control" name="account_name" value="{{ member.account_name or '' }}">
+                <input type="text" class="form-control" name="account_name" value=""
+                       autocomplete="off"
+                       placeholder="{{ member.account_name_masked or 'Not on file' }}">
               </div>
               <div class="col-md-4 mb-3">
                 <label class="form-label">Account Number</label>
-                <input type="text" class="form-control" name="account_number" value="{{ member.account_number or '' }}" maxlength="10" inputmode="numeric">
+                <input type="text" class="form-control" name="account_number" value="" maxlength="10" inputmode="numeric"
+                       autocomplete="off"
+                       placeholder="{{ member.account_number_masked or 'Not on file' }}">
               </div>
               <div class="col-md-6 mb-3">
                 <label class="form-label">BVN</label>
-                <input type="text" class="form-control" name="bvn" value="{{ member.bvn or '' }}" maxlength="11" inputmode="numeric">
+                <input type="text" class="form-control" name="bvn" value="" maxlength="11" inputmode="numeric"
+                       autocomplete="off"
+                       placeholder="{{ member.bvn_masked or 'Not on file' }}">
               </div>
               <div class="col-md-6 mb-3">
                 <label class="form-label">NIN</label>
-                <input type="text" class="form-control" name="nin" value="{{ member.nin or '' }}" maxlength="11" inputmode="numeric">
+                <input type="text" class="form-control" name="nin" value="" maxlength="11" inputmode="numeric"
+                       autocomplete="off"
+                       placeholder="{{ member.nin_masked or 'Not on file' }}">
               </div>
             </div>
           </div>

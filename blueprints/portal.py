@@ -13,7 +13,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from database import get_db, last_insert_id
-from crypto import decrypt_member_sensitive_fields, encrypt_field, mask_member_sensitive_fields
+from crypto import (SENSITIVE_MEMBER_FIELDS, decrypt_member_sensitive_fields,
+                    encrypt_field, mask_field, mask_member_sensitive_fields)
 from security import validate_password_strength
 from utils import (finite_float, audit, notify_member, notify, compute_loan_schedule, METHOD_LABELS,
                    member_for_user, member_savings_balance, member_share_capital,
@@ -1136,6 +1137,32 @@ def reveal_sensitive_profile_fields():
     return jsonify({'ok': True, 'fields': data})
 
 
+def _profile_for_edit(member):
+    """The member's own record with the sensitive fields masked, never decrypted.
+
+    The profile page hides these behind a password prompt, but Edit Profile used
+    to put the full BVN, NIN and account number into the form's value= — so an
+    unattended logged-in session gave them up without the password being asked
+    for. The edit form now shows only the mask, and the member types a new value
+    when they want to change one.
+    """
+    data = dict(member)
+    for field in SENSITIVE_MEMBER_FIELDS:
+        data[field + '_masked'] = mask_field(data.get(field) or '')
+        data[field] = ''
+    return data
+
+
+def _kept_if_blank(submitted, stored):
+    """Encrypt what the member typed, or keep what is already on file.
+
+    The form no longer carries the current values, so an empty box means
+    "leave it alone" rather than "erase it".
+    """
+    submitted = (submitted or '').strip()
+    return encrypt_field(submitted) if submitted else (stored or '')
+
+
 @portal.route('/edit-profile', methods=['GET', 'POST'])
 @login_required
 def edit_profile():
@@ -1227,11 +1254,13 @@ def edit_profile():
             first_name, last_name, email, phone,
             address, city, state, country,
             occupation, date_of_birth,
-            encrypt_field(bank_name), encrypt_field(account_name), encrypt_field(account_number),
+            _kept_if_blank(bank_name, member['bank_name']),
+            _kept_if_blank(account_name, member['account_name']),
+            _kept_if_blank(account_number, member['account_number']),
             emergency_contact_name, emergency_contact_phone,
             nominee_name, nominee_relationship, nominee_phone,
             nominee_email, nominee_address,
-            encrypt_field(bvn), encrypt_field(nin), photo_path,
+            _kept_if_blank(bvn, member['bvn']), _kept_if_blank(nin, member['nin']), photo_path,
             0 if request.form.get('sms_optin') else 1,
             member['id'],
         ))
@@ -1247,7 +1276,7 @@ def edit_profile():
         return redirect(url_for('portal.profile'))
 
     return render_template('member/edit-profile.html',
-                           member=decrypt_member_sensitive_fields(_member_extras(member, db)))
+                           member=_profile_for_edit(_member_extras(member, db)))
 
 
 # ── Change Password ───────────────────────────────────────────────────────────────
