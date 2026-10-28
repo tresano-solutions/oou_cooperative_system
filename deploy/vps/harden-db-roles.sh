@@ -42,7 +42,9 @@ echo "DATABASE_URL=postgresql://${ROLE}:${PASSWORD}@postgres:5432/${DB}" >> "${E
 mv "${ENV_FILE}.tmp" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
-python3 generate.py >/dev/null
+# The clients not yet migrated legitimately still lack their own login, so the
+# generator would refuse. Allowed here only, and only until they are all done.
+ALLOW_SHARED_SUPERUSER=1 python3 generate.py >/dev/null
 if [[ "$MODE" != "--no-backup" ]]; then
   docker compose up -d "app-${NAME}"
   echo "==> Waiting for app-${NAME} to come up"

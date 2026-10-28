@@ -185,10 +185,28 @@ cd ~/oou_cooperative_system/deploy/vps
 git pull
 bash harden-db-roles.sh smtcoop        # takes a backup, creates the role, switches the app, restarts it
 docker compose logs --tail 30 app-smtcoop   # expect a normal start, no "permission denied"
-python3 generate.py                    # lists any client still marked "!! still on the shared postgres SUPERUSER"
+bash verify-db-roles.sh smtcoop        # proves it is confined to its own database
 ```
 
+Do that for each client, then check them all together:
+
+```bash
+bash verify-db-roles.sh                # every client; exits non-zero if any check fails
+python3 generate.py                    # refuses outright if any client is still on the superuser
+```
+
+`verify-db-roles.sh` is read-only and safe to run against production whenever you want. It
+checks, for each client, that the role is not a superuser and cannot create databases or roles,
+that it reaches its own database, that it is refused by every other client's database and by
+`postgres`/`template1`, and that it cannot read host files or run programs through the server.
+
+`generate.py` **refuses** to write a configuration that would put any client on the shared
+superuser. `harden-db-roles.sh` sets `ALLOW_SHARED_SUPERUSER=1` for its own call, because the
+clients you have not reached yet legitimately still lack a login; you should not need that
+variable yourself once the migration is finished.
+
 Roll back one client: delete the `DATABASE_URL=` line from `clients/<name>.env`, then
-`python3 generate.py && docker compose up -d app-<name>`. When every client is migrated, rotate
-`POSTGRES_PASSWORD` in `deploy/vps/.env` (it is now used only by backups and admin scripts).
-Re-running `harden-db-roles.sh <name>` rotates that client's password.
+`ALLOW_SHARED_SUPERUSER=1 python3 generate.py && docker compose up -d app-<name>`. When every
+client is migrated, rotate `POSTGRES_PASSWORD` in `deploy/vps/.env` (it is now used only by
+backups and admin scripts). Re-running `harden-db-roles.sh <name>` rotates that client's
+password.
