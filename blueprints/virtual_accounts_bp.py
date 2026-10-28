@@ -12,6 +12,7 @@ from flask_login import current_user, login_required
 
 from database import get_db
 from ledger import account_balance
+from ledger import JournalPostingError
 from utils import audit, role_required
 from virtual_accounts import (ALLOCATION_RULES, MEMBER_PREFERENCES, VA_UNALLOCATED,
                               account_for_member, apply_plan, build_plan, ctas_due_rows,
@@ -227,7 +228,14 @@ def apply_receipt(receipt_id):
             flash('Enter an amount to apply.', 'warning')
             return redirect(url_for('virtual_accounts.index'))
 
-    ok, message = apply_plan(db, receipt_id, plan, created_by=current_user.id)
+    try:
+        ok, message = apply_plan(db, receipt_id, plan, created_by=current_user.id)
+    except JournalPostingError as exc:
+        # The money is already banked to the unallocated account; only the
+        # decision about where it goes failed, and that can be made again.
+        db.rollback()
+        flash(str(exc), 'danger')
+        return redirect(url_for('virtual_accounts.index'))
     if ok:
         audit(db, 'APPLY_VA_RECEIPT', 'virtual_account_receipts',
               f'Receipt {receipt_id}: {message}')

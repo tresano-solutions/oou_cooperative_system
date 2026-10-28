@@ -298,10 +298,42 @@ def post_journal(db, description, lines, date=None, reference='',
     return entry_id
 
 
+class JournalPostingError(RuntimeError):
+    """The money moved in the subledger but the ledger would not accept it."""
+
+
+def post_journal_required(db, *args, **kwargs):
+    """Post a journal entry, or raise so the caller's transaction comes undone.
+
+    Use this wherever the journal *is* the money: a contribution, a payout, a
+    repayment, a disbursement. Balances are read from the ledger, so a savings
+    row that commits without its entry is not a small inconsistency — it is a
+    member's money that the books cannot see, found weeks later during a
+    reconciliation with nothing left to explain it.
+
+    post_journal_safe() remains for work that is genuinely best-effort: the
+    backfill tool, which re-posts history and counts what it could not place.
+    """
+    try:
+        entry_id = post_journal(db, *args, **kwargs)
+    except Exception as exc:
+        raise JournalPostingError(
+            f'The accounting entry could not be posted, so nothing was saved: {exc}'
+        ) from exc
+    if not entry_id:
+        raise JournalPostingError('The accounting entry could not be posted, '
+                                  'so nothing was saved.')
+    return entry_id
+
+
 def post_journal_safe(db, *args, **kwargs):
     """Best-effort post_journal that never raises and cannot poison the caller's
-    transaction. Use from within member-facing flows so a ledger problem can't
-    break recording a payment. Returns the entry id, or None on failure.
+    transaction. Returns the entry id, or None on failure.
+
+    Only for work where a missing entry is acceptable and is reported some other
+    way — the backfill tool counts what it could not post. Anything that moves a
+    member's money must use post_journal_required() instead, so the subledger
+    cannot commit while the ledger stays empty.
 
     On PostgreSQL the work is wrapped in a SAVEPOINT so a failed insert does not
     abort the outer transaction (mirrors utils.record_revenue).

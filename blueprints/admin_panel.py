@@ -16,7 +16,7 @@ from security import generate_account_setup_token, validate_password_strength
 from utils import (finite_float, role_required, audit, validate_image, logo_data_uri,
                    member_savings_balance, reconcile_member_savings, notify,
                    coop_name as _coop_name)
-from ledger import (post_journal_safe, get_default_cash_account, OPERATING_EXPENSES, FEE_INCOME,
+from ledger import (post_journal_required, get_default_cash_account, OPERATING_EXPENSES, FEE_INCOME,
                     HONORARIUM)
 import permissions as perms
 import loan_limits
@@ -571,7 +571,7 @@ def add_expense():
                 request.form.get('notes', ''),
             ))
             cash_account = get_default_cash_account(db)
-            post_journal_safe(db, f"Expense — {request.form['category']}", [
+            post_journal_required(db, f"Expense — {request.form['category']}", [
                 {'account': OPERATING_EXPENSES, 'debit': finite_float(request.form['amount']),
                  'memo': request.form.get('description', '')},
                 {'account': cash_account, 'credit': finite_float(request.form['amount'])},
@@ -621,7 +621,7 @@ def add_revenue():
                 request.form.get('notes', ''),
             ))
             cash_account = get_default_cash_account(db)
-            post_journal_safe(db, f"Revenue — {request.form['category']}", [
+            post_journal_required(db, f"Revenue — {request.form['category']}", [
                 {'account': cash_account, 'debit': finite_float(request.form['amount'])},
                 {'account': FEE_INCOME, 'credit': finite_float(request.form['amount']),
                  'memo': request.form.get('description', '')},
@@ -671,7 +671,7 @@ def add_honorarium():
         ))
         _hid = last_insert_id(db)
         cash_account = get_default_cash_account(db)
-        post_journal_safe(db, f"Honorarium — {request.form.get('recipient_name', '')}", [
+        post_journal_required(db, f"Honorarium — {request.form.get('recipient_name', '')}", [
             {'account': HONORARIUM, 'debit': finite_float(request.form['amount']),
              'memo': request.form.get('recipient_name', '')},
             {'account': cash_account, 'credit': finite_float(request.form['amount'])},

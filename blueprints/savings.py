@@ -16,7 +16,7 @@ from private_files import save_private, private_path
 from email_service import send_payment_confirmation_email
 from utils import (claim_submission, finite_float, role_required, audit, notify_member, record_revenue, share_capital_split,
                    member_savings_balance)
-from ledger import (post_journal_safe, get_default_cash_account, resolve_cash_bank_account,
+from ledger import (post_journal_required, get_default_cash_account, resolve_cash_bank_account,
                     get_payroll_counter_accounts, resolve_payroll_counter_account,
                     reverse_journal_entry, UnknownCashAccountError,
                     get_postable_cash_accounts,
@@ -409,7 +409,7 @@ def salary_upload():
                         lines.append({'account': SHARE_CAPITAL, 'credit': share_amount, 'memo': 'Share capital'})
                     if late_fee:
                         lines.append({'account': FEE_INCOME, 'credit': late_fee, 'memo': 'Late fee'})
-                    post_journal_safe(
+                    post_journal_required(
                         db, f'Salary savings deduction - {row_month}', lines,
                         date=payment_date, reference=receipt_number,
                         source_module='savings_deposit', source_id=sav_id,
@@ -540,7 +540,7 @@ def add_saving():
             _lines.append({'account': SHARE_CAPITAL, 'credit': share_amount, 'memo': 'Share capital'})
         if late_fee:
             _lines.append({'account': FEE_INCOME, 'credit': late_fee, 'memo': 'Late fee'})
-        post_journal_safe(db, f'Savings deposit — {month}', _lines,
+        post_journal_required(db, f'Savings deposit — {month}', _lines,
                           reference=receipt_number, source_module='savings_deposit',
                           source_id=sav_id, created_by=current_user.id)
 
@@ -694,7 +694,7 @@ def adjust_saving():
             lines = [{'account': MEMBER_DEPOSITS, 'debit': -amount,
                       'memo': f'Adjustment for {member["member_number"]}'},
                      {'account': contra, 'credit': -amount, 'memo': reason}]
-        post_journal_safe(db, f'Savings adjustment — {member["first_name"]} {member["last_name"]}',
+        post_journal_required(db, f'Savings adjustment — {member["first_name"]} {member["last_name"]}',
                           lines, reference=receipt, source_module='savings_adjustment',
                           source_id=sav_id, created_by=current_user.id, date=date)
 
@@ -786,7 +786,7 @@ def record_payout():
                    (amount, member_id))
 
         # Double-entry: the deposit liability falls and cash goes out.
-        post_journal_safe(db, f'Savings payout — {member["first_name"]} {member["last_name"]}',
+        post_journal_required(db, f'Savings payout — {member["first_name"]} {member["last_name"]}',
                           [{'account': MEMBER_DEPOSITS, 'debit': amount, 'memo': reason},
                            {'account': cash_account, 'credit': amount,
                             'memo': f'Payout to member {member["member_number"]}'}],
