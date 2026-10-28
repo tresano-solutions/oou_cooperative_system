@@ -67,12 +67,14 @@ for name in "${clients[@]}"; do
 
   # 1. The role is not privileged.
   attrs=$(docker compose exec -T postgres psql -U postgres -tAq -d postgres -c \
-    "SELECT rolsuper||','||rolcreatedb||','||rolcreaterole FROM pg_roles WHERE rolname='${role}'" \
+    "SELECT rolsuper::int||','||rolcreatedb::int||','||rolcreaterole::int FROM pg_roles WHERE rolname='${role}'" \
     | tr -d '\r')
+  # Cast to int in the query: concatenating a boolean renders it as "false",
+  # while psql prints a bare boolean column as "f". 0/1 reads the same either way.
   case "$attrs" in
-    "")            fail_line "role ${role} does not exist" ;;
-    "f,f,f")       pass_line "${role} is not a superuser and cannot create databases or roles" ;;
-    *)             fail_line "${role} has privileges it should not (super,createdb,createrole = ${attrs})" ;;
+    "")      fail_line "role ${role} does not exist" ;;
+    "0,0,0") pass_line "${role} is not a superuser and cannot create databases or roles" ;;
+    *)       fail_line "${role} has privileges it should not (super,createdb,createrole = ${attrs})" ;;
   esac
 
   # 2. It can do its own job.
