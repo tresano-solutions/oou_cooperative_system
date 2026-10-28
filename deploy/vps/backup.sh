@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Back up every client database, keep the last 14 days locally, and — when
-# off-site storage is configured — copy each dump somewhere the server cannot
-# reach on its own.
+# Back up every client database AND its uploaded documents, keep the last 14
+# days locally, and — when off-site storage is configured — copy each archive
+# somewhere the server cannot reach on its own.
+#
+# NOT included, deliberately: clients/<name>.env, which holds each cooperative's
+# field encryption key. Without that key a restored database gives back every
+# BVN, NIN and bank detail as unreadable ciphertext — so it must be kept, but
+# NOT in the same place as the dumps, because the same file holds the database
+# password. Use ./escrow-config.sh and store the result somewhere else entirely.
 #
 # Why off-site matters: a backup that lives on the machine it protects is not a
 # backup. One deleted droplet, one ransomware run, one billing lapse, and the
@@ -151,6 +157,49 @@ for DB in $DBS; do
     else
       failures=$((failures + 1))
     fi
+  fi
+done
+
+# Uploaded documents live in Docker volumes, not in the database, so a restore
+# from the dumps alone comes back with every payout voucher and member photo
+# missing. Each volume is archived the same way a dump is: encrypted if a
+# passphrase is set, then uploaded and checked.
+for vol in $(docker volume ls -q | grep -E "_(uploads|private)-" || true); do
+  FILE="${OUT}/${vol}-${STAMP}.tar.gz"
+  if ! docker run --rm -v "${vol}:/src:ro" -v "$PWD/$OUT:/out" alpine:3.20 tar czf "/out/$(basename "$FILE")" -C /src . 2>/dev/null; then
+    echo "  !! archive FAILED: ${vol}" >&2
+    rm -f "$FILE"
+    failures=$((failures + 1))
+    continue
+  fi
+
+  may_upload=1
+  if [[ -n "$BACKUP_PASSPHRASE" ]]; then
+    if openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BACKUP_PASSPHRASE -in "$FILE" -out "${FILE}.enc"; then
+      rm -f "$FILE"; FILE="${FILE}.enc"
+    else
+      rm -f "${FILE}.enc"
+      echo "  !! encryption FAILED for $FILE - kept on this server only, NOT uploaded" >&2
+      failures=$((failures + 1)); may_upload=0
+    fi
+  fi
+
+  dumped=$((dumped + 1))
+  echo "archived ${vol} -> ${FILE}"
+  if offsite_enabled && (( may_upload )); then
+    if upload "$FILE"; then uploaded=$((uploaded + 1)); else failures=$((failures + 1)); fi
+  fi
+done
+
+# The field encryption key is NOT in any of this, on purpose: it lives beside
+# the database password in clients/<name>.env, and a bucket holding both the
+# dumps and the key that opens them is a bucket where field encryption has
+# stopped meaning anything. Escrow it separately with ./escrow-config.sh.
+for f in clients/*.env; do
+  [[ -e "$f" ]] || continue
+  if ! grep -qE "^FIELD_ENCRYPTION_KEY=.+" "$f"; then
+    echo "  !! $(basename "${f%.env}") has no FIELD_ENCRYPTION_KEY - a restore would not open its BVN/NIN/bank fields" >&2
+    failures=$((failures + 1))
   fi
 done
 
