@@ -238,8 +238,38 @@ def render_caddyfile(clients):
     return "\n".join(lines) + "\n"
 
 
+ESCAPE = "ALLOW_SHARED_SUPERUSER"
+
+
+def refuse_shared_superuser(clients):
+    """Stop rather than hand a client the shared postgres superuser.
+
+    A client without its own DATABASE_URL connects as `postgres`, which can read
+    and write every other cooperative's database. That used to be a warning in a
+    list nobody reads, so three live tenants sat on it for months. It is now a
+    refusal: the configuration cannot be generated until the client has its own
+    least-privilege login.
+
+    harden-db-roles.sh sets the escape for its own call, because halfway through
+    migrating the remaining clients legitimately still lack one.
+    """
+    unmigrated = [c["name"] for c in clients if not c["own_db_url"]]
+    if not unmigrated or os.environ.get(ESCAPE) == "1":
+        return
+    lines = ["Refusing to generate: these clients would run as the shared postgres",
+             "SUPERUSER, which reaches every other cooperative's database:"]
+    lines += ["  - " + n for n in unmigrated]
+    lines.append("")
+    lines.append("Give each one its own login:")
+    lines += ["  ./harden-db-roles.sh " + n for n in unmigrated]
+    lines.append("")
+    lines.append("To generate anyway (only while migrating): "
+                 + ESCAPE + "=1 python3 generate.py")
+    raise SystemExit(chr(10).join(lines))
+
 def main():
     clients = load_clients()
+    refuse_shared_superuser(clients)
     with open(os.path.join(HERE, "docker-compose.override.yml"), "w", encoding="utf-8") as f:
         f.write(render_compose(clients))
     os.chmod(os.path.join(HERE, "docker-compose.override.yml"), 0o600)
@@ -249,7 +279,8 @@ def main():
         print("Configured clients:")
         for c in clients:
             flag = "" if c["own_db_url"] else (
-                "   !! still on the shared postgres SUPERUSER - run ./harden-db-roles.sh " + c["name"])
+                "   !! SHARED SUPERUSER (generated under " + ESCAPE + ") - run ./harden-db-roles.sh "
+                + c["name"])
             print(f"  - {c['name']:<15} https://{c['domain']}{flag}")
     else:
         print("No clients yet. Add one with: ./add-client.sh <name> <domain>")
