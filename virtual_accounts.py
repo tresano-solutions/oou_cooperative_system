@@ -26,7 +26,7 @@ Never guess a member. An inflow that cannot be matched to a member is parked as
 from datetime import datetime
 
 from ledger import (CASH, LOANS_RECEIVABLE, LOAN_INTEREST_INCOME, MEMBER_DEPOSITS,
-                    SHARE_CAPITAL, get_default_cash_account, post_journal_safe)
+                    SHARE_CAPITAL, get_default_cash_account, post_journal_required)
 from utils import share_capital_split, split_repayment
 
 # Liability — money received from a member but not yet applied to anything.
@@ -246,7 +246,7 @@ def record_receipt(db, provider_reference, amount, account_number='', customer_c
     # whether or not anyone has decided what it is for.
     cash_account = get_default_cash_account(db) or CASH
     who = f"member {va['member_id']}" if va else 'unmatched sender'
-    post_journal_safe(db, f'Transfer received — {who}', [
+    post_journal_required(db, f'Transfer received — {who}', [
         {'account': cash_account, 'debit': amount, 'memo': f'To {account_number}'},
         {'account': VA_UNALLOCATED, 'credit': amount, 'memo': sender_name or who},
     ], reference=f'VA-{provider_reference}', source_module='va_receipt',
@@ -462,7 +462,7 @@ def _apply_to_savings(db, receipt, member_id, amount, created_by):
              {'account': MEMBER_DEPOSITS, 'credit': deposit, 'memo': f'Savings {month}'}]
     if share:
         lines.append({'account': SHARE_CAPITAL, 'credit': share, 'memo': 'Share capital'})
-    post_journal_safe(db, f'Transfer applied to savings — {month}', lines,
+    post_journal_required(db, f'Transfer applied to savings — {month}', lines,
                       reference=receipt_number, source_module='va_savings',
                       source_id=alloc_id, created_by=created_by)
 
@@ -503,7 +503,7 @@ def _apply_to_loan(db, receipt, member_id, loan_id, amount, created_by):
 
     alloc_id = _record_allocation(db, receipt['id'], 'loan', rep_id, loan_id, amount, created_by)
 
-    post_journal_safe(db, f"Transfer applied to loan — {loan['loan_number']}", [
+    post_journal_required(db, f"Transfer applied to loan — {loan['loan_number']}", [
         {'account': VA_UNALLOCATED, 'debit': amount, 'memo': f'Member {member_id}'},
         {'account': LOANS_RECEIVABLE, 'credit': principal, 'memo': loan['loan_number']},
         {'account': LOAN_INTEREST_INCOME, 'credit': interest, 'memo': 'Interest earned'},

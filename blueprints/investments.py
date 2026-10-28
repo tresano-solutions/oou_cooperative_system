@@ -6,7 +6,7 @@ from flask_login import login_required, current_user
 
 from database import get_db
 from utils import finite_float, role_required, audit
-from ledger import post_journal_safe, get_default_cash_account, INVESTMENTS as ACCT_INVESTMENTS
+from ledger import post_journal_required, get_default_cash_account, INVESTMENTS as ACCT_INVESTMENTS
 
 investments = Blueprint('investments', __name__)
 
@@ -66,7 +66,7 @@ def add_investment():
             ))
             # Double-entry: cash converts into an investment asset.
             cash_account = get_default_cash_account(db)
-            post_journal_safe(db, f"Investment — {name}", [
+            post_journal_required(db, f"Investment — {name}", [
                 {'account': ACCT_INVESTMENTS, 'debit': amount, 'memo': name},
                 {'account': cash_account, 'credit': amount},
             ], reference=investment_number, source_module='investments',

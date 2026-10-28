@@ -14,7 +14,7 @@ Reserve), so the books stay consistent.
 
 from datetime import datetime
 
-from ledger import (post_journal_safe, ACCUM_SURPLUS, STATUTORY_RESERVE,
+from ledger import (post_journal_required, ACCUM_SURPLUS, STATUTORY_RESERVE,
                     MEMBER_DEPOSITS)
 
 
@@ -143,7 +143,7 @@ def declare_dividends(db, from_date, to_date, dividend_pct=50, reserve_pct=25,
 
     je_id = None
     if lines:
-        je_id = post_journal_safe(db, f"Dividend declaration {from_date} to {to_date}",
+        je_id = post_journal_required(db, f"Dividend declaration {from_date} to {to_date}",
                                   lines, reference=f"DIV-{decl_id}",
                                   source_module='dividend', source_id=decl_id,
                                   created_by=declared_by)

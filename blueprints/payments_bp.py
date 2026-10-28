@@ -20,7 +20,7 @@ from email_service import send_loan_repayment_email
 from payments import get_gateway, generate_reference
 from security import log_audit
 from utils import finite_float, audit, member_for_user, split_repayment
-from ledger import (post_journal_safe, get_default_cash_account, MEMBER_DEPOSITS, LOANS_RECEIVABLE,
+from ledger import (post_journal_required, get_default_cash_account, MEMBER_DEPOSITS, LOANS_RECEIVABLE,
                     LOAN_INTEREST_INCOME)
 
 payments_bp = Blueprint('payments', __name__)
@@ -115,7 +115,7 @@ def _record_payment(db, reference: str) -> bool:
                 (amount, member_id)
             )
             cash_account = get_default_cash_account(db)
-            post_journal_safe(db, f'Online savings deposit — {month}', [
+            post_journal_required(db, f'Online savings deposit — {month}', [
                 {'account': cash_account, 'debit': amount, 'memo': 'Online payment'},
                 {'account': MEMBER_DEPOSITS, 'credit': amount, 'memo': f'Member {member_id}'},
             ], reference=reference, source_module='payments', source_id=member_id)
@@ -159,7 +159,7 @@ def _record_payment(db, reference: str) -> bool:
                     (new_balance, loan_id)
                 )
             cash_account = get_default_cash_account(db)
-            post_journal_safe(db, f"Online loan repayment — {loan['loan_number']}", [
+            post_journal_required(db, f"Online loan repayment — {loan['loan_number']}", [
                 {'account': cash_account, 'debit': amount, 'memo': 'Online payment'},
                 {'account': LOANS_RECEIVABLE, 'credit': principal_paid, 'memo': loan['loan_number']},
                 {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},

@@ -30,7 +30,8 @@ from flask_login import current_user, login_required
 
 from database import get_db, last_insert_id
 from utils import audit, client_ip, finite_float, member_for_user, notify_member, role_required
-from ledger import post_journal_safe, get_default_cash_account, MEMBER_DEPOSITS, SHARE_CAPITAL
+from ledger import (post_journal_required, JournalPostingError,
+                    get_default_cash_account, MEMBER_DEPOSITS, SHARE_CAPITAL)
 from payments import get_gateway, generate_reference
 import permissions as perms
 import ctas_engine as ce
@@ -178,7 +179,7 @@ def _post_contribution(db, sub, cycle, period, amount, created_by=None, ref_suff
         status = sub['status']
 
     if post_amt > 0:
-        post_journal_safe(
+        post_journal_required(
             db, f"CTAS contribution period {period} - subscription {sub['id']}",
             [{'account': cash, 'debit': post_amt, 'memo': f'CTAS contribution p{period}'},
              {'account': credit_acct, 'credit': post_amt, 'memo': f"CTAS contribution sub {sub['id']}"}],
@@ -1384,7 +1385,7 @@ def payout(sub_id):
         lines.append({'account': CTAS_PRIORITY_FEE_INCOME, 'credit': prio_fee,
                       'memo': f"CTAS priority fee (position {sub['payout_month']})"})
     try:
-        post_journal_safe(db, f"CTAS payout - subscription {sub_id}", lines,
+        post_journal_required(db, f"CTAS payout - subscription {sub_id}", lines,
                           date=datetime.now(), reference=f"CTAS-PO-{sub_id}",
                           source_module='ctas_payout', source_id=sub_id, created_by=current_user.id)
         db.execute("UPDATE ctas_subscriptions SET status = 'active_recovery', paid_out_at = ?, "
@@ -1983,8 +1984,22 @@ def autopay_callback():
     already = db.execute("SELECT 1 FROM journal_entries WHERE reference = ?",
                          (f"CTAS-CN-{sub['id']}-M{period}-{reference}",)).fetchone()
     if not already and paid > 0:
-        _post_contribution(db, sub, cycle, period, paid, created_by=current_user.id,
-                           ref_suffix=f'-{reference}')
+        try:
+            _post_contribution(db, sub, cycle, period, paid, created_by=current_user.id,
+                               ref_suffix=f'-{reference}')
+        except JournalPostingError as exc:
+            # The member has already paid. Record nothing half-done; raise it as
+            # an exception for the officers with the gateway reference attached.
+            db.rollback()
+            _raise_exception(db, sub['id'], 'missed_deduction', period, paid,
+                             f'Payment received ({reference}) but the accounting '
+                             f'entry failed: {exc}')
+            db.commit()
+            current_app.logger.error('CTAS mandate payment posted no journal for %s: %s',
+                                     reference, exc)
+            flash('We received your payment but could not finish recording it. '
+                  'The office has been notified and will complete it.', 'warning')
+            return redirect(url_for('ctas.my_ctas'))
 
     if token and reusable:
         db.execute("UPDATE ctas_mandates SET status = 'active', authorization_code = ?, "
@@ -2093,13 +2108,30 @@ def ctas_charge_due():
             ok, resp = False, {'message': str(exc)}
 
         if ok:
-            _post_contribution(db, sub, cycle, r['period_number'], amount, ref_suffix=f'-{reference}')
-            db.execute("UPDATE ctas_schedule SET charge_attempts = ?, last_attempt_at = ?, "
-                       "next_retry_at = NULL WHERE id = ?", (attempts + 1, datetime.now(), r['id']))
-            db.execute("UPDATE ctas_mandates SET last_charged_at = ?, fail_count = 0, last_error = NULL "
-                       "WHERE id = ?", (datetime.now(), r['mandate_id']))
-            _notify_member(db, r['member_id'], 'Target Advance — contribution paid',
-                           f"₦{amount:,.2f} for period {r['period_number']} was charged to your saved card.")
+            # The card has already been charged, so this member's money is real
+            # whatever happens next. Each one is committed on its own: a problem
+            # with this member must not discard the charges recorded before it.
+            try:
+                _post_contribution(db, sub, cycle, r['period_number'], amount, ref_suffix=f'-{reference}')
+                db.execute("UPDATE ctas_schedule SET charge_attempts = ?, last_attempt_at = ?, "
+                           "next_retry_at = NULL WHERE id = ?", (attempts + 1, datetime.now(), r['id']))
+                db.execute("UPDATE ctas_mandates SET last_charged_at = ?, fail_count = 0, last_error = NULL "
+                           "WHERE id = ?", (datetime.now(), r['mandate_id']))
+                _notify_member(db, r['member_id'], 'Target Advance — contribution paid',
+                               f"₦{amount:,.2f} for period {r['period_number']} was charged to your saved card.")
+                db.commit()
+            except JournalPostingError as exc:
+                # Money taken that the books would not accept. Undo this member's
+                # half-written row and hand it to the officers, with the gateway
+                # reference, so the charge can be traced rather than lost.
+                db.rollback()
+                _raise_exception(db, sub['id'], 'missed_deduction', r['period_number'], amount,
+                                 f'Card charged ({reference}) but the accounting entry failed: {exc}')
+                db.commit()
+                current_app.logger.error('CTAS auto-charge posted no journal for %s: %s',
+                                         reference, exc)
+                failed += 1
+                continue
             charged += 1
             continue
 
@@ -2252,7 +2284,7 @@ def exit_settle(sub_id):
             lines.append({'account': CTAS_ADVANCES, 'credit': outstanding,
                           'memo': f'CTAS exit settlement sub {sub_id}'})
         if lines:
-            post_journal_safe(db, f"CTAS exit settlement - subscription {sub_id}", lines,
+            post_journal_required(db, f"CTAS exit settlement - subscription {sub_id}", lines,
                               date=datetime.now(), reference=f"CTAS-EXIT-{sub_id}",
                               source_module='ctas_exit', source_id=sub_id, created_by=current_user.id)
         db.execute("UPDATE members SET total_savings = COALESCE(total_savings, 0) - ?, "

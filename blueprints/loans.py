@@ -22,7 +22,7 @@ from utils import (claim_submission, finite_float, role_required, audit, notify_
                    PURPOSE_SETTING_KEY, METHOD_LABELS, record_revenue, split_repayment,
                    member_savings_balance, member_for_user,
                    member_has_minimum_membership, has_unpaid_loan_of_type)
-from ledger import (post_journal, post_journal_safe, get_default_cash_account, get_postable_cash_accounts,
+from ledger import (post_journal, post_journal_required, get_default_cash_account, get_postable_cash_accounts,
                     get_loan_repayment_counter_accounts, resolve_loan_repayment_counter_account,
                     resolve_cash_bank_account, UnknownCashAccountError,
                     LOANS_RECEIVABLE, ACCUM_SURPLUS, FEE_INCOME,
@@ -1524,7 +1524,7 @@ def repay_loan(loan_id):
         )
 
         # Double-entry: cash in; principal reduces the receivable; interest is income.
-        post_journal_safe(db, f"Loan repayment — {loan['loan_number']}", [
+        post_journal_required(db, f"Loan repayment — {loan['loan_number']}", [
             {'account': cash_account, 'debit': settled, 'memo': f'Repayment via {method}'},
             {'account': LOANS_RECEIVABLE, 'credit': principal_paid, 'memo': loan['loan_number']},
             {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},
