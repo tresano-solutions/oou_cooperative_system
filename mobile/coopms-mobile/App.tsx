@@ -36,6 +36,7 @@ import {
   getSavings,
   loadToken,
   login,
+  logout as revokeToken,
   markAllNotificationsRead,
   previewLoanSchedule,
   registerDevice,
@@ -1322,6 +1323,7 @@ function AppContent() {
   }
 
   async function logout() {
+    if (token) await revokeToken(token);
     await clearToken();
     setToken(null);
     setDashboard(null);
@@ -1329,6 +1331,7 @@ function AppContent() {
   }
 
   async function changeCooperative() {
+    if (token) await revokeToken(token);
     await clearTenant();
     await clearToken();
     setToken(null);

@@ -10,6 +10,7 @@ import json
 import os
 import loan_limits
 import random
+import secrets
 import re
 from datetime import datetime, timedelta, UTC
 from functools import wraps
@@ -144,6 +145,9 @@ def _max_tenure(db):
 def _generate_token(user_id, username, role, session_version=0):
     now = datetime.now(UTC)
     payload = {
+        # Its own identity, so signing out on one phone can retire that token
+        # without turning the member out of their other devices.
+        'jti': secrets.token_hex(16),
         'sv': int(session_version or 0),
         'user_id': user_id,
         'username': username,
@@ -180,6 +184,31 @@ def _row_to_dict(row):
     return {k: _to_json_value(row[k]) for k in row.keys()} if row else None
 
 
+def _token_revoked(jti):
+    """True if this token was handed back at logout."""
+    if not jti:
+        return False       # issued before tokens carried an id; see mobile_logout
+    row = get_db().execute(
+        'SELECT 1 FROM revoked_tokens WHERE jti = ?', (str(jti)[:64],)).fetchone()
+    return row is not None
+
+
+def _revoke_token(db, payload):
+    """Retire one token. Idempotent, so a repeated logout is not an error."""
+    jti = str(payload.get("jti") or "")[:64]
+    if not jti:
+        return False
+    expires = payload.get("exp")
+    expires_at = (datetime.fromtimestamp(expires, UTC) if expires
+                  else datetime.now(UTC) + timedelta(days=30))
+    # Keep the table the size of the tokens still alive.
+    db.execute('DELETE FROM revoked_tokens WHERE expires_at < ?', (datetime.now(UTC),))
+    db.execute(
+        'INSERT INTO revoked_tokens (jti, user_id, expires_at) VALUES (?, ?, ?) '
+        'ON CONFLICT (jti) DO NOTHING',
+        (jti, payload.get("user_id"), expires_at))
+    return True
+
 def jwt_required(f):
     """Validate Bearer JWT and store payload in flask.g."""
     @wraps(f)
@@ -199,6 +228,7 @@ def jwt_required(f):
             g.user_id = payload['user_id']
             g.username = payload['username']
             g.role = payload['role']
+            g.token_payload = payload
             # Revocation: the account must still be active and the token must carry
             # the user's current session_version (bumped on password change, role
             # change, deactivation, 2FA reset).
@@ -206,6 +236,8 @@ def jwt_required(f):
                                    (g.user_id,)).fetchone()
             if (not row or row['is_active'] == 0
                     or int(row['session_version'] or 0) != int(payload.get('sv', 0) or 0)):
+                return _json_error('Session is no longer valid. Please sign in again.', 401, 'token_revoked')
+            if _token_revoked(payload.get('jti')):
                 return _json_error('Session is no longer valid. Please sign in again.', 401, 'token_revoked')
         except jwt.ExpiredSignatureError:
             return _json_error('Token has expired', 401, 'token_expired')
@@ -593,6 +625,34 @@ def mobile_change_password():
     return jsonify({'success': True, 'message': 'Password changed successfully.',
                     'token': _generate_token(fresh['id'], fresh['username'], fresh['role'], fresh['session_version'])})
 
+
+@mobile_api.route('/api/mobile/v1/auth/logout', methods=['POST'])
+@jwt_required
+def mobile_logout():
+    """Hand this token back so it stops working.
+
+    Signing out used to clear the phone and nothing else: the token stayed
+    valid until it expired, up to thirty days, so a copy taken from a lost or
+    shared device still opened the account.
+
+    Only this token is retired, not the member's other devices. A token issued
+    before tokens carried an id cannot be named, so it is reported as such
+    rather than silently appearing to have worked; changing the password still
+    retires every one of them.
+    """
+    db = get_db()
+    payload = getattr(g, "token_payload", None) or {}
+    revoked = _revoke_token(db, payload)
+    if revoked:
+        audit(db, 'MOBILE_LOGOUT', 'auth', f'Mobile token retired for user {g.user_id}')
+    db.commit()
+    return jsonify({
+        'success': True,
+        'revoked': revoked,
+        'message': ('Signed out.' if revoked else
+                    'Signed out on this device. This sign-in predates revocable '
+                    'tokens, so change your password if the device was lost.'),
+    })
 
 @mobile_api.route('/api/mobile/v1/me')
 @member_required

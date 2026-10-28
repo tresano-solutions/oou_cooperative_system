@@ -159,6 +159,18 @@ export async function changePassword(token: string, currentPassword: string, new
   });
 }
 
+export async function logout(token: string) {
+  // Hand the token back so it stops working. Signing out used to clear only
+  // this phone, leaving the token usable by anyone holding a copy until it
+  // expired. Never let a failure here keep someone signed in: the local
+  // clear-out happens either way.
+  try {
+    await request<{ success: boolean }>('/api/mobile/v1/auth/logout', { method: 'POST', token });
+  } catch {
+    // Offline, or the token had already expired. Nothing more to retire.
+  }
+}
+
 export async function getDashboard(token: string) {
   return request<DashboardPayload>('/api/mobile/v1/dashboard', { token });
 }

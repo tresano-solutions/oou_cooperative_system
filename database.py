@@ -358,6 +358,20 @@ def init_db():
         )
     '''))
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_throttle_bucket ON throttle_hits(bucket)')
+
+    # Mobile tokens handed back at logout. A JWT is valid until it expires, so
+    # signing out only cleared the phone's copy — anyone holding a copied token
+    # kept the account for up to thirty days. Rows are pruned once the token
+    # they name would have expired anyway.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS revoked_tokens (
+            jti TEXT PRIMARY KEY,
+            user_id INTEGER,
+            expires_at TIMESTAMP,
+            revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_revoked_expires ON revoked_tokens(expires_at)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_throttle_hit_at ON throttle_hits(hit_at)')
 
     # In-app feedback / NPS survey (also recruits referral / sales partners).
