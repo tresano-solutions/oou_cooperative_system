@@ -127,6 +127,22 @@ The app updates its own database structure on start, safely, without losing data
 docker compose ps
 ```
 
+**Escrow the encryption keys** (once, and again whenever a client is added)
+```bash
+./escrow-config.sh
+```
+The nightly backup covers the databases and the uploaded documents. It does **not**
+include `clients/<name>.env`, and that is deliberate: those files hold each cooperative's
+`FIELD_ENCRYPTION_KEY`. Put the key in the same bucket as the dumps and field encryption
+stops meaning anything - whoever takes the bucket takes both. Lose it, though, and a
+restored database gives back every BVN, NIN and bank detail as ciphertext nobody can
+open, permanently.
+
+So `escrow-config.sh` writes one encrypted archive, under its own passphrase, for you to
+download and keep somewhere that is neither this server nor the backup bucket. It never
+uploads anything. Copy it off, then delete the copy it left here - sitting beside the
+files it protects, it protects nothing.
+
 **Turn on nightly backups** (keeps 14 days, one file per client)
 ```bash
 crontab -e
@@ -135,9 +151,19 @@ crontab -e
 ```
 
 **Restore one client from a backup**
+
+A full restore needs three things from three places: the database dump and the uploads
+archive (both in `backups/`, or the bucket), and that client's escrowed
+`FIELD_ENCRYPTION_KEY`. Restore the dump without the key and the system comes back up
+with unreadable identity and bank fields.
 ```bash
 gunzip -c backups/coop_client1-YYYYMMDD-HHMMSS.sql.gz | \
   docker compose exec -T postgres psql -U postgres -d coop_client1
+```
+
+Uploaded documents restore into their volume:
+```bash
+docker run --rm -v coop_private-client1:/dst -v "$PWD/backups:/src:ro" alpine:3.20 tar xzf /src/coop_private-client1-YYYYMMDD-HHMMSS.tar.gz -C /dst
 ```
 
 If `BACKUP_PASSPHRASE` is set the files end in `.sql.gz.enc` and have to be
