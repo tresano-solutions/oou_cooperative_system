@@ -49,6 +49,7 @@ AWSCLI_IMAGE="${AWSCLI_IMAGE:-amazon/aws-cli:2.17.0}"
 failures=0
 uploaded=0
 dumped=0
+archived=0
 
 offsite_enabled() { [[ -n "$OFFSITE_BUCKET" ]]; }
 
@@ -184,7 +185,7 @@ for vol in $(docker volume ls -q | grep -E "_(uploads|private)-" || true); do
     fi
   fi
 
-  dumped=$((dumped + 1))
+  archived=$((archived + 1))
   echo "archived ${vol} -> ${FILE}"
   if offsite_enabled && (( may_upload )); then
     if upload "$FILE"; then uploaded=$((uploaded + 1)); else failures=$((failures + 1)); fi
@@ -209,14 +210,14 @@ find "$OUT" -type f \( -name '*.sql.gz' -o -name '*.sql.gz.enc' \) \
      -mtime "+${RETAIN_DAYS}" -delete 2>/dev/null || true
 echo "Local backups older than ${RETAIN_DAYS} days pruned."
 
-echo "Summary: ${dumped} database(s) dumped, ${uploaded} copied off-site, ${failures} failure(s)."
+echo "Summary: ${dumped} database(s) dumped, ${archived} document archive(s), ${uploaded} copied off-site, ${failures} failure(s)."
 
 if (( failures > 0 )); then
   echo "Backup run finished WITH FAILURES — read the lines marked !! above." >&2
   exit 1
 fi
 
-if offsite_enabled && (( uploaded < dumped )); then
+if offsite_enabled && (( uploaded < dumped + archived )); then
   echo "Not every dump reached off-site storage." >&2
   exit 1
 fi
