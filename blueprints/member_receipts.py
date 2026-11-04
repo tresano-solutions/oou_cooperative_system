@@ -154,7 +154,7 @@ def member_payment():
                          payment_method, receipt_number, reference, notes, date, received_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (repayment_no, loan['id'], item['amount'], item['principal'], item['interest'],
-                      payment_method, bank_reference, receipt_no, repayment_notes, receipt_date, current_user.id))
+                      payment_method, bank_reference, repayment_no, repayment_notes, receipt_date, current_user.id))
                 rep_id = last_insert_id(db)
 
                 if new_balance <= 0:

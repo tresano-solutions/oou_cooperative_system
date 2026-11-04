@@ -3506,8 +3506,8 @@ class HardeningFeatureTests(unittest.TestCase):
             self.assertAlmostEqual(float(loan['balance'] or 0), 110000.0, places=2)
             self.assertEqual(loan['status'], 'active')
             repayment = db.execute(
-                "SELECT reversed_at FROM repayments WHERE reference = ?",
-                (receipt['receipt_number'],)
+                "SELECT reversed_at FROM repayments WHERE repayment_number = ?",
+                (receipt['receipt_number'] + f'-L{loan_id}',)
             ).fetchone()
             self.assertIsNotNone(repayment['reversed_at'])
             savings_rows = db.execute(
@@ -3527,6 +3527,51 @@ class HardeningFeatureTests(unittest.TestCase):
             db.execute("DELETE FROM settings WHERE key = 'default_cash_account'")
             db.execute("DELETE FROM accounts WHERE code = '1094'")
             db.commit()
+
+    def test_member_receipt_multiple_loans_have_unique_references_and_reverse_together(self):
+        self.login_admin()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO members (member_number,first_name,last_name,status,total_savings) VALUES ('MR-MULTI-ONLY','Receipt','Test','active',0)")
+            member_id = db.execute("SELECT id FROM members WHERE member_number='MR-MULTI-ONLY'").fetchone()['id']
+            db.execute("INSERT INTO accounts (code,name,type,normal_balance,is_active,is_cash_account) VALUES ('10939','Multi receipt bank','asset','debit',1,1) ON CONFLICT(code) DO NOTHING")
+            for suffix in ('A', 'B'):
+                db.execute("INSERT INTO loans (loan_number,member_id,amount,total_repayment,balance,status,purpose,tenure) VALUES (?,?,10000,10000,10000,'active','Regular',6)",
+                           (f'MR-MULTI-{member_id}-{suffix}', member_id))
+            loans = db.execute('SELECT id FROM loans WHERE member_id=? ORDER BY id', (member_id,)).fetchall()
+            initial = float(db.execute('SELECT total_savings FROM members WHERE id=?', (member_id,)).fetchone()['total_savings'] or 0)
+            db.commit()
+        data = {'member_id': member_id, 'amount': '25000', 'savings_amount': '5000',
+                'bank_account': '10939', 'date': '2026-11-04', 'payment_method': 'transfer',
+                'bank_reference': f'MULTI-BANK-{member_id}'}
+        for loan in loans:
+            data[f'loan_amount_{loan["id"]}'] = '10000'
+        self.client.post('/receipts/member-payment', data=data)
+        with self.app.app_context():
+            db = get_db()
+            receipt = db.execute('SELECT * FROM member_receipts WHERE bank_reference=?', (data['bank_reference'],)).fetchone()
+            self.assertIsNotNone(receipt)
+            receipt_id, journal_id = receipt['id'], receipt['journal_entry_id']
+            repayments = db.execute('SELECT * FROM repayments WHERE loan_id IN (?,?)', (loans[0]['id'], loans[1]['id'])).fetchall()
+            self.assertEqual(len(repayments), 2)
+            self.assertEqual(len({r['reference'] for r in repayments}), 2)
+            for repayment in repayments:
+                self.assertEqual(repayment['reference'], receipt['receipt_number'] + f'-L{repayment["loan_id"]}')
+                self.assertEqual(repayment['receipt_number'], data['bank_reference'])
+            bank_lines = db.execute("SELECT debit FROM journal_lines WHERE entry_id=? AND account_code='10939'", (journal_id,)).fetchall()
+            self.assertEqual(len(bank_lines), 1)
+            self.assertEqual(float(bank_lines[0]['debit']), 25000)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM member_receipt_allocations WHERE receipt_id=?', (receipt_id,)).fetchone()[0], 3)
+        self.client.post(f'/receipts/{receipt_id}/reverse', data={'reason':'Synthetic multiple-loan reversal'})
+        with self.app.app_context():
+            db = get_db()
+            self.assertTrue(db.execute('SELECT reversed_at FROM member_receipts WHERE id=?', (receipt_id,)).fetchone()['reversed_at'])
+            for loan in loans:
+                self.assertEqual(float(db.execute('SELECT balance FROM loans WHERE id=?', (loan['id'],)).fetchone()['balance']), 10000)
+                self.assertTrue(db.execute('SELECT reversed_at FROM repayments WHERE loan_id=?', (loan['id'],)).fetchone()['reversed_at'])
+            self.assertAlmostEqual(float(db.execute('SELECT total_savings FROM members WHERE id=?', (member_id,)).fetchone()['total_savings']), initial)
+            reversal = db.execute('SELECT id FROM journal_entries WHERE reversal_of=?', (journal_id,)).fetchone()
+            self.assertEqual(float(db.execute("SELECT credit FROM journal_lines WHERE entry_id=? AND account_code='10939'", (reversal['id'],)).fetchone()['credit']), 25000)
 
     def test_unknown_bank_account_is_refused_not_silently_redirected(self):
         """A code that is not a cash/bank account must be rejected outright.
