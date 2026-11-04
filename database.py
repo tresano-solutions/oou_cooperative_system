@@ -394,6 +394,18 @@ def init_db():
         )
     '''))
 
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS task_feedback_responses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            task TEXT NOT NULL,
+            rating TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+
     # Members table
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS members (

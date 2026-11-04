@@ -1,0 +1,19 @@
+{% if task_feedback_prompt %}
+<style>#task-feedback button { min-height: 44px; }</style>
+<section class="border-top mt-3 py-2" aria-label="Task feedback" id="task-feedback">
+  <form class="d-flex align-items-center flex-wrap gap-2" id="task-feedback-form"
+        data-endpoint="{{ url_for('feedback.submit_task') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="token" value="{{ task_feedback_prompt.token }}">
+    <span id="task-feedback-label">{{ task_feedback_prompt.task }}: How was this task?</span>
+    <div class="d-flex gap-2" role="group" aria-labelledby="task-feedback-label">
+      <button class="btn btn-outline-success" type="submit" name="rating" value="easy">Easy</button>
+      <button class="btn btn-outline-secondary" type="submit" name="rating" value="okay">Okay</button>
+      <button class="btn btn-outline-danger" type="submit" name="rating" value="difficult">Difficult</button>
+      <button class="btn btn-link text-secondary" type="button" id="task-feedback-skip">Skip</button>
+    </div>
+    <span role="status" aria-live="polite" id="task-feedback-status"></span>
+  </form>
+</section>
+<script src="{{ url_for('static', filename='js/task-feedback.js') }}" defer></script>
+{% endif %}

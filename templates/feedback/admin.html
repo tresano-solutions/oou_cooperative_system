@@ -12,6 +12,17 @@
     </a>
   </div>
 
+  <h4 class="h6">Task experience</h4>
+  <div class="table-responsive mb-4">
+    <table class="table table-sm align-middle">
+      <thead><tr><th>Task</th><th>Role</th><th>Responses</th><th>Easy</th><th>Okay</th><th>Difficult</th></tr></thead>
+      <tbody>{% for row in task_stats %}
+        <tr><td>{{ row.task }}</td><td>{{ row.role }}</td><td>{{ row.total }}</td>
+          <td>{{ row.easy }}</td><td>{{ row.okay }}</td><td>{{ row.difficult }}</td></tr>
+      {% else %}<tr><td colspan="6">No task feedback yet.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+
   <div class="row g-3 mb-4">
     <div class="col-6 col-md-3">
       <div class="card text-center h-100"><div class="card-body">

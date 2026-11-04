@@ -170,6 +170,8 @@ app.register_blueprint(governance)
 app.register_blueprint(communications)
 app.register_blueprint(security_bp)
 app.register_blueprint(feedback_bp)
+from task_feedback import install_task_feedback
+install_task_feedback(app)
 app.register_blueprint(marketing)
 app.register_blueprint(hq_billing)
 app.register_blueprint(affiliates_bp)

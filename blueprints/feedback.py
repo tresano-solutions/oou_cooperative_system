@@ -13,7 +13,7 @@ from csv_safe import safe_writer
 import io
 from datetime import datetime, timedelta
 
-from flask import (Blueprint, Response, flash, redirect, render_template,
+from flask import (Blueprint, Response, flash, redirect, render_template, jsonify,
                    request, url_for)
 from flask_login import current_user, login_required
 
@@ -159,6 +159,13 @@ def dismiss():
 @role_required('admin')
 def admin():
     db = get_db()
+    task_stats = db.execute('''
+        SELECT task, role, COUNT(*) AS total,
+               SUM(CASE WHEN rating = 'easy' THEN 1 ELSE 0 END) AS easy,
+               SUM(CASE WHEN rating = 'okay' THEN 1 ELSE 0 END) AS okay,
+               SUM(CASE WHEN rating = 'difficult' THEN 1 ELSE 0 END) AS difficult
+        FROM task_feedback_responses GROUP BY task, role ORDER BY total DESC
+    ''').fetchall()
     responses = db.execute(
         'SELECT * FROM feedback_responses ORDER BY created_at DESC LIMIT 500'
     ).fetchall()
@@ -196,7 +203,36 @@ def admin():
 
     return render_template('feedback/admin.html',
                            responses=responses, stats=stats, nps=nps,
-                           loved=loved, improve=improve)
+                           loved=loved, improve=improve, task_stats=task_stats)
+
+
+@feedback_bp.route('/task', methods=['POST'])
+@login_required
+def submit_task():
+    from itsdangerous import BadSignature, SignatureExpired
+    from task_feedback import signer, WRITE_TASKS, READ_TASKS
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or data.get('rating') not in ('easy', 'okay', 'difficult'):
+        return jsonify(ok=False, error='Choose a valid response.'), 400
+    try:
+        event = signer().loads(data.get('token', ''), max_age=3600)
+        if (event['user_id'] != str(current_user.id)
+                or event['task'] not in set(WRITE_TASKS.values()) | set(READ_TASKS.values())):
+            raise ValueError('Invalid event')
+    except (BadSignature, SignatureExpired, ValueError, TypeError, KeyError):
+        return jsonify(ok=False, error='This feedback prompt has expired. Please continue your work.'), 400
+    db = get_db()
+    try:
+        db.execute('''INSERT INTO task_feedback_responses
+            (event_key, user_id, role, task, rating)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING''',
+            (event['nonce'], current_user.id, current_user.role, event['task'], data['rating']))
+        db.commit()
+    except Exception:
+        db.rollback()
+        return jsonify(ok=False, error='Feedback could not be saved. Please try again.'), 503
+    return jsonify(ok=True)
 
 
 @feedback_bp.route('/admin/referrals.csv')

@@ -375,7 +375,9 @@
             {% endwith %}
 
             <!-- Page Content -->
-            <main id="pageContent" tabindex="-1">{% block content %}{% endblock %}</main>
+            <main id="pageContent" tabindex="-1">{% block content %}{% endblock %}
+                {% include '_task_feedback.html' %}
+            </main>
 
             <!-- Footer (only displayed when logged in) -->
             {% if current_user.is_authenticated %}
