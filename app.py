@@ -576,6 +576,8 @@ def persist_audit_rows(response):
 
 @app.after_request
 def apply_security_headers(response):
+    # Search engines may index the public marketing site, never tenant records.
+    response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     response.headers.setdefault('X-Content-Type-Options', 'nosniff')
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')

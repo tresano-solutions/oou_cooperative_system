@@ -117,11 +117,17 @@ class HardeningFeatureTests(unittest.TestCase):
             saved = get_db().execute('SELECT date_joined FROM members WHERE id = ?', (mid,)).fetchone()
             self.assertEqual(str(saved['date_joined'])[:10], '2020-01-15')
 
+    def test_public_application_pages_are_not_search_indexable(self):
+        for path in ('/login', '/nonexistent-seo-test-page'):
+            response = self.client.get(path)
+            self.assertEqual(response.headers.get('X-Robots-Tag'), 'noindex, nofollow')
+
     def test_authenticated_pages_have_security_headers(self):
         self.login_admin()
         response = self.client.get('/dashboard')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get('X-Frame-Options'), 'DENY')
+        self.assertEqual(response.headers.get('X-Robots-Tag'), 'noindex, nofollow')
         self.assertEqual(response.headers.get('X-Content-Type-Options'), 'nosniff')
         self.assertIn('no-store', response.headers.get('Cache-Control', ''))
 
