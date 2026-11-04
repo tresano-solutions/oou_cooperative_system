@@ -15,6 +15,7 @@ from flask import (Blueprint, Response, current_app, render_template, redirect, 
 from flask_login import login_required, current_user
 
 from database import get_db, last_insert_id, USE_POSTGRES, for_update
+from loan_completion import queue_completion, dispatch_completions
 from email_service import (send_loan_approval_email, send_loan_rejection_email,
                            send_loan_repayment_email, send_loan_stage_email,
                            send_guarantor_request_email)
@@ -874,6 +875,8 @@ def loan_pipeline_sweep():
         return jsonify({'success': False, 'error': 'Unauthorised'}), 403
 
     summary = la.run_pipeline_sweep(db)
+    db.commit()
+    summary['completion_emails_checked'] = dispatch_completions(db)
     if by_user and not by_token:
         audit(db, 'LOAN_PIPELINE_SWEEP', 'loans',
               f"Manual chase: {summary['reminded']} reminded, {summary['escalated']} escalated")
@@ -1229,6 +1232,8 @@ def bulk_loan_repayments():
                         {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},
                     ], date=payment_date, reference=repayment_number, source_module='loan_repayment',
                        source_id=rep_id, created_by=current_user.id)
+                    if status == 'completed':
+                        queue_completion(db, loan['id'], rep_id)
                     processed = True
                     success += 1
                     if amount > settled_amount:
@@ -1266,6 +1271,7 @@ def bulk_loan_repayments():
 
             record_upload(db, 'loan_repayments', success, errors, skipped=skipped, warnings=warnings, rows=outcomes)
             db.commit()
+            dispatch_completions(db)
             flash('Full results saved in Upload History.', 'info')
             if skipped:
                 flash(f'Skipped {skipped} already imported repayment(s). See Upload History for details.', 'info')
@@ -1530,7 +1536,10 @@ def repay_loan(loan_id):
             {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},
         ], reference=repayment_number, source_module='loan_repayment',
            source_id=rep_id, created_by=current_user.id)
+        if new_status == 'completed':
+            queue_completion(db, loan_id, rep_id)
         db.commit()
+        dispatch_completions(db)
 
         member = db.execute('SELECT * FROM members WHERE id = ?', (loan['member_id'],)).fetchone()
         if member and member['email']:

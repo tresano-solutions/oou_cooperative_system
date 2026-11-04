@@ -1,0 +1,24 @@
+{% if audience == 'member' %}
+<h2 style="color:#123b72">Congratulations, {{ member.first_name }}!</h2>
+<p>You have completed repayment of your <strong>{{ loan.purpose or 'cooperative' }}</strong> loan.
+Thank you for fulfilling your repayment commitment to the cooperative.</p>
+{% else %}
+<h2 style="color:#123b72">Member loan fully repaid</h2>
+<p><strong>{{ member.first_name }} {{ member.last_name }}</strong>
+({{ member.member_number }}) has completed repayment of the loan below.</p>
+{% endif %}
+<table cellpadding="10" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #dde3eb">
+  <tr><td>Loan number</td><td><strong>{{ loan.loan_number }}</strong></td></tr>
+  <tr><td>Loan type</td><td>{{ loan.purpose }}</td></tr>
+  <tr><td>Original principal</td><td>NGN {{ '{:,.2f}'.format(loan.amount or 0) }}</td></tr>
+  <tr><td>Final payment</td><td>NGN {{ '{:,.2f}'.format(repayment.amount or 0) }}</td></tr>
+  <tr><td>Settlement date</td><td>{{ (repayment.date|string)[:10] }}</td></tr>
+  <tr><td>Repayment reference</td><td>{{ repayment.repayment_number }}</td></tr>
+  <tr style="background:#edf8f2"><td>Outstanding balance</td><td><strong>NGN 0.00</strong></td></tr>
+</table>
+<p>This confirmation applies only to the loan shown above. Other loans or obligations, if any, are unchanged.</p>
+{% if audience == 'member' %}
+<p>Please sign in to your member portal to view your updated loan statement. Contact the cooperative office if you have any questions.</p>
+{% else %}
+<p>Please review the member's loan statement and arrange any applicable payroll deduction updates through the usual approval process.</p>
+{% endif %}

@@ -3528,12 +3528,14 @@ class HardeningFeatureTests(unittest.TestCase):
             db.execute("DELETE FROM accounts WHERE code = '1094'")
             db.commit()
 
-    def test_member_receipt_multiple_loans_have_unique_references_and_reverse_together(self):
+    @patch('loan_completion.send_email_detailed', return_value={'ok': True})
+    def test_member_receipt_multiple_loans_have_unique_references_and_reverse_together(self, completion_mail):
         self.login_admin()
         with self.app.app_context():
             db = get_db()
             db.execute("INSERT INTO members (member_number,first_name,last_name,status,total_savings) VALUES ('MR-MULTI-ONLY','Receipt','Test','active',0)")
             member_id = db.execute("SELECT id FROM members WHERE member_number='MR-MULTI-ONLY'").fetchone()['id']
+            db.execute('UPDATE members SET email=? WHERE id=?', ('receipt.completion@example.test', member_id))
             db.execute("INSERT INTO accounts (code,name,type,normal_balance,is_active,is_cash_account) VALUES ('10939','Multi receipt bank','asset','debit',1,1) ON CONFLICT(code) DO NOTHING")
             for suffix in ('A', 'B'):
                 db.execute("INSERT INTO loans (loan_number,member_id,amount,total_repayment,balance,status,purpose,tenure) VALUES (?,?,10000,10000,10000,'active','Regular',6)",
@@ -3562,6 +3564,12 @@ class HardeningFeatureTests(unittest.TestCase):
             self.assertEqual(len(bank_lines), 1)
             self.assertEqual(float(bank_lines[0]['debit']), 25000)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM member_receipt_allocations WHERE receipt_id=?', (receipt_id,)).fetchone()[0], 3)
+            messages = db.execute("SELECT * FROM loan_completion_emails WHERE loan_id IN (?,?) AND audience='member'", (loans[0]['id'], loans[1]['id'])).fetchall()
+            self.assertEqual(len(messages), 2)
+            self.assertTrue(all(message['status'] == 'sent' for message in messages))
+            member_calls = [call for call in completion_mail.call_args_list if call.args[0] == 'receipt.completion@example.test']
+            self.assertEqual(len(member_calls), 2)
+            self.assertTrue(all('Congratulations' in call.args[1] for call in member_calls))
         self.client.post(f'/receipts/{receipt_id}/reverse', data={'reason':'Synthetic multiple-loan reversal'})
         with self.app.app_context():
             db = get_db()

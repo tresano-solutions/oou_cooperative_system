@@ -1688,6 +1688,22 @@ def init_db():
         )
     '''))
 
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS loan_completion_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            repayment_id INTEGER NOT NULL,
+            recipient TEXT NOT NULL,
+            audience TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            sent_at TIMESTAMP,
+            UNIQUE (loan_id, repayment_id, recipient)
+        )
+    '''))
+
     # ── Task assignment (who may do what) ─────────────────────────────────────
     # Role defaults an admin has changed, and per-officer overrides on top of
     # them. Anything absent falls back to permissions.PERMISSIONS defaults, so

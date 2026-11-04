@@ -15,7 +15,8 @@ from flask import (Blueprint, abort, current_app, flash, jsonify,
                    redirect, render_template, request, url_for)
 from flask_login import current_user, login_required
 
-from database import USE_POSTGRES, get_db, for_update
+from database import USE_POSTGRES, get_db, for_update, last_insert_id
+from loan_completion import queue_completion, dispatch_completions
 from email_service import send_loan_repayment_email
 from payments import get_gateway, generate_reference
 from security import log_audit
@@ -147,6 +148,7 @@ def _record_payment(db, reference: str) -> bool:
                 (rep_num, loan_id, amount, principal_paid, interest_paid,
                  reference, datetime.now())
             )
+            completion_repayment_id = last_insert_id(db)
             if new_balance <= 0:
                 db.execute(
                     "UPDATE loans SET balance = 0, status = 'completed', "
@@ -164,6 +166,8 @@ def _record_payment(db, reference: str) -> bool:
                 {'account': LOANS_RECEIVABLE, 'credit': principal_paid, 'memo': loan['loan_number']},
                 {'account': LOAN_INTEREST_INCOME, 'credit': interest_paid, 'memo': 'Interest earned'},
             ], reference=reference, source_module='payments', source_id=loan_id)
+            if new_balance <= 0 and float(loan['balance'] or 0) > 0:
+                queue_completion(db, loan_id, completion_repayment_id)
             member = db.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
             if member and member['email']:
                 send_loan_repayment_email(
@@ -183,6 +187,7 @@ def _record_payment(db, reference: str) -> bool:
                 )
 
     db.commit()
+    dispatch_completions(db)
     return True
 
 

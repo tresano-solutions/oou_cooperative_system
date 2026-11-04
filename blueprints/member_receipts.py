@@ -1,4 +1,5 @@
 import random
+from loan_completion import queue_completion, dispatch_completions
 from datetime import datetime
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
@@ -165,6 +166,9 @@ def member_payment():
                 else:
                     db.execute('UPDATE loans SET balance = ? WHERE id = ?', (new_balance, loan['id']))
 
+                if new_balance <= 0:
+                    queue_completion(db, loan['id'], rep_id)
+
                 db.execute('''
                     INSERT INTO member_receipt_allocations
                         (receipt_id, target, target_id, loan_id, amount, principal_paid, interest_paid)
@@ -201,6 +205,7 @@ def member_payment():
                   f'{receipt_no}: ₦{receipt_amount:,.2f} received in {bank_account}; '
                   f'allocated {", ".join(allocation_summary)}')
             db.commit()
+            dispatch_completions(db)
             flash(f'Receipt {receipt_no} posted and allocated successfully.', 'success')
             return redirect(url_for('member_receipts.member_payment'))
         except Exception as e:
