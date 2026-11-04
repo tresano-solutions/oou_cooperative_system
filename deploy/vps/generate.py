@@ -211,6 +211,8 @@ def render_caddyfile(clients):
             lines += [
                 "    @marketing_api path /api/marketing/*",
                 f"    reverse_proxy @marketing_api app-{api_client}:8000",
+                "    @tenant_lookup path /api/mobile/v1/tenants/resolve",
+                f"    reverse_proxy @tenant_lookup app-{api_client}:8000",
             ]
         lines += [
             "    import security_headers",

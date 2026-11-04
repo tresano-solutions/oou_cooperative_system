@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Sign in | CoopMS</title>
+  <link rel="icon" href="/assets/brand/coopms-favicon.svg" type="image/svg+xml">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #263447; background: #fff; font: 16px/1.6 system-ui, sans-serif; letter-spacing: 0; }
+    header { border-bottom: 1px solid #e0e5eb; padding: 20px 24px; }
+    header a { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: #082b66; font-size: 24px; font-weight: 800; }
+    header img { width: 36px; height: 36px; }
+    main { max-width: 480px; margin: 64px auto; padding: 0 24px; }
+    h1 { color: #082b66; font-size: 30px; line-height: 1.25; margin: 0 0 16px; }
+    p { margin: 0 0 24px; }
+    label { display: block; font-weight: 650; margin-bottom: 8px; }
+    input, button { font: inherit; width: 100%; min-height: 48px; border-radius: 6px; padding: 12px 14px; }
+    input { border: 1px solid #778599; color: #263447; background: #fff; }
+    input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid #d59500; outline-offset: 3px; }
+    button { margin-top: 20px; border: 0; background: #f4b51c; color: #082b66; font-weight: 750; cursor: pointer; }
+    button:hover { background: #e9aa12; }
+    button:disabled { opacity: .7; cursor: wait; }
+    #status { min-height: 26px; margin: 16px 0; color: #a3212b; overflow-wrap: anywhere; }
+    .help { font-size: 14px; color: #546176; border-top: 1px solid #e0e5eb; padding-top: 20px; }
+    a { color: #123f80; }
+    @media (max-width: 480px) { main { margin: 36px auto; } }
+  </style>
+  <script src="/sign-in.js" defer></script>
+</head>
+<body>
+  <header><a href="/" aria-label="CoopMS home"><img src="/assets/brand/coopms-favicon.svg" alt="">COOPMS</a></header>
+  <main>
+    <h1>Sign in to your cooperative</h1>
+    <p>Enter the cooperative code provided by your society.</p>
+    <form id="cooperative-sign-in">
+      <label for="cooperative-code">Cooperative code</label>
+      <input id="cooperative-code" name="code" required maxlength="31" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="status">
+      <button type="submit">Continue to sign in</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    </form>
+    <noscript><p>Please enable JavaScript to find your cooperative's sign-in page.</p></noscript>
+    <p class="help">Don't know your code? Contact your cooperative administrator. Your password is entered on your cooperative's login page.</p>
+    <a href="/">Back to CoopMS</a>
+  </main>
+</body>
+</html>
