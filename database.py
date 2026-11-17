@@ -750,6 +750,144 @@ def init_db():
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_loan_request_events_type ON loan_request_events(event_type)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_loan_request_events_created ON loan_request_events(created_at)')
 
+    # Asset sales schemes. Prices and finance terms are copied to the order at
+    # submission so catalogue edits cannot change an already accepted debt.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            status TEXT DEFAULT 'draft',
+            opens_at TIMESTAMP,
+            closes_at TIMESTAMP,
+            tenure_months INTEGER DEFAULT 6,
+            annual_interest_rate REAL DEFAULT 20,
+            repayment_methods TEXT DEFAULT 'salary_deduction,bank_transfer,cash',
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            brand TEXT,
+            model TEXT,
+            category TEXT,
+            size_spec TEXT,
+            description TEXT,
+            image_url TEXT,
+            vendor TEXT,
+            purchase_cost REAL DEFAULT 0,
+            selling_price REAL NOT NULL,
+            estimated_price_min REAL DEFAULT 0,
+            estimated_price_max REAL DEFAULT 0,
+            delivery_fee REAL DEFAULT 0,
+            stock_limit INTEGER DEFAULT 0,
+            stock_reserved INTEGER DEFAULT 0,
+            warranty TEXT,
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (campaign_id) REFERENCES asset_campaigns(id)
+        )
+    '''))
+    _add_col(db, 'asset_products', 'category', 'TEXT')
+    _add_col(db, 'asset_products', 'size_spec', 'TEXT')
+    _add_col(db, 'asset_products', 'estimated_price_min', 'REAL DEFAULT 0')
+    _add_col(db, 'asset_products', 'estimated_price_max', 'REAL DEFAULT 0')
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_number TEXT UNIQUE NOT NULL,
+            campaign_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'submitted',
+            approval_stage TEXT DEFAULT 'secretary',
+            expected_spend REAL DEFAULT 0,
+            quote_status TEXT DEFAULT 'not_quoted',
+            quote_note TEXT,
+            quoted_at TIMESTAMP,
+            quote_accepted_at TIMESTAMP,
+            selling_subtotal REAL NOT NULL,
+            annual_interest_rate REAL NOT NULL,
+            tenure_months INTEGER NOT NULL,
+            interest_amount REAL NOT NULL,
+            total_repayment REAL NOT NULL,
+            monthly_repayment REAL NOT NULL,
+            delivery_fee REAL DEFAULT 0,
+            delivery_fee_status TEXT DEFAULT 'unpaid',
+            delivery_fee_reference TEXT,
+            delivery_fee_account TEXT,
+            delivery_fee_journal_id INTEGER,
+            repayment_method TEXT NOT NULL,
+            eligibility_status TEXT DEFAULT 'review',
+            eligibility_reason TEXT,
+            terms_accepted INTEGER DEFAULT 0,
+            signature_name TEXT,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_at TIMESTAMP,
+            procurement_cost REAL DEFAULT 0,
+            procurement_account TEXT,
+            procurement_reference TEXT,
+            procurement_journal_id INTEGER,
+            procured_at TIMESTAMP,
+            dispatched_at TIMESTAMP,
+            received_at TIMESTAMP,
+            linked_loan_id INTEGER UNIQUE,
+            created_by INTEGER,
+            FOREIGN KEY (campaign_id) REFERENCES asset_campaigns(id),
+            FOREIGN KEY (member_id) REFERENCES members(id),
+            FOREIGN KEY (linked_loan_id) REFERENCES loans(id)
+        )
+    '''))
+    _add_col(db, 'asset_orders', 'delivery_fee_account', 'TEXT')
+    _add_col(db, 'asset_orders', 'delivery_fee_journal_id', 'INTEGER')
+    _add_col(db, 'asset_orders', 'procurement_cost', 'REAL DEFAULT 0')
+    _add_col(db, 'asset_orders', 'procurement_account', 'TEXT')
+    _add_col(db, 'asset_orders', 'procurement_reference', 'TEXT')
+    _add_col(db, 'asset_orders', 'procurement_journal_id', 'INTEGER')
+    _add_col(db, 'asset_orders', 'expected_spend', 'REAL DEFAULT 0')
+    _add_col(db, 'asset_orders', 'quote_status', "TEXT DEFAULT 'not_quoted'")
+    _add_col(db, 'asset_orders', 'quote_note', 'TEXT')
+    _add_col(db, 'asset_orders', 'quoted_at', 'TIMESTAMP')
+    _add_col(db, 'asset_orders', 'quote_accepted_at', 'TIMESTAMP')
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            product_name TEXT NOT NULL,
+            brand TEXT,
+            model TEXT,
+            quantity INTEGER NOT NULL,
+            unit_purchase_cost REAL DEFAULT 0,
+            unit_selling_price REAL NOT NULL,
+            unit_delivery_fee REAL DEFAULT 0,
+            expected_unit_spend REAL DEFAULT 0,
+            FOREIGN KEY (order_id) REFERENCES asset_orders(id),
+            FOREIGN KEY (product_id) REFERENCES asset_products(id)
+        )
+    '''))
+    _add_col(db, 'asset_order_items', 'expected_unit_spend', 'REAL DEFAULT 0')
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_order_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor_id INTEGER,
+            actor_name TEXT,
+            comment TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (order_id) REFERENCES asset_orders(id)
+        )
+    '''))
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_products_campaign ON asset_products(campaign_id)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_orders_member ON asset_orders(member_id)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_orders_stage ON asset_orders(approval_stage)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_events_order ON asset_order_events(order_id)')
+
     # Investments table
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS investments (
@@ -1986,6 +2124,7 @@ def init_db():
         ('3100', 'Statutory Reserve',          'equity',    'credit', None),
         ('3200', 'Member Share Capital',       'equity',    'credit', None),
         ('4000', 'Loan Interest Income',       'income',    'credit', None),
+        ('4050', 'Asset Scheme Sales',         'income',    'credit', None),
         ('4100', 'Fee Income',                 'income',    'credit', None),
         ('4200', 'Investment Income',          'income',    'credit', None),
         ('5000', 'Operating Expenses',         'expense',   'debit',  None),

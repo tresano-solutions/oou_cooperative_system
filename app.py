@@ -149,6 +149,7 @@ from blueprints.affiliates  import affiliates_bp
 from blueprints.ctas         import ctas as ctas_bp
 from blueprints.virtual_accounts_bp import virtual_accounts_bp
 from blueprints.member_receipts import member_receipts
+from blueprints.asset_schemes import asset_schemes
 from mobile_api             import mobile_api
 
 app.register_blueprint(auth)
@@ -178,6 +179,7 @@ app.register_blueprint(affiliates_bp)
 app.register_blueprint(ctas_bp)
 app.register_blueprint(virtual_accounts_bp)
 app.register_blueprint(member_receipts)
+app.register_blueprint(asset_schemes)
 app.register_blueprint(mobile_api)
 
 csrf.exempt(mobile_api)

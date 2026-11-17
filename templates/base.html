@@ -83,6 +83,10 @@
                        class="{% if request.endpoint == 'portal.apply_loan_member' %}active{% endif %}">
                         <i class="fas fa-plus-circle"></i> Apply for Loan
                     </a>
+                    <a href="{{ url_for('asset_schemes.catalogue') }}"
+                       class="{% if request.blueprint == 'asset_schemes' %}active{% endif %}">
+                        <i class="fas fa-box-open"></i> Asset Schemes
+                    </a>
                     <a href="{{ url_for('portal.my_guarantor_requests') }}"
                        class="{% if request.endpoint == 'portal.my_guarantor_requests' %}active{% endif %}">
                         <i class="fas fa-user-shield"></i> Guarantor Requests
@@ -185,6 +189,12 @@
                     <a href="{{ url_for('loans.loans_list') }}"
                        class="{% if request.blueprint == 'loans' %}active{% endif %}">
                         <i class="fas fa-hand-holding-usd"></i> Loans
+                    </a>
+                    {% endif %}
+                    {% if current_user.role in ['admin', 'treasurer', 'secretary'] %}
+                    <a href="{{ url_for('asset_schemes.manage') }}"
+                       class="{% if request.blueprint == 'asset_schemes' %}active{% endif %}">
+                        <i class="fas fa-box-open"></i> Asset Schemes
                     </a>
                     {% endif %}
                     {% if can('investments.manage') %}
