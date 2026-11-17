@@ -108,6 +108,8 @@ def test_request_quote_acceptance_gate():
     assert manage_page.status_code == 200
     assert b'Requests, quotations and fulfilment' in manage_page.data
     assert b'Master appliance library' in manage_page.data
+    assert b'asset-scheme-campaign-v1.png' in manage_page.data
+    assert b'Preview member experience' in manage_page.data
     with app.app_context():
         db = get_db()
         library_item = db.execute("SELECT id FROM asset_catalogue WHERE category='Refrigerator' ORDER BY id LIMIT 1").fetchone()
