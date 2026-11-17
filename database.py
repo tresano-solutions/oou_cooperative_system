@@ -753,6 +753,61 @@ def init_db():
     # Asset sales schemes. Prices and finance terms are copied to the order at
     # submission so catalogue edits cannot change an already accepted debt.
     db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_catalogue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            name TEXT NOT NULL,
+            brand TEXT NOT NULL,
+            size_spec TEXT NOT NULL,
+            description TEXT,
+            image_url TEXT,
+            estimated_price_min REAL DEFAULT 0,
+            estimated_price_max REAL DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(category, name, brand, size_spec)
+        )
+    '''))
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_catalogue_category ON asset_catalogue(category)')
+
+    # A practical starter library. These are indicative sourcing bands, never
+    # final member prices; each cooperative can update them as its suppliers
+    # and market conditions change.
+    asset_catalogue_defaults = [
+        ('Television','Smart television','Samsung','43 inch','4K smart television',350000,600000),
+        ('Television','Smart television','LG','43 inch','4K smart television',350000,600000),
+        ('Television','Smart television','Hisense','43 inch','4K smart television',280000,500000),
+        ('Television','Smart television','Samsung','55 inch','4K smart television',550000,950000),
+        ('Television','Smart television','LG','55 inch','4K smart television',550000,950000),
+        ('Television','Smart television','Hisense','55 inch','4K smart television',450000,800000),
+        ('Refrigerator','Double-door refrigerator','Haier Thermocool','200-250 litres','Energy-efficient refrigerator',450000,750000),
+        ('Refrigerator','Double-door refrigerator','LG','250-300 litres','Energy-efficient refrigerator',650000,1100000),
+        ('Refrigerator','Double-door refrigerator','Hisense','250-300 litres','Energy-efficient refrigerator',500000,900000),
+        ('Freezer','Chest freezer','Haier Thermocool','200 litres','Low-energy chest freezer',400000,650000),
+        ('Freezer','Chest freezer','Hisense','250 litres','Low-energy chest freezer',450000,750000),
+        ('Freezer','Chest freezer','Scanfrost','300 litres','Low-energy chest freezer',550000,900000),
+        ('Washing Machine','Automatic washing machine','LG','8 kg','Front or top load automatic washer',550000,900000),
+        ('Washing Machine','Automatic washing machine','Samsung','9 kg','Front or top load automatic washer',600000,1000000),
+        ('Washing Machine','Automatic washing machine','Hisense','10 kg','Front or top load automatic washer',500000,850000),
+        ('Air Conditioner','Split air conditioner','LG','1.5 HP','Energy-efficient split unit',500000,850000),
+        ('Air Conditioner','Split air conditioner','Hisense','1.5 HP','Energy-efficient split unit',400000,700000),
+        ('Air Conditioner','Split air conditioner','Midea','2 HP','Energy-efficient split unit',650000,1050000),
+        ('Cooker','Gas cooker','Scanfrost','4 burners','Freestanding gas cooker with oven',350000,650000),
+        ('Cooker','Gas cooker','Haier Thermocool','4 burners','Freestanding gas cooker with oven',350000,700000),
+        ('Cooker','Gas cooker','Maxi','4 burners','Freestanding gas cooker with oven',300000,600000),
+        ('Microwave','Microwave oven','Any approved brand','20-25 litres','Countertop microwave oven',120000,250000),
+        ('Air Fryer','Digital air fryer','Any approved brand','5-7 litres','Digital temperature and timer controls',100000,220000),
+        ('Blender','Heavy-duty blender','Any approved brand','1.5-2 litres','Multi-speed blender with mill',80000,180000),
+        ('Generator','Portable generator','Any approved brand','2.5-3.5 kVA','Petrol generator for household backup',450000,900000),
+        ('Inverter','Home inverter system','Any approved brand','1.5-2.5 kVA','Inverter, batteries and basic installation',900000,1800000),
+    ]
+    for category, name, brand, size_spec, description, price_min, price_max in asset_catalogue_defaults:
+        db.execute('''INSERT INTO asset_catalogue
+            (category,name,brand,size_spec,description,estimated_price_min,estimated_price_max)
+            VALUES (?,?,?,?,?,?,?) ON CONFLICT(category,name,brand,size_spec) DO NOTHING''',
+            (category,name,brand,size_spec,description,price_min,price_max))
+
+    db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS asset_campaigns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,

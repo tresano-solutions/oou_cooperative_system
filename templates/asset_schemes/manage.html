@@ -69,19 +69,22 @@
           <span class="badge bg-{{ 'success' if c.status == 'open' else 'secondary' }}">{{ c.status|title }}</span>
         </div>
         {% if current_user.role in ['admin', 'treasurer'] %}
-        <form method="post" action="{{ url_for('asset_schemes.add_product', campaign_id=c.id) }}">
-          <div class="row g-2">
-            <div class="col-md-6"><label class="form-label small">Display name</label><input class="form-control" name="name" placeholder="e.g. Smart television" required></div>
-            <div class="col-md-6"><label class="form-label small">Appliance type</label><input class="form-control" name="category" placeholder="e.g. Television" required></div>
-            <div class="col-md-6"><label class="form-label small">Brand</label><input class="form-control" name="brand" placeholder="Brand or Any suitable brand"></div>
-            <div class="col-md-6"><label class="form-label small">Size / capacity</label><input class="form-control" name="size_spec" placeholder="e.g. 55 inch"></div>
-            <div class="col-md-6"><label class="form-label small">Estimated minimum</label><input class="form-control" name="estimated_price_min" type="number" min="1" step="1000" required></div>
-            <div class="col-md-6"><label class="form-label small">Estimated maximum</label><input class="form-control" name="estimated_price_max" type="number" min="1" step="1000" required></div>
-            <div class="col-12"><label class="form-label small">Product image URL</label><input class="form-control" name="image_url" type="url" placeholder="https://..."></div>
-            <div class="col-12"><label class="form-label small">Specifications or sourcing guidance</label><input class="form-control" name="description"></div>
-            <div class="col-12"><button class="btn btn-outline-primary btn-sm"><i class="fas fa-plus me-1"></i>Add selectable appliance type</button></div>
-          </div>
-        </form>
+        <details>
+          <summary class="btn btn-outline-primary btn-sm">Select appliances from library</summary>
+          <form method="post" action="{{ url_for('asset_schemes.add_from_library', campaign_id=c.id) }}" class="mt-3 library-picker">
+            <input class="form-control form-control-sm mb-2 library-search" placeholder="Search by type, brand or size...">
+            <div class="border rounded p-2" style="max-height:300px;overflow:auto">
+              {% for item in library %}
+              <label class="d-flex align-items-start gap-2 py-2 border-bottom library-option" data-search="{{ item.category }} {{ item.name }} {{ item.brand }} {{ item.size_spec }}">
+                <input class="form-check-input mt-1" type="checkbox" name="library_ids" value="{{ item.id }}">
+                <span><strong>{{ item.category }} · {{ item.brand }}</strong><span class="d-block small">{{ item.name }} · {{ item.size_spec }}</span><span class="d-block small text-muted">₦{{ '{:,.0f}'.format(item.estimated_price_min) }} – ₦{{ '{:,.0f}'.format(item.estimated_price_max) }}</span></span>
+              </label>
+              {% endfor %}
+            </div>
+            <button class="btn btn-primary btn-sm mt-2"><i class="fas fa-plus me-1"></i>Add selected to campaign</button>
+          </form>
+        </details>
+        <div class="small text-muted mt-2">{{ campaign_products|selectattr('campaign_id','equalto',c.id)|list|length }} appliance option(s) currently in this campaign.</div>
         {% else %}
         <div class="small text-muted">Catalogue setup is read-only for the Secretary.</div>
         {% endif %}
@@ -90,6 +93,25 @@
     </div>
   </div>
 </section>
+
+{% if current_user.role in ['admin', 'treasurer'] %}
+<section class="card shadow-sm asset-table-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center"><strong>Master appliance library</strong><span class="small text-muted">Update once, then reuse in any campaign</span></div>
+  <div class="card-body">
+    <input class="form-control mb-3" id="masterLibrarySearch" placeholder="Search appliance library by type, brand or size...">
+    <div class="accordion" id="assetLibraryAccordion">
+      {% for item in library %}
+      <div class="accordion-item library-master-row" data-search="{{ item.category }} {{ item.name }} {{ item.brand }} {{ item.size_spec }}">
+        <h2 class="accordion-header" id="libraryHeading{{ item.id }}"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#libraryItem{{ item.id }}"><span class="me-2 fw-bold">{{ item.category }}</span><span>{{ item.brand }} · {{ item.size_spec }}</span><span class="ms-auto me-3 small text-muted">₦{{ '{:,.0f}'.format(item.estimated_price_min) }} – ₦{{ '{:,.0f}'.format(item.estimated_price_max) }}</span></button></h2>
+        <div id="libraryItem{{ item.id }}" class="accordion-collapse collapse" data-bs-parent="#assetLibraryAccordion"><div class="accordion-body">
+          <form method="post" action="{{ url_for('asset_schemes.update_library_item', item_id=item.id) }}"><div class="row g-2"><div class="col-md-3"><label class="form-label small">Type</label><input class="form-control" name="category" value="{{ item.category }}" required></div><div class="col-md-3"><label class="form-label small">Name</label><input class="form-control" name="name" value="{{ item.name }}" required></div><div class="col-md-3"><label class="form-label small">Brand</label><input class="form-control" name="brand" value="{{ item.brand }}" required></div><div class="col-md-3"><label class="form-label small">Size / capacity</label><input class="form-control" name="size_spec" value="{{ item.size_spec }}" required></div><div class="col-md-3"><label class="form-label small">Estimated minimum</label><input class="form-control" name="estimated_price_min" type="number" value="{{ item.estimated_price_min }}" required></div><div class="col-md-3"><label class="form-label small">Estimated maximum</label><input class="form-control" name="estimated_price_max" type="number" value="{{ item.estimated_price_max }}" required></div><div class="col-md-6"><label class="form-label small">Image URL</label><input class="form-control" name="image_url" type="url" value="{{ item.image_url or '' }}"></div><div class="col-12"><label class="form-label small">Description</label><input class="form-control" name="description" value="{{ item.description or '' }}"></div><div class="col-12"><button class="btn btn-outline-primary btn-sm">Save library update</button></div></div></form>
+        </div></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
 
 <section class="card shadow-sm asset-table-card">
   <div class="card-header bg-white fw-bold">Requests, quotations and fulfilment</div>
@@ -113,4 +135,8 @@
     </table>
   </div>
 </section>
+<script>
+document.querySelectorAll('.library-picker').forEach(picker=>{const input=picker.querySelector('.library-search');const rows=[...picker.querySelectorAll('.library-option')];input.addEventListener('input',()=>{const q=input.value.toLowerCase().trim();rows.forEach(row=>row.hidden=q&&!row.dataset.search.toLowerCase().includes(q));});});
+const masterSearch=document.getElementById('masterLibrarySearch');if(masterSearch){const rows=[...document.querySelectorAll('.library-master-row')];masterSearch.addEventListener('input',()=>{const q=masterSearch.value.toLowerCase().trim();rows.forEach(row=>row.hidden=q&&!row.dataset.search.toLowerCase().includes(q));});}
+</script>
 {% endblock %}

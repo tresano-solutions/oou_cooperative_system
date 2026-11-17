@@ -171,9 +171,86 @@ def manage():
             db.rollback(); flash(str(exc), 'danger')
         return redirect(url_for('asset_schemes.manage'))
     campaigns = db.execute('SELECT * FROM asset_campaigns ORDER BY id DESC').fetchall()
+    library = db.execute('''SELECT * FROM asset_catalogue WHERE is_active=1
+        ORDER BY category, brand, size_spec, name''').fetchall()
+    campaign_products = db.execute('''SELECT campaign_id, category, name, brand, size_spec
+        FROM asset_products WHERE status='active' ORDER BY campaign_id, category, brand, size_spec''').fetchall()
     orders = db.execute('''SELECT o.*,m.first_name,m.last_name,c.name campaign_name FROM asset_orders o
         JOIN members m ON m.id=o.member_id JOIN asset_campaigns c ON c.id=o.campaign_id ORDER BY o.id DESC''').fetchall()
-    return render_template('asset_schemes/manage.html', campaigns=campaigns, orders=orders)
+    return render_template('asset_schemes/manage.html', campaigns=campaigns, orders=orders,
+                           library=library, campaign_products=campaign_products)
+
+
+@asset_schemes.route('/asset-schemes/campaigns/<int:campaign_id>/library', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def add_from_library(campaign_id):
+    db = get_db()
+    campaign = db.execute('SELECT id FROM asset_campaigns WHERE id=?', (campaign_id,)).fetchone()
+    if not campaign:
+        flash('Campaign not found.', 'danger')
+        return redirect(url_for('asset_schemes.manage'))
+    selected = []
+    for raw_id in request.form.getlist('library_ids'):
+        try:
+            selected.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    if not selected:
+        flash('Select at least one appliance from the library.', 'warning')
+        return redirect(url_for('asset_schemes.manage'))
+    added = skipped = 0
+    for library_id in selected:
+        item = db.execute('SELECT * FROM asset_catalogue WHERE id=? AND is_active=1', (library_id,)).fetchone()
+        if not item:
+            continue
+        exists = db.execute('''SELECT id FROM asset_products WHERE campaign_id=? AND category=?
+            AND name=? AND brand=? AND size_spec=? AND status='active' LIMIT 1''',
+            (campaign_id, item['category'], item['name'], item['brand'], item['size_spec'])).fetchone()
+        if exists:
+            skipped += 1
+            continue
+        db.execute('''INSERT INTO asset_products
+            (campaign_id,name,brand,category,size_spec,description,image_url,purchase_cost,
+             selling_price,estimated_price_min,estimated_price_max,delivery_fee,stock_limit,status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'active')''',
+            (campaign_id, item['name'], item['brand'], item['category'], item['size_spec'],
+             item['description'], item['image_url'], 0, 0, item['estimated_price_min'],
+             item['estimated_price_max'], 0, 0))
+        added += 1
+    db.commit()
+    audit(db, 'ASSET_LIBRARY_ADD', 'asset_schemes',
+          f'Added {added} library items to campaign {campaign_id}; skipped {skipped}')
+    flash(f'{added} appliance option(s) added to the campaign.' +
+          (f' {skipped} duplicate(s) skipped.' if skipped else ''), 'success')
+    return redirect(url_for('asset_schemes.manage'))
+
+
+@asset_schemes.route('/asset-schemes/library/<int:item_id>', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def update_library_item(item_id):
+    db = get_db()
+    item = db.execute('SELECT * FROM asset_catalogue WHERE id=?', (item_id,)).fetchone()
+    if not item:
+        flash('Library item not found.', 'danger')
+        return redirect(url_for('asset_schemes.manage'))
+    try:
+        price_min = finite_float(request.form.get('estimated_price_min'))
+        price_max = finite_float(request.form.get('estimated_price_max'))
+        if price_min <= 0 or price_max < price_min:
+            raise ValueError('Enter a valid indicative price range.')
+        db.execute('''UPDATE asset_catalogue SET category=?,name=?,brand=?,size_spec=?,description=?,
+            image_url=?,estimated_price_min=?,estimated_price_max=?,updated_at=? WHERE id=?''',
+            (request.form.get('category','').strip(), request.form.get('name','').strip(),
+             request.form.get('brand','').strip(), request.form.get('size_spec','').strip(),
+             request.form.get('description','').strip(), request.form.get('image_url','').strip(),
+             price_min, price_max, datetime.now(), item_id))
+        db.commit()
+        flash('Appliance library item updated.', 'success')
+    except Exception as exc:
+        db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.manage'))
 
 
 @asset_schemes.route('/asset-schemes/campaigns/<int:campaign_id>/products', methods=['POST'])

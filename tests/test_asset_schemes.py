@@ -102,6 +102,24 @@ def test_request_quote_acceptance_gate():
     manage_page = client.get('/asset-schemes/manage')
     assert manage_page.status_code == 200
     assert b'Requests, quotations and fulfilment' in manage_page.data
+    assert b'Master appliance library' in manage_page.data
+    with app.app_context():
+        db = get_db()
+        library_item = db.execute("SELECT id FROM asset_catalogue WHERE category='Refrigerator' ORDER BY id LIMIT 1").fetchone()
+        assert library_item is not None
+        library_id = library_item['id']
+    added = client.post(f'/asset-schemes/campaigns/{campaign_id}/library',
+                        data={'library_ids': str(library_id)})
+    assert added.status_code in (302, 303)
+    with app.app_context():
+        db = get_db()
+        count = db.execute('SELECT COUNT(*) FROM asset_products WHERE campaign_id=?', (campaign_id,)).fetchone()[0]
+        assert count == 2
+    client.post(f'/asset-schemes/campaigns/{campaign_id}/library',
+                data={'library_ids': str(library_id)})
+    with app.app_context():
+        count = get_db().execute('SELECT COUNT(*) FROM asset_products WHERE campaign_id=?', (campaign_id,)).fetchone()[0]
+        assert count == 2
     response = client.post(f'/asset-schemes/orders/{order_id}/action', data={
         'action': 'quote', 'quoted_supplier_cost': '450000',
         'quoted_selling_price': '500000', 'quoted_delivery_fee': '15000',
