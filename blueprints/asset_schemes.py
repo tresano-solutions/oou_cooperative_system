@@ -275,8 +275,8 @@ def manage():
             db.rollback(); flash(str(exc), 'danger')
         return redirect(url_for('asset_schemes.manage'))
     campaigns = db.execute('SELECT * FROM asset_campaigns ORDER BY id DESC').fetchall()
-    library = db.execute('''SELECT * FROM asset_catalogue WHERE is_active=1
-        ORDER BY category, brand, size_spec, name''').fetchall()
+    library = db.execute('''SELECT * FROM asset_catalogue
+        ORDER BY is_active DESC, category, brand, size_spec, name''').fetchall()
     campaign_products = db.execute('''SELECT campaign_id, category, name, brand, size_spec
         FROM asset_products WHERE status='active' ORDER BY campaign_id, category, brand, size_spec''').fetchall()
     orders = db.execute('''SELECT o.*,m.first_name,m.last_name,c.name campaign_name FROM asset_orders o
@@ -420,18 +420,63 @@ def update_library_item(item_id):
     try:
         price_min = finite_float(request.form.get('estimated_price_min'))
         price_max = finite_float(request.form.get('estimated_price_max'))
+        category = request.form.get('category','').strip()
+        name = request.form.get('name','').strip()
+        brand = request.form.get('brand','').strip()
+        size_spec = request.form.get('size_spec','').strip()
+        if not all((category, name, brand, size_spec)):
+            raise ValueError('Category, appliance name, brand and size are required.')
         if price_min <= 0 or price_max < price_min:
             raise ValueError('Enter a valid indicative price range.')
         db.execute('''UPDATE asset_catalogue SET category=?,name=?,brand=?,size_spec=?,description=?,
-            image_url=?,estimated_price_min=?,estimated_price_max=?,updated_at=? WHERE id=?''',
-            (request.form.get('category','').strip(), request.form.get('name','').strip(),
-             request.form.get('brand','').strip(), request.form.get('size_spec','').strip(),
-             request.form.get('description','').strip(), request.form.get('image_url','').strip(),
-             price_min, price_max, datetime.now(), item_id))
+            image_url=?,estimated_price_min=?,estimated_price_max=?,is_active=?,updated_at=? WHERE id=?''',
+            (category, name, brand, size_spec, request.form.get('description','').strip(),
+             request.form.get('image_url','').strip(), price_min, price_max,
+             1 if request.form.get('is_active') == '1' else 0, datetime.now(), item_id))
         db.commit()
         flash('Appliance library item updated.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.manage'))
+
+
+@asset_schemes.route('/asset-schemes/library', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def create_library_item():
+    db = get_db()
+    try:
+        category = request.form.get('category', '').strip()
+        name = request.form.get('name', '').strip()
+        brand = request.form.get('brand', '').strip()
+        size_spec = request.form.get('size_spec', '').strip()
+        description = request.form.get('description', '').strip()
+        image_url = request.form.get('image_url', '').strip()
+        price_min = finite_float(request.form.get('estimated_price_min'))
+        price_max = finite_float(request.form.get('estimated_price_max'))
+        if not all((category, name, brand, size_spec)):
+            raise ValueError('Category, appliance name, brand and size are required.')
+        if price_min <= 0 or price_max < price_min:
+            raise ValueError('The maximum indicative price must be at least the minimum price.')
+        duplicate = db.execute('''SELECT id FROM asset_catalogue
+            WHERE LOWER(category)=LOWER(?) AND LOWER(name)=LOWER(?)
+              AND LOWER(brand)=LOWER(?) AND LOWER(size_spec)=LOWER(?) LIMIT 1''',
+            (category, name, brand, size_spec)).fetchone()
+        if duplicate:
+            raise ValueError('This appliance configuration already exists in the master library.')
+        db.execute('''INSERT INTO asset_catalogue
+            (category,name,brand,size_spec,description,image_url,estimated_price_min,
+             estimated_price_max,is_active,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (category, name, brand, size_spec, description, image_url, price_min, price_max,
+             1 if request.form.get('is_active') == '1' else 0, datetime.now()))
+        db.commit()
+        audit(db, 'ASSET_LIBRARY_CREATE', 'asset_schemes',
+              f'Created {category}: {name}, {brand}, {size_spec}')
+        db.commit()
+        flash('New appliance added to the master library.', 'success')
+    except Exception as exc:
+        db.rollback()
+        flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.manage'))
 
 

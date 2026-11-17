@@ -123,10 +123,12 @@
             <input class="form-control form-control-sm mb-2 library-search" placeholder="Search by type, brand or size...">
             <div class="border rounded p-2" style="max-height:300px;overflow:auto">
               {% for item in library %}
+              {% if item.is_active %}
               <label class="d-flex align-items-start gap-2 py-2 border-bottom library-option" data-search="{{ item.category }} {{ item.name }} {{ item.brand }} {{ item.size_spec }}">
                 <input class="form-check-input mt-1" type="checkbox" name="library_ids" value="{{ item.id }}">
                 <span><strong>{{ item.category }} · {{ item.brand }}</strong><span class="d-block small">{{ item.name }} · {{ item.size_spec }}</span><span class="d-block small text-muted">₦{{ '{:,.0f}'.format(item.estimated_price_min) }} – ₦{{ '{:,.0f}'.format(item.estimated_price_max) }}</span></span>
               </label>
+              {% endif %}
               {% endfor %}
             </div>
             <button class="btn btn-primary btn-sm mt-2"><i class="fas fa-plus me-1"></i>Add selected to campaign</button>
@@ -146,13 +148,33 @@
 <section class="card shadow-sm asset-table-card">
   <div class="card-header bg-white d-flex justify-content-between align-items-center"><strong>Master appliance library</strong><span class="small text-muted">Update once, then reuse in any campaign</span></div>
   <div class="card-body">
+    <details class="border rounded mb-3">
+      <summary class="d-flex align-items-center justify-content-between p-3 fw-bold" style="cursor:pointer">
+        <span><i class="fas fa-plus-circle text-primary me-2" aria-hidden="true"></i>Add a new appliance</span>
+        <span class="small text-muted fw-normal">Create a reusable catalogue option</span>
+      </summary>
+      <form method="post" action="{{ url_for('asset_schemes.create_library_item') }}" class="border-top p-3">
+        <div class="row g-3">
+          <div class="col-md-3"><label class="form-label" for="new_appliance_category">Category</label><input class="form-control" id="new_appliance_category" name="category" list="applianceCategories" placeholder="e.g. Refrigerator" required></div>
+          <div class="col-md-3"><label class="form-label" for="new_appliance_name">Appliance name</label><input class="form-control" id="new_appliance_name" name="name" placeholder="e.g. Double-door refrigerator" required></div>
+          <div class="col-md-3"><label class="form-label" for="new_appliance_brand">Brand</label><input class="form-control" id="new_appliance_brand" name="brand" placeholder="e.g. Hisense" required></div>
+          <div class="col-md-3"><label class="form-label" for="new_appliance_size">Size / capacity</label><input class="form-control" id="new_appliance_size" name="size_spec" placeholder="e.g. 260 litres" required></div>
+          <div class="col-md-3"><label class="form-label" for="new_appliance_min">Estimated minimum price</label><div class="input-group"><span class="input-group-text">₦</span><input class="form-control" id="new_appliance_min" name="estimated_price_min" type="number" min="1" step="1000" required></div></div>
+          <div class="col-md-3"><label class="form-label" for="new_appliance_max">Estimated maximum price</label><div class="input-group"><span class="input-group-text">₦</span><input class="form-control" id="new_appliance_max" name="estimated_price_max" type="number" min="1" step="1000" required></div></div>
+          <div class="col-md-6"><label class="form-label" for="new_appliance_image">Product image URL <span class="text-muted">(optional)</span></label><input class="form-control" id="new_appliance_image" name="image_url" type="url" placeholder="https://..."><div class="form-text">Use a clear product image supplied by the vendor or manufacturer.</div></div>
+          <div class="col-12"><label class="form-label" for="new_appliance_description">Description</label><textarea class="form-control" id="new_appliance_description" name="description" rows="2" placeholder="Key features or sourcing notes"></textarea></div>
+          <div class="col-12 d-flex flex-wrap justify-content-between align-items-center gap-2"><label class="form-check"><input class="form-check-input" type="checkbox" name="is_active" value="1" checked><span class="form-check-label">Available for campaign selection</span></label><button class="btn btn-primary"><i class="fas fa-save me-1" aria-hidden="true"></i>Add to appliance library</button></div>
+        </div>
+      </form>
+    </details>
+    <datalist id="applianceCategories">{% for item in library %}<option value="{{ item.category }}">{% endfor %}</datalist>
     <input class="form-control mb-3" id="masterLibrarySearch" placeholder="Search appliance library by type, brand or size...">
     <div class="accordion" id="assetLibraryAccordion">
       {% for item in library %}
       <div class="accordion-item library-master-row" data-search="{{ item.category }} {{ item.name }} {{ item.brand }} {{ item.size_spec }}">
-        <h2 class="accordion-header" id="libraryHeading{{ item.id }}"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#libraryItem{{ item.id }}"><span class="me-2 fw-bold">{{ item.category }}</span><span>{{ item.brand }} · {{ item.size_spec }}</span><span class="ms-auto me-3 small text-muted">₦{{ '{:,.0f}'.format(item.estimated_price_min) }} – ₦{{ '{:,.0f}'.format(item.estimated_price_max) }}</span></button></h2>
+        <h2 class="accordion-header" id="libraryHeading{{ item.id }}"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#libraryItem{{ item.id }}"><span class="me-2 fw-bold">{{ item.category }}</span><span>{{ item.brand }} · {{ item.size_spec }}</span>{% if not item.is_active %}<span class="badge bg-secondary ms-2">Inactive</span>{% endif %}<span class="ms-auto me-3 small text-muted">₦{{ '{:,.0f}'.format(item.estimated_price_min) }} – ₦{{ '{:,.0f}'.format(item.estimated_price_max) }}</span></button></h2>
         <div id="libraryItem{{ item.id }}" class="accordion-collapse collapse" data-bs-parent="#assetLibraryAccordion"><div class="accordion-body">
-          <form method="post" action="{{ url_for('asset_schemes.update_library_item', item_id=item.id) }}"><div class="row g-2"><div class="col-md-3"><label class="form-label small">Type</label><input class="form-control" name="category" value="{{ item.category }}" required></div><div class="col-md-3"><label class="form-label small">Name</label><input class="form-control" name="name" value="{{ item.name }}" required></div><div class="col-md-3"><label class="form-label small">Brand</label><input class="form-control" name="brand" value="{{ item.brand }}" required></div><div class="col-md-3"><label class="form-label small">Size / capacity</label><input class="form-control" name="size_spec" value="{{ item.size_spec }}" required></div><div class="col-md-3"><label class="form-label small">Estimated minimum</label><input class="form-control" name="estimated_price_min" type="number" value="{{ item.estimated_price_min }}" required></div><div class="col-md-3"><label class="form-label small">Estimated maximum</label><input class="form-control" name="estimated_price_max" type="number" value="{{ item.estimated_price_max }}" required></div><div class="col-md-6"><label class="form-label small">Image URL</label><input class="form-control" name="image_url" type="url" value="{{ item.image_url or '' }}"></div><div class="col-12"><label class="form-label small">Description</label><input class="form-control" name="description" value="{{ item.description or '' }}"></div><div class="col-12"><button class="btn btn-outline-primary btn-sm">Save library update</button></div></div></form>
+          <form method="post" action="{{ url_for('asset_schemes.update_library_item', item_id=item.id) }}"><div class="row g-2"><div class="col-md-3"><label class="form-label small">Type</label><input class="form-control" name="category" value="{{ item.category }}" required></div><div class="col-md-3"><label class="form-label small">Name</label><input class="form-control" name="name" value="{{ item.name }}" required></div><div class="col-md-3"><label class="form-label small">Brand</label><input class="form-control" name="brand" value="{{ item.brand }}" required></div><div class="col-md-3"><label class="form-label small">Size / capacity</label><input class="form-control" name="size_spec" value="{{ item.size_spec }}" required></div><div class="col-md-3"><label class="form-label small">Estimated minimum</label><input class="form-control" name="estimated_price_min" type="number" value="{{ item.estimated_price_min }}" required></div><div class="col-md-3"><label class="form-label small">Estimated maximum</label><input class="form-control" name="estimated_price_max" type="number" value="{{ item.estimated_price_max }}" required></div><div class="col-md-6"><label class="form-label small">Image URL</label><input class="form-control" name="image_url" type="url" value="{{ item.image_url or '' }}"></div><div class="col-12"><label class="form-label small">Description</label><input class="form-control" name="description" value="{{ item.description or '' }}"></div><div class="col-12 d-flex justify-content-between align-items-center"><label class="form-check mb-0"><input class="form-check-input" type="checkbox" name="is_active" value="1" {% if item.is_active %}checked{% endif %}><span class="form-check-label">Available for campaigns</span></label><button class="btn btn-outline-primary btn-sm">Save library update</button></div></div></form>
         </div></div>
       </div>
       {% endfor %}

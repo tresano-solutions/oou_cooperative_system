@@ -110,6 +110,33 @@ def test_request_quote_acceptance_gate():
     assert b'Master appliance library' in manage_page.data
     assert b'asset-scheme-campaign-v1.png' in manage_page.data
     assert b'Preview member experience' in manage_page.data
+    assert b'Add a new appliance' in manage_page.data
+    with app.app_context():
+        db = get_db()
+        db.execute("DELETE FROM asset_catalogue WHERE category='Dishwasher' AND brand='TestBrand'")
+        db.commit()
+    new_appliance = {
+        'category': 'Dishwasher',
+        'name': 'Freestanding dishwasher',
+        'brand': 'TestBrand',
+        'size_spec': '12 place settings',
+        'description': 'Energy-efficient family dishwasher',
+        'image_url': 'https://example.test/dishwasher.jpg',
+        'estimated_price_min': '450000',
+        'estimated_price_max': '700000',
+        'is_active': '1',
+    }
+    created = client.post('/asset-schemes/library', data=new_appliance)
+    assert created.status_code in (302, 303)
+    duplicate = client.post('/asset-schemes/library', data=new_appliance, follow_redirects=True)
+    assert b'already exists in the master library' in duplicate.data
+    with app.app_context():
+        db = get_db()
+        appliance = db.execute("""SELECT * FROM asset_catalogue
+            WHERE category='Dishwasher' AND brand='TestBrand'""").fetchone()
+        assert appliance is not None
+        assert appliance['estimated_price_min'] == 450000
+        assert appliance['is_active'] == 1
     with app.app_context():
         db = get_db()
         library_item = db.execute("SELECT id FROM asset_catalogue WHERE category='Refrigerator' ORDER BY id LIMIT 1").fetchone()
