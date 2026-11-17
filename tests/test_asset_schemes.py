@@ -88,6 +88,9 @@ def test_request_quote_acceptance_gate():
     catalogue = client.get('/asset-schemes')
     assert catalogue.status_code == 200
     assert b'What would you like us to source?' in catalogue.data
+    assert b'images/asset-categories/television.jpg' in catalogue.data
+    assert b'appliance-catalogue' in catalogue.data
+    assert b'0 items selected' in catalogue.data
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
@@ -121,12 +124,20 @@ def test_request_quote_acceptance_gate():
         'brand': 'TestBrand',
         'size_spec': '12 place settings',
         'description': 'Energy-efficient family dishwasher',
-        'image_url': 'https://example.test/dishwasher.jpg',
+        'image_url': '',
         'estimated_price_min': '450000',
         'estimated_price_max': '700000',
         'is_active': '1',
     }
-    created = client.post('/asset-schemes/library', data=new_appliance)
+    from io import BytesIO
+    from PIL import Image
+    image_buffer = BytesIO()
+    Image.new('RGB', (640, 480), '#e8eef6').save(image_buffer, format='PNG')
+    image_buffer.seek(0)
+    created = client.post('/asset-schemes/library',
+                          data={**new_appliance,
+                                'image_file': (image_buffer, 'dishwasher.png')},
+                          content_type='multipart/form-data')
     assert created.status_code in (302, 303)
     duplicate = client.post('/asset-schemes/library', data=new_appliance, follow_redirects=True)
     assert b'already exists in the master library' in duplicate.data
@@ -137,6 +148,7 @@ def test_request_quote_acceptance_gate():
         assert appliance is not None
         assert appliance['estimated_price_min'] == 450000
         assert appliance['is_active'] == 1
+        assert appliance['image_url'].startswith('data:image/jpeg;base64,')
     with app.app_context():
         db = get_db()
         library_item = db.execute("SELECT id FROM asset_catalogue WHERE category='Refrigerator' ORDER BY id LIMIT 1").fetchone()

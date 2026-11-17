@@ -12,12 +12,26 @@ from email_service import run_in_background
 from ledger import (FEE_INCOME, LOANS_RECEIVABLE, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
 import loan_workflow as lw
-from utils import audit, finite_float, member_for_user, notify_member, role_required
+from utils import (audit, finite_float, member_for_user, notify_member,
+                   product_image_data_uri, role_required, validate_image)
 
 
 asset_schemes = Blueprint('asset_schemes', __name__)
 STAGES = ('secretary', 'treasurer', 'president')
 NEXT = {'secretary': 'treasurer', 'treasurer': 'president', 'president': 'approved'}
+CATEGORY_REFERENCE_IMAGES = {
+    'air conditioner': 'images/asset-categories/air-conditioner.jpg',
+    'television': 'images/asset-categories/television.jpg',
+    'refrigerator': 'images/asset-categories/refrigerator.jpg',
+    'freezer': 'images/asset-categories/freezer.jpg',
+    'washing machine': 'images/asset-categories/washing-machine.jpg',
+    'cooker': 'images/asset-categories/cooker.jpg',
+    'microwave': 'images/asset-categories/microwave.jpg',
+    'air fryer': 'images/asset-categories/air-fryer.jpg',
+    'blender': 'images/asset-categories/blender.jpg',
+    'generator': 'images/asset-categories/generator.jpg',
+    'inverter': 'images/asset-categories/inverter.jpg',
+}
 
 
 def _parse_campaign_date(value, end_of_day=False):
@@ -134,7 +148,8 @@ def catalogue():
         ORDER BY p.campaign_id DESC, p.name''', (now, now)).fetchall()
     orders = db.execute('SELECT * FROM asset_orders WHERE member_id=? ORDER BY id DESC', (member['id'],)).fetchall()
     return render_template('asset_schemes/catalogue.html', member=member, campaigns=campaigns,
-                           products=products, orders=orders)
+                           products=products, orders=orders,
+                           category_images=CATEGORY_REFERENCE_IMAGES)
 
 
 @asset_schemes.route('/asset-schemes/apply/<int:campaign_id>', methods=['POST'])
@@ -282,7 +297,8 @@ def manage():
     orders = db.execute('''SELECT o.*,m.first_name,m.last_name,c.name campaign_name FROM asset_orders o
         JOIN members m ON m.id=o.member_id JOIN asset_campaigns c ON c.id=o.campaign_id ORDER BY o.id DESC''').fetchall()
     return render_template('asset_schemes/manage.html', campaigns=campaigns, orders=orders,
-                           library=library, campaign_products=campaign_products)
+                           library=library, campaign_products=campaign_products,
+                           category_images=CATEGORY_REFERENCE_IMAGES)
 
 
 @asset_schemes.route('/asset-schemes/campaigns/<int:campaign_id>/settings', methods=['POST'])
@@ -428,11 +444,37 @@ def update_library_item(item_id):
             raise ValueError('Category, appliance name, brand and size are required.')
         if price_min <= 0 or price_max < price_min:
             raise ValueError('Enter a valid indicative price range.')
+        current_image = item['image_url'] or ''
+        supplied_url = request.form.get('image_url', '').strip()
+        upload = request.files.get('image_file')
+        if upload and upload.filename:
+            valid, error = validate_image(upload)
+            if not valid:
+                raise ValueError(error)
+            image_value = product_image_data_uri(upload)
+        elif request.form.get('remove_image') == '1':
+            image_value = ''
+        elif supplied_url:
+            image_value = supplied_url
+        else:
+            image_value = current_image
         db.execute('''UPDATE asset_catalogue SET category=?,name=?,brand=?,size_spec=?,description=?,
             image_url=?,estimated_price_min=?,estimated_price_max=?,is_active=?,updated_at=? WHERE id=?''',
             (category, name, brand, size_spec, request.form.get('description','').strip(),
-             request.form.get('image_url','').strip(), price_min, price_max,
+             image_value, price_min, price_max,
              1 if request.form.get('is_active') == '1' else 0, datetime.now(), item_id))
+        db.execute('''UPDATE asset_products SET category=?,name=?,brand=?,size_spec=?,description=?,
+            image_url=?,estimated_price_min=?,estimated_price_max=?
+            WHERE category=? AND name=? AND brand=? AND size_spec=?''',
+            (category, name, brand, size_spec, request.form.get('description','').strip(),
+             image_value, price_min, price_max, item['category'], item['name'],
+             item['brand'], item['size_spec']))
+        db.execute('''UPDATE asset_products SET category=?,name=?,brand=?,size_spec=?,description=?,
+            image_url=?,estimated_price_min=?,estimated_price_max=?
+            WHERE category=? AND name=? AND brand=? AND size_spec=?''',
+            (category, name, brand, size_spec, request.form.get('description','').strip(),
+             image_value, price_min, price_max, item['category'], item['name'],
+             item['brand'], item['size_spec']))
         db.commit()
         flash('Appliance library item updated.', 'success')
     except Exception as exc:
@@ -452,6 +494,12 @@ def create_library_item():
         size_spec = request.form.get('size_spec', '').strip()
         description = request.form.get('description', '').strip()
         image_url = request.form.get('image_url', '').strip()
+        upload = request.files.get('image_file')
+        if upload and upload.filename:
+            valid, error = validate_image(upload)
+            if not valid:
+                raise ValueError(error)
+            image_url = product_image_data_uri(upload)
         price_min = finite_float(request.form.get('estimated_price_min'))
         price_max = finite_float(request.form.get('estimated_price_max'))
         if not all((category, name, brand, size_spec)):

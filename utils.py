@@ -669,6 +669,34 @@ def logo_data_uri(file, max_px: int = 240) -> str:
     return f'data:image/png;base64,{b64}'
 
 
+def product_image_data_uri(file, max_width: int = 1000, max_height: int = 750) -> str:
+    """Return a compact, self-contained product image suitable for catalogue cards.
+
+    Product images live in the database so retailer hotlink protection and
+    ephemeral container files cannot make them disappear.
+    """
+    import base64
+    file.stream.seek(0)
+    img = Image.open(file.stream)
+    try:
+        from PIL import ImageOps
+        img = ImageOps.exif_transpose(img)
+    except Exception:
+        pass
+    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+        rgba = img.convert('RGBA')
+        background = Image.new('RGB', rgba.size, 'white')
+        background.paste(rgba, mask=rgba.getchannel('A'))
+        img = background
+    else:
+        img = img.convert('RGB')
+    img.thumbnail((max_width, max_height))
+    buf = BytesIO()
+    img.save(buf, format='JPEG', quality=84, optimize=True, progressive=True)
+    b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+    return f'data:image/jpeg;base64,{b64}'
+
+
 # ── In-app notification helper ────────────────────────────────────────────────
 
 def notify(db, user_id: int, title: str, message: str,
