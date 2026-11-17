@@ -129,6 +129,61 @@ export type DashboardPayload = {
   loans: Loan[];
   recent_transactions: Array<Record<string, unknown>>;
   notifications: MobileNotification[];
+  asset_campaign?: AssetCampaign | null;
+};
+
+export type AssetCampaign = {
+  id: number;
+  name: string;
+  description: string;
+  closes_at: string;
+  tenure_months: number;
+  annual_interest_rate: number;
+  repayment_methods: string[];
+  banner_enabled: boolean;
+  flyer_url: string;
+};
+
+export type AssetProduct = {
+  id: number;
+  campaign_id: number;
+  name: string;
+  brand: string;
+  model: string;
+  category: string;
+  size_spec: string;
+  description: string;
+  image_url: string;
+};
+
+export type AssetOrder = {
+  id: number;
+  order_number: string;
+  campaign_id: number;
+  campaign_name: string;
+  status: string;
+  approval_stage: string;
+  quote_status: string;
+  preferred_budget: number;
+  selling_price: number | null;
+  finance_charge: number | null;
+  total_repayment: number | null;
+  monthly_repayment: number | null;
+  delivery_fee: number | null;
+  delivery_fee_status: string;
+  tenure_months: number;
+  annual_interest_rate: number;
+  repayment_method: string;
+  quote_note: string;
+  created_at: string;
+};
+
+export type AssetsPayload = {
+  success: boolean;
+  campaigns: AssetCampaign[];
+  products: AssetProduct[];
+  orders: AssetOrder[];
+  flyer_url: string;
 };
 
 export type CtasSubscription = {

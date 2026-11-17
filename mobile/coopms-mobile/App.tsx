@@ -7,6 +7,8 @@ import React, { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, u
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  ImageBackground,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -22,11 +24,15 @@ import {
 
 import {
   ApiError,
+  acceptAssetQuote,
+  applyForAssets,
   applyCtas,
   applyForLoan,
   changePassword,
   clearToken,
+  confirmAssetReceipt,
   getCtas,
+  getAssets,
   getDashboard,
   getLoanDetail,
   getLoanOptions,
@@ -47,9 +53,9 @@ import {
   withdrawLoan
 } from './src/api';
 import { clearTenant, getApiBase, getCoopName, loadTenant, setTenant } from './src/config';
-import type { CtasPayload, DashboardPayload, GuarantorOption, Loan, LoanOptionsPayload, MobileNotification, PayInPayload, SavingRow } from './src/types';
+import type { AssetProduct, AssetsPayload, CtasPayload, DashboardPayload, GuarantorOption, Loan, LoanOptionsPayload, MobileNotification, PayInPayload, SavingRow } from './src/types';
 
-type Tab = 'home' | 'profile' | 'savings' | 'loans' | 'ctas' | 'notifications';
+type Tab = 'home' | 'profile' | 'savings' | 'loans' | 'assets' | 'ctas' | 'notifications';
 
 type FatalScreenProps = {
   title?: string;
@@ -441,6 +447,19 @@ function HomeScreen({ data, reload, setActive }: { data: DashboardPayload; reloa
           </View>
         ) : null}
       </View>
+
+      {data.asset_campaign?.banner_enabled ? (
+        <Pressable style={({ pressed }) => [styles.assetHero, pressed && styles.pressed]} onPress={() => setActive('assets')}>
+          <ImageBackground source={{ uri: data.asset_campaign.flyer_url }} style={styles.assetHeroImage} imageStyle={styles.assetHeroImageRadius}>
+            <View style={styles.assetHeroOverlay}>
+              <Text style={styles.assetHeroKicker}>HOME APPLIANCE SCHEME</Text>
+              <Text style={styles.assetHeroTitle}>{data.asset_campaign.name}</Text>
+              <Text style={styles.assetHeroCopy} numberOfLines={2}>{data.asset_campaign.description || 'Choose useful appliances and repay conveniently through your cooperative.'}</Text>
+              <View style={styles.assetHeroTerms}><Text style={styles.assetHeroTermsText}>{data.asset_campaign.tenure_months} months · {data.asset_campaign.annual_interest_rate}% p.a.</Text><Ionicons name="arrow-forward" size={18} color={NAVY} /></View>
+            </View>
+          </ImageBackground>
+        </Pressable>
+      ) : null}
 
       <View style={styles.statGrid}>
         <StatCard label="Savings" value={money(data.member.total_savings)} icon="wallet" hint="View statement" onPress={() => setActive('savings')} />
@@ -1192,12 +1211,104 @@ function CtasScreen({ token }: { token: string }) {
   );
 }
 
-function TabBar({ active, setActive, unread, showCtas }: { active: Tab; setActive: (tab: Tab) => void; unread: number; showCtas: boolean }) {
+function AssetsScreen({ token, memberName }: { token: string; memberName: string }) {
+  const [data, setData] = useState<AssetsPayload | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Record<number, { quantity: string; preferred_spend: string }>>({});
+  const [signature, setSignature] = useState(memberName);
+  const [terms, setTerms] = useState(false);
+
+  const load = () => getAssets(token).then(setData).catch((error) => Alert.alert('Asset scheme', error instanceof Error ? error.message : 'Could not load the campaign.'));
+  useEffect(() => { void load(); }, [token]);
+
+  function toggle(product: AssetProduct) {
+    setSelected((current) => {
+      const next = { ...current };
+      if (next[product.id]) delete next[product.id];
+      else next[product.id] = { quantity: '1', preferred_spend: '' };
+      return next;
+    });
+  }
+
+  async function submit() {
+    if (!data?.campaigns[0]) return;
+    const items = Object.entries(selected).map(([productId, item]) => ({
+      product_id: Number(productId), quantity: Number(item.quantity), preferred_spend: Number(item.preferred_spend)
+    }));
+    if (!items.length || items.some((item) => !item.quantity || item.preferred_spend < 1000)) {
+      Alert.alert('Complete your selection', 'Select at least one appliance and enter your preferred spend for each item.'); return;
+    }
+    if (!terms || !signature.trim()) { Alert.alert('Confirm request', 'Accept the terms and type your full name.'); return; }
+    setBusy(true);
+    try {
+      const campaign = data.campaigns[0];
+      const result = await applyForAssets(token, {
+        campaign_id: campaign.id, items, repayment_method: campaign.repayment_methods[0],
+        signature_name: signature.trim(), terms_accepted: true
+      });
+      Alert.alert('Request submitted', `${result.order_number}\n${result.message}`);
+      setSelected({}); setTerms(false); await load();
+    } catch (error) { Alert.alert('Unable to submit', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { setBusy(false); }
+  }
+
+  async function acceptQuote(orderId: number) {
+    setBusy(true);
+    try { const result = await acceptAssetQuote(token, orderId); Alert.alert('Quote accepted', result.message); await load(); }
+    catch (error) { Alert.alert('Unable to accept quote', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmReceipt(orderId: number) {
+    setBusy(true);
+    try { const result = await confirmAssetReceipt(token, orderId); Alert.alert('Receipt confirmed', `${result.message}\n${result.loan_number}`); await load(); }
+    catch (error) { Alert.alert('Unable to confirm receipt', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { setBusy(false); }
+  }
+
+  if (!data) return <View style={styles.loadingRoot}><ActivityIndicator size="large" color={NAVY} /><Text style={styles.loadingHint}>Loading asset campaign...</Text></View>;
+  const campaign = data.campaigns[0];
+  return (
+    <ScrollView contentContainerStyle={styles.screen}>
+      {campaign ? <ImageBackground source={{ uri: data.flyer_url }} style={styles.assetScreenHero} imageStyle={styles.assetScreenHeroImage}>
+        <View style={styles.assetScreenShade}><Text style={styles.assetScreenTitle}>{campaign.name}</Text><Text style={styles.assetScreenCopy}>{campaign.description || 'Choose useful appliances and repay conveniently through your cooperative.'}</Text><Text style={styles.assetScreenTerms}>{campaign.tenure_months} months · {campaign.annual_interest_rate}% per annum</Text></View>
+      </ImageBackground> : <View style={styles.card}><Text style={styles.emptyText}>There is no open asset campaign right now.</Text></View>}
+
+      {campaign ? <View style={styles.card}><Text style={styles.cardTitle}>Choose appliances</Text><Text style={styles.emptyText}>Supplier costs are private. Enter only what you prefer to spend; you will review the final cooperative selling price before approval.</Text>
+        {data.products.filter((product) => product.campaign_id === campaign.id).map((product) => {
+          const choice = selected[product.id];
+          return <View key={product.id} style={[styles.assetProduct, choice && styles.assetProductSelected]}>
+            <Pressable onPress={() => toggle(product)} style={({ pressed }) => [styles.assetProductTop, pressed && styles.pressed]}>
+              {product.image_url ? <Image source={{ uri: product.image_url }} style={styles.assetProductImage} resizeMode="contain" /> : <View style={styles.assetProductImage}><Ionicons name="cube" size={42} color={BLUE} /></View>}
+              <View style={styles.assetProductInfo}><Text style={styles.rowTitle}>{product.name}</Text><Text style={styles.rowSub}>{product.brand || 'Suitable brand'} · {product.size_spec || 'Size to be confirmed'}</Text></View>
+              <Ionicons name={choice ? 'checkmark-circle' : 'ellipse-outline'} size={26} color={choice ? YELLOW : MUTED} />
+            </Pressable>
+            {choice ? <View style={styles.assetBudgetRow}><TextInput keyboardType="number-pad" value={choice.quantity} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], quantity: value } }))} style={[styles.inputLight, styles.assetQty]} placeholder="Qty" /><TextInput keyboardType="number-pad" value={choice.preferred_spend} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], preferred_spend: value } }))} style={[styles.inputLight, styles.assetBudget]} placeholder="Preferred spend (NGN)" /></View> : null}
+          </View>;
+        })}
+        <TextInput value={signature} onChangeText={setSignature} style={styles.inputLight} placeholder="Your full name" />
+        <Pressable style={styles.assetTermsRow} onPress={() => setTerms((value) => !value)}><Ionicons name={terms ? 'checkbox' : 'square-outline'} size={24} color={terms ? BLUE : MUTED} /><Text style={styles.quickHelper}>I will review the final selling price, delivery fee and repayment schedule before approval.</Text></Pressable>
+        <Pressable style={[styles.primaryButton, busy && styles.disabled]} onPress={submit} disabled={busy}><Text style={styles.primaryButtonText}>{busy ? 'Submitting...' : 'Request supplier quote'}</Text></Pressable>
+      </View> : null}
+
+      <View style={styles.card}><Text style={styles.cardTitle}>My asset requests</Text>
+        {data.orders.map((order) => <View key={order.id} style={styles.listRow}><Text style={styles.rowTitle}>{order.order_number} · {order.status.replace(/_/g, ' ')}</Text><Text style={styles.rowSub}>{order.campaign_name} · Preferred budget {money(order.preferred_budget)}</Text>
+          {order.quote_status === 'quoted' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Final selling price: {money(order.selling_price || 0)}</Text><Text style={styles.rowSub}>Total repayment {money(order.total_repayment || 0)} · {order.tenure_months} payments of {money(order.monthly_repayment || 0)} · Delivery {money(order.delivery_fee || 0)}</Text><Pressable style={styles.primaryButton} onPress={() => acceptQuote(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Accept final quote</Text></Pressable></View> : null}
+          {order.status === 'ready_for_receipt' ? <Pressable style={styles.primaryButton} onPress={() => confirmReceipt(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Confirm items received</Text></Pressable> : null}
+        </View>)}
+        {data.orders.length === 0 ? <Text style={styles.emptyText}>No asset requests yet.</Text> : null}
+      </View>
+    </ScrollView>
+  );
+}
+
+function TabBar({ active, setActive, unread, showCtas, showAssets }: { active: Tab; setActive: (tab: Tab) => void; unread: number; showCtas: boolean; showAssets: boolean }) {
   const tabs: Array<{ key: Tab; icon: keyof typeof Ionicons.glyphMap; label: string }> = [
     { key: 'home', icon: 'home', label: 'Home' },
     { key: 'profile', icon: 'person', label: 'Profile' },
     { key: 'savings', icon: 'wallet', label: 'Savings' },
     { key: 'loans', icon: 'cash', label: 'Loans' },
+    ...(showAssets ? [{ key: 'assets' as Tab, icon: 'cube' as keyof typeof Ionicons.glyphMap, label: 'Assets' }] : []),
     ...(showCtas ? [{ key: 'ctas' as Tab, icon: 'sync' as keyof typeof Ionicons.glyphMap, label: 'Advance' }] : []),
     { key: 'notifications', icon: 'notifications', label: 'Alerts' }
   ];
@@ -1346,6 +1457,7 @@ function AppContent() {
     if (activeTab === 'profile') return 'Profile';
     if (activeTab === 'savings') return 'Savings';
     if (activeTab === 'loans') return 'Loans';
+    if (activeTab === 'assets') return 'Asset Scheme';
     if (activeTab === 'ctas') return 'Target Advance';
     return 'Notifications';
   }, [activeTab]);
@@ -1406,9 +1518,10 @@ function AppContent() {
       {activeTab === 'profile' ? <ProfileScreen token={token} data={dashboard} reload={() => reload()} /> : null}
       {activeTab === 'savings' ? <SavingsScreen token={token} /> : null}
       {activeTab === 'loans' ? <LoansScreen token={token} dashboard={dashboard} reload={() => reload()} /> : null}
+      {activeTab === 'assets' ? <AssetsScreen token={token} memberName={dashboard.member.full_name} /> : null}
       {activeTab === 'ctas' ? <CtasScreen token={token} /> : null}
       {activeTab === 'notifications' ? <NotificationsScreen token={token} initial={dashboard.notifications} /> : null}
-      <TabBar active={activeTab} setActive={setActiveTab} unread={dashboard.summary.unread_notifications} showCtas={ctasEnabled} />
+      <TabBar active={activeTab} setActive={setActiveTab} unread={dashboard.summary.unread_notifications} showCtas={ctasEnabled} showAssets={!!dashboard.asset_campaign} />
     </SafeAreaView>
   );
 }
@@ -1524,6 +1637,31 @@ const styles = StyleSheet.create({
   statusPill: { color: '#fff', backgroundColor: '#7D8797', overflow: 'hidden', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4, fontSize: 12, textTransform: 'capitalize' },
   statusActive: { backgroundColor: '#159A5B' },
   linkText: { color: BLUE, fontWeight: '800' },
+  assetHero: { height: 210, borderRadius: 16, overflow: 'hidden', marginTop: 14, backgroundColor: NAVY },
+  assetHeroImage: { flex: 1 },
+  assetHeroImageRadius: { borderRadius: 16 },
+  assetHeroOverlay: { flex: 1, justifyContent: 'flex-end', padding: 16, backgroundColor: 'rgba(4,25,58,0.58)' },
+  assetHeroKicker: { color: YELLOW, fontSize: 11, fontWeight: '900', marginBottom: 5 },
+  assetHeroTitle: { color: '#fff', fontSize: 22, fontWeight: '900' },
+  assetHeroCopy: { color: '#F0F5FF', marginTop: 5, lineHeight: 19 },
+  assetHeroTerms: { marginTop: 10, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: YELLOW, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
+  assetHeroTermsText: { color: NAVY, fontWeight: '900' },
+  assetScreenHero: { height: 260, borderRadius: 16, overflow: 'hidden', backgroundColor: NAVY },
+  assetScreenHeroImage: { borderRadius: 16 },
+  assetScreenShade: { flex: 1, justifyContent: 'flex-end', padding: 18, backgroundColor: 'rgba(4,25,58,0.62)' },
+  assetScreenTitle: { color: '#fff', fontSize: 25, fontWeight: '900' },
+  assetScreenCopy: { color: '#F0F5FF', marginTop: 6, lineHeight: 20 },
+  assetScreenTerms: { color: NAVY, backgroundColor: YELLOW, alignSelf: 'flex-start', marginTop: 10, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 7, fontWeight: '900' },
+  assetProduct: { borderWidth: 1, borderColor: BORDER, borderRadius: 12, marginTop: 10, overflow: 'hidden' },
+  assetProductSelected: { borderColor: YELLOW, borderWidth: 2, backgroundColor: '#FFFCF2' },
+  assetProductTop: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10 },
+  assetProductImage: { width: 76, height: 68, backgroundColor: '#F1F5F9', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  assetProductInfo: { flex: 1 },
+  assetBudgetRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 10 },
+  assetQty: { flex: 0.32 },
+  assetBudget: { flex: 0.68 },
+  assetTermsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 10 },
+  quoteBox: { marginTop: 10, padding: 12, borderRadius: 10, backgroundColor: '#F4F8FF', borderWidth: 1, borderColor: '#D7E7FF', gap: 8 },
   tabBar: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 82, backgroundColor: '#fff', flexDirection: 'row', borderTopWidth: 1, borderColor: '#E4E9F0', paddingBottom: 10, shadowColor: '#061E4A', shadowOpacity: 0.08, shadowRadius: 16, elevation: 8 },
   tabButton: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center', gap: 4 },
   tabLabel: { color: '#7D8797', fontSize: 11, fontWeight: '700' },

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, UTC
 from functools import wraps
 
 import jwt
-from flask import Blueprint, current_app, g, jsonify, make_response, request
+from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import hq_tokens
@@ -47,6 +47,8 @@ from utils import (
     clear_account_failures,
     pause_message,
 )
+from asset_schemes import delivery_cleared, finance_terms
+from ledger import LOANS_RECEIVABLE, post_journal_required
 
 mobile_api = Blueprint('mobile_api', __name__)
 
@@ -71,6 +73,20 @@ PROFILE_COMPLETION_FIELDS = (
     'city', 'state', 'country', 'occupation', 'bank_name', 'account_name',
     'account_number', 'emergency_contact_name', 'emergency_contact_phone',
 )
+
+ASSET_CATEGORY_IMAGES = {
+    'air conditioner': 'images/asset-categories/air-conditioner.jpg',
+    'television': 'images/asset-categories/television.jpg',
+    'refrigerator': 'images/asset-categories/refrigerator.jpg',
+    'freezer': 'images/asset-categories/freezer.jpg',
+    'washing machine': 'images/asset-categories/washing-machine.jpg',
+    'cooker': 'images/asset-categories/cooker.jpg',
+    'microwave': 'images/asset-categories/microwave.jpg',
+    'air fryer': 'images/asset-categories/air-fryer.jpg',
+    'blender': 'images/asset-categories/blender.jpg',
+    'generator': 'images/asset-categories/generator.jpg',
+    'inverter': 'images/asset-categories/inverter.jpg',
+}
 
 
 def _interest_rates(db):
@@ -720,6 +736,33 @@ def mobile_profile():
     })
 
 
+def _mobile_asset_image(category, image_url=''):
+    image_url = (image_url or '').strip()
+    if image_url.startswith('data:image/'):
+        return image_url
+    fallback = ASSET_CATEGORY_IMAGES.get((category or '').strip().lower())
+    return url_for('static', filename=fallback, _external=True) if fallback else ''
+
+
+def _mobile_asset_campaigns(db):
+    now = datetime.now()
+    campaigns = db.execute("""SELECT id,name,description,closes_at,tenure_months,
+        annual_interest_rate,repayment_methods,banner_enabled
+        FROM asset_campaigns WHERE status='open'
+        AND (opens_at IS NULL OR opens_at <= ?)
+        AND (closes_at IS NULL OR closes_at >= ?)
+        ORDER BY closes_at, id DESC""", (now, now)).fetchall()
+    return [{
+        'id': row['id'], 'name': row['name'], 'description': row['description'] or '',
+        'closes_at': str(row['closes_at'] or ''),
+        'tenure_months': int(row['tenure_months'] or 0),
+        'annual_interest_rate': float(row['annual_interest_rate'] or 0),
+        'repayment_methods': [x.strip() for x in (row['repayment_methods'] or '').split(',') if x.strip()],
+        'banner_enabled': bool(row['banner_enabled']),
+        'flyer_url': url_for('static', filename='images/asset-scheme-campaign-v1.png', _external=True),
+    } for row in campaigns]
+
+
 @mobile_api.route('/api/mobile/v1/dashboard')
 @member_required
 def mobile_v1_dashboard():
@@ -733,6 +776,7 @@ def mobile_v1_dashboard():
         "SELECT COALESCE(SUM(balance), 0) FROM loans WHERE member_id = ? AND status = 'active'",
         (member['id'],),
     ).fetchone()[0] or 0
+    asset_campaigns = _mobile_asset_campaigns(db)
     return jsonify({
         'success': True,
         'member': _member_summary(member, db),
@@ -744,6 +788,7 @@ def mobile_v1_dashboard():
         'loans': _get_loans(db, member['id']),
         'recent_transactions': _get_transactions(db, member['id']),
         'notifications': _get_notifications(db, g.user_id),
+        'asset_campaign': asset_campaigns[0] if asset_campaigns else None,
     })
 
 
@@ -783,6 +828,180 @@ def mobile_savings():
 @member_required
 def mobile_loans():
     return jsonify({'success': True, 'loans': _get_loans(g.db, g.member['id'])})
+
+
+def _mobile_asset_order(db, order):
+    quoted = order['quote_status'] in {'quoted', 'accepted'}
+    return {
+        'id': order['id'], 'order_number': order['order_number'],
+        'campaign_id': order['campaign_id'], 'campaign_name': order['campaign_name'],
+        'status': order['status'], 'approval_stage': order['approval_stage'],
+        'quote_status': order['quote_status'], 'preferred_budget': float(order['expected_spend'] or 0),
+        'selling_price': float(order['selling_subtotal'] or 0) if quoted else None,
+        'finance_charge': float(order['interest_amount'] or 0) if quoted else None,
+        'total_repayment': float(order['total_repayment'] or 0) if quoted else None,
+        'monthly_repayment': float(order['monthly_repayment'] or 0) if quoted else None,
+        'delivery_fee': float(order['delivery_fee'] or 0) if quoted else None,
+        'delivery_fee_status': order['delivery_fee_status'],
+        'tenure_months': int(order['tenure_months'] or 0),
+        'annual_interest_rate': float(order['annual_interest_rate'] or 0),
+        'repayment_method': order['repayment_method'], 'quote_note': order['quote_note'] or '',
+        'created_at': str(order['created_at'] or ''),
+    }
+
+
+@mobile_api.route('/api/mobile/v1/assets')
+@member_required
+def mobile_assets():
+    db = g.db
+    campaigns = _mobile_asset_campaigns(db)
+    campaign_ids = [row['id'] for row in campaigns]
+    products = []
+    if campaign_ids:
+        placeholders = ','.join('?' for _ in campaign_ids)
+        rows = db.execute(f'''SELECT id,campaign_id,name,brand,model,category,size_spec,
+            description,image_url FROM asset_products WHERE status='active'
+            AND campaign_id IN ({placeholders}) ORDER BY campaign_id,name''', tuple(campaign_ids)).fetchall()
+        products = [{
+            'id': row['id'], 'campaign_id': row['campaign_id'], 'name': row['name'],
+            'brand': row['brand'] or '', 'model': row['model'] or '',
+            'category': row['category'] or '', 'size_spec': row['size_spec'] or '',
+            'description': row['description'] or '',
+            'image_url': _mobile_asset_image(row['category'], row['image_url']),
+        } for row in rows]
+    order_rows = db.execute('''SELECT o.*,c.name campaign_name FROM asset_orders o
+        JOIN asset_campaigns c ON c.id=o.campaign_id WHERE o.member_id=? ORDER BY o.id DESC''',
+        (g.member['id'],)).fetchall()
+    orders = [_mobile_asset_order(db, row) for row in order_rows]
+    return jsonify({'success': True, 'campaigns': campaigns, 'products': products, 'orders': orders,
+                    'flyer_url': url_for('static', filename='images/asset-scheme-campaign-v1.png', _external=True)})
+
+
+@mobile_api.route('/api/mobile/v1/assets/apply', methods=['POST'])
+@member_required
+def mobile_assets_apply():
+    db = g.db; data = request.get_json(silent=True) or {}; now = datetime.now()
+    campaign = db.execute("""SELECT * FROM asset_campaigns WHERE id=? AND status='open'
+        AND (opens_at IS NULL OR opens_at <= ?) AND (closes_at IS NULL OR closes_at >= ?)""",
+        (data.get('campaign_id'), now, now)).fetchone()
+    if not campaign:
+        return _json_error('This asset campaign is not available.', 404, 'campaign_unavailable')
+    if data.get('terms_accepted') is not True:
+        return _json_error('Accept the scheme terms before submitting.', 400, 'terms_required')
+    repayment_method = str(data.get('repayment_method') or '').strip()
+    allowed = {x.strip() for x in (campaign['repayment_methods'] or '').split(',') if x.strip()}
+    if repayment_method not in allowed:
+        return _json_error('Choose an available repayment method.', 400, 'invalid_repayment_method')
+    requested = data.get('items') if isinstance(data.get('items'), list) else []
+    requested_by_id = {int(item.get('product_id')): item for item in requested if item.get('product_id')}
+    selected = []
+    for product in db.execute("SELECT * FROM asset_products WHERE campaign_id=? AND status='active'", (campaign['id'],)).fetchall():
+        item = requested_by_id.get(product['id'])
+        if not item: continue
+        try:
+            qty = int(item.get('quantity') or 0); expected = finite_float(item.get('preferred_spend') or 0)
+        except (TypeError, ValueError):
+            return _json_error('Enter valid quantities and preferred spend.', 400, 'invalid_items')
+        if qty < 1 or qty > 20 or expected < 1000:
+            return _json_error(f'Check quantity and preferred spend for {product["name"]}.', 400, 'invalid_items')
+        selected.append((product, qty, expected))
+    if not selected:
+        return _json_error('Select at least one appliance.', 400, 'items_required')
+    signature = str(data.get('signature_name') or '').strip()
+    if not signature:
+        return _json_error('Type your full name as confirmation.', 400, 'signature_required')
+    subtotal = round(sum(expected * qty for _, qty, expected in selected), 2)
+    interest, total, monthly = finance_terms(subtotal, campaign['annual_interest_rate'], campaign['tenure_months'])
+    annual_salary = float(g.member['annual_salary'] or 0)
+    eligible = annual_salary <= 0 or monthly <= annual_salary / 12 * 0.4
+    reason = ('Monthly repayment is within 40% of recorded monthly salary.' if annual_salary and eligible
+              else 'Monthly repayment exceeds 40% of recorded monthly salary; committee review required.' if annual_salary
+              else 'No salary recorded; committee affordability review required.')
+    order_number = f"AS/{now:%Y%m%d}/{random.randint(1000, 9999)}"
+    db.execute('''INSERT INTO asset_orders
+        (order_number,campaign_id,member_id,status,approval_stage,expected_spend,quote_status,
+         selling_subtotal,annual_interest_rate,tenure_months,interest_amount,total_repayment,
+         monthly_repayment,delivery_fee,repayment_method,eligibility_status,eligibility_reason,
+         terms_accepted,signature_name,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (order_number, campaign['id'], g.member['id'], 'sourcing_quote', 'quote', subtotal,
+         'not_quoted', subtotal, campaign['annual_interest_rate'], campaign['tenure_months'],
+         interest, total, monthly, 0, repayment_method, 'eligible' if eligible else 'review',
+         reason, 1, signature, g.user_id))
+    order_id = last_insert_id(db)
+    for product, qty, expected in selected:
+        db.execute('''INSERT INTO asset_order_items
+            (order_id,product_id,product_name,brand,model,quantity,unit_purchase_cost,
+             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (order_id, product['id'], product['name'], product['brand'], product['model'], qty,
+             product['purchase_cost'], 0, 0, expected))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment) VALUES (?, 'quote','sourcing_requested',?,?,?)''',
+        (order_id, g.user_id, g.username, f'Member preferred budget ₦{subtotal:,.2f}. {reason}'))
+    db.commit()
+    return jsonify({'success': True, 'order_id': order_id, 'order_number': order_number,
+                    'message': 'Your request was submitted for supplier sourcing.'}), 201
+
+
+@mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/accept-quote', methods=['POST'])
+@member_required
+def mobile_assets_accept_quote(order_id):
+    db = g.db
+    order = db.execute('SELECT * FROM asset_orders WHERE id=? AND member_id=?',
+                       (order_id, g.member['id'])).fetchone()
+    data = request.get_json(silent=True) or {}
+    if not order or order['status'] != 'awaiting_member_quote' or order['quote_status'] != 'quoted':
+        return _json_error('There is no final quote awaiting acceptance.', 409, 'quote_unavailable')
+    if data.get('accept_quote') is not True:
+        return _json_error('Confirm that you accept the final selling price and repayment schedule.', 400, 'acceptance_required')
+    db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
+        quote_status='accepted',quote_accepted_at=? WHERE id=?""", (datetime.now(), order_id))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'quote','accepted',?,?, 'Member accepted final selling price and repayment schedule')''',
+        (order_id, g.user_id, g.username))
+    db.commit()
+    return jsonify({'success': True, 'message': 'Quote accepted and submitted for approval.'})
+
+
+@mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/confirm-receipt', methods=['POST'])
+@member_required
+def mobile_assets_confirm_receipt(order_id):
+    db = g.db
+    order = db.execute('SELECT * FROM asset_orders WHERE id=? AND member_id=?',
+                       (order_id, g.member['id'])).fetchone()
+    if not order or order['status'] != 'ready_for_receipt':
+        return _json_error('This order is not ready for receipt confirmation.', 409, 'receipt_unavailable')
+    if not delivery_cleared(order):
+        return _json_error('The delivery fee has not been cleared.', 409, 'delivery_fee_pending')
+    if order['linked_loan_id']:
+        return _json_error('Receipt was already confirmed.', 409, 'already_confirmed')
+    loan_number = f"LOAN/AS/{datetime.now():%Y%m%d}/{random.randint(1000,9999)}"
+    db.execute('''INSERT INTO loans
+        (loan_number,member_id,amount,purpose,description,tenure,interest_rate,interest_method,
+         total_repayment,balance,status,approval_stage,disbursed_amount,disbursement_date,
+         approved_at,terms_accepted,signature_name,date_applied,submission_channel)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (loan_number, g.member['id'], order['selling_subtotal'], 'Asset Purchase',
+         f"Asset scheme order {order['order_number']}", order['tenure_months'],
+         order['annual_interest_rate'], 'flat', order['total_repayment'], order['total_repayment'],
+         'active', 'approved', order['selling_subtotal'], datetime.now(), order['approved_at'], 1,
+         order['signature_name'], order['submitted_at'], 'asset_scheme_mobile'))
+    loan_id = last_insert_id(db)
+    post_journal_required(db, f"Asset delivered - {order['order_number']}", [
+        {'account': LOANS_RECEIVABLE, 'debit': order['selling_subtotal'], 'memo': loan_number},
+        {'account': '4050', 'credit': order['selling_subtotal'], 'memo': order['order_number']},
+    ], reference=order['order_number'], source_module='asset_scheme', source_id=order_id,
+       created_by=g.user_id)
+    db.execute("UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=? WHERE id=? AND linked_loan_id IS NULL",
+               (datetime.now(), loan_id, order_id))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'receipt','confirmed',?,?,?)''',
+        (order_id, g.user_id, g.username, f'Loan {loan_number} activated'))
+    db.commit()
+    return jsonify({'success': True, 'loan_id': loan_id, 'loan_number': loan_number,
+                    'message': 'Receipt confirmed. Your repayment plan is now active.'})
 
 
 # ── Paying in: the member's own account number ─────────────────────────────────

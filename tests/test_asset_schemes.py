@@ -95,6 +95,27 @@ def test_request_quote_acceptance_gate():
     assert b'min="1000" step="1000"' in catalogue.data
     assert b'350,000' not in catalogue.data
     assert b'500,000' not in catalogue.data
+    mobile_login = client.post('/api/mobile/login', json={
+        'username': email, 'password': 'MemberPass123!'
+    }).get_json()
+    mobile_headers = {'Authorization': f"Bearer {mobile_login['token']}"}
+    mobile_dashboard = client.get('/api/mobile/v1/dashboard', headers=mobile_headers).get_json()
+    assert mobile_dashboard['asset_campaign']['id'] == campaign_id
+    assert mobile_dashboard['asset_campaign']['flyer_url'].endswith('asset-scheme-campaign-v1.png')
+    mobile_catalogue = client.get('/api/mobile/v1/assets', headers=mobile_headers)
+    assert mobile_catalogue.status_code == 200
+    mobile_payload = mobile_catalogue.get_json()
+    assert mobile_payload['products'][0]['image_url'].endswith('asset-categories/television.jpg')
+    assert 'estimated_price_min' not in mobile_payload['products'][0]
+    assert 'purchase_cost' not in mobile_payload['products'][0]
+    mobile_apply = client.post('/api/mobile/v1/assets/apply', headers=mobile_headers, json={
+        'campaign_id': campaign_id,
+        'items': [{'product_id': product_id, 'quantity': 1, 'preferred_spend': 480000}],
+        'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
+        'terms_accepted': True,
+    })
+    assert mobile_apply.status_code == 201
+    assert mobile_apply.get_json()['order_number'].startswith('AS/')
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',

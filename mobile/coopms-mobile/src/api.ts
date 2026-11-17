@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { HQ_API_BASE, codeToBaseUrl, getApiBase } from './config';
-import type { CtasPayload, DashboardPayload, Loan, LoanOptionsPayload, MobileNotification, PayInPayload, SavingRow } from './types';
+import type { AssetsPayload, CtasPayload, DashboardPayload, Loan, LoanOptionsPayload, MobileNotification, PayInPayload, SavingRow } from './types';
 
 const TOKEN_KEY = 'coopms.mobile.token';
 
@@ -196,6 +196,26 @@ export async function getSavings(token: string) {
 
 export async function getLoans(token: string) {
   return request<{ success: boolean; loans: Loan[] }>('/api/mobile/v1/loans', { token });
+}
+
+export async function getAssets(token: string) {
+  return request<AssetsPayload>('/api/mobile/v1/assets', { token });
+}
+
+export async function applyForAssets(token: string, input: Record<string, unknown>) {
+  return request<{ success: boolean; order_id: number; order_number: string; message: string }>(
+    '/api/mobile/v1/assets/apply', { method: 'POST', token, body: input });
+}
+
+export async function acceptAssetQuote(token: string, orderId: number) {
+  return request<{ success: boolean; message: string }>(
+    `/api/mobile/v1/assets/orders/${orderId}/accept-quote`,
+    { method: 'POST', token, body: { accept_quote: true } });
+}
+
+export async function confirmAssetReceipt(token: string, orderId: number) {
+  return request<{ success: boolean; loan_id: number; loan_number: string; message: string }>(
+    `/api/mobile/v1/assets/orders/${orderId}/confirm-receipt`, { method: 'POST', token });
 }
 
 export async function getCtas(token: string) {
