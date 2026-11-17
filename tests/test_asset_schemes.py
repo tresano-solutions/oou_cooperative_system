@@ -91,7 +91,9 @@ def test_request_quote_acceptance_gate():
     assert b'images/asset-categories/television.jpg' in catalogue.data
     assert b'appliance-catalogue' in catalogue.data
     assert b'0 items selected' in catalogue.data
-    assert b"input.min='1000'" in catalogue.data
+    assert b'min="1000" step="1000"' in catalogue.data
+    assert b'350,000' not in catalogue.data
+    assert b'500,000' not in catalogue.data
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
@@ -237,7 +239,8 @@ def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):
     page = client.get('/dashboard', follow_redirects=True)
     assert page.status_code == 200
     assert b'Comfort at Home' in page.data
-    assert b'View appliances' in page.data
+    assert b'Explore appliances' in page.data
+    assert b'asset-scheme-campaign-v1.png' in page.data
     client.get('/logout')
 
     first = client.post('/tasks/asset-schemes/newsletters',
@@ -258,3 +261,5 @@ def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):
         ).fetchone()
         assert communication is not None
         assert 'choose the appliance' in communication['subject'].lower()
+        assert 'indicative range' not in communication['body'].lower()
+        assert '350,000' not in communication['body']

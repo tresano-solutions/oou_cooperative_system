@@ -45,17 +45,13 @@ def _parse_campaign_date(value, end_of_day=False):
 
 
 def _campaign_body(db, campaign):
-    products = db.execute('''SELECT category, brand, size_spec, estimated_price_min,
-        estimated_price_max FROM asset_products WHERE campaign_id=? AND status='active'
+    products = db.execute('''SELECT category, brand, size_spec
+        FROM asset_products WHERE campaign_id=? AND status='active'
         ORDER BY category, brand, size_spec''', (campaign['id'],)).fetchall()
     choices = []
     for product in products[:12]:
-        price_min = float(product['estimated_price_min'] or 0)
-        price_max = float(product['estimated_price_max'] or 0)
-        price = (f" (indicative range: ₦{price_min:,.0f}–₦{price_max:,.0f})"
-                 if price_min or price_max else '')
         choices.append(f"• {product['category']} — {product['brand'] or 'approved brands'}"
-                       f" {product['size_spec'] or ''}{price}".strip())
+                       f" {product['size_spec'] or ''}".strip())
     choice_text = '\n'.join(choices) or '• Home appliances selected by your cooperative'
     intro = (campaign['newsletter_intro'] or '').strip() or (
         'Acquire the home appliance you have been planning for without paying the full cost at once. '
@@ -69,7 +65,7 @@ def _campaign_body(db, campaign):
         '• You review the final selling price before accepting\n'
         '• Select by appliance type, brand, size and expected budget\n\n'
         'Explore the campaign and submit your interest here: {portal_link}/asset-schemes\n\n'
-        'Terms, eligibility review and final approval apply. Indicative prices may change after supplier quotation.\n\n'
+        'Terms, eligibility review and final approval apply.\n\n'
         'Thank you,\nCooperative Administration'
     )
 
@@ -235,14 +231,17 @@ def order_detail(order_id):
     order = _order(db, order_id)
     member = member_for_user(db)
     staff = current_user.role in {'admin', 'treasurer', 'secretary', 'exco'}
+    can_manage_supplier_cost = current_user.role in {'admin', 'treasurer'}
     if not order or (not staff and (not member or order['member_id'] != member['id'])):
         flash('Asset request not found.', 'danger')
         return redirect(url_for('asset_schemes.catalogue'))
     items = db.execute('SELECT * FROM asset_order_items WHERE order_id=? ORDER BY id', (order_id,)).fetchall()
     events = db.execute('SELECT * FROM asset_order_events WHERE order_id=? ORDER BY id DESC', (order_id,)).fetchall()
     cash_accounts = get_postable_cash_accounts(db) if staff else []
+    template_staff = staff and (order['status'] != 'sourcing_quote' or can_manage_supplier_cost)
     return render_template('asset_schemes/order.html', order=order, items=items, events=events,
-                           staff=staff, delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts)
+                           staff=template_staff, can_manage_supplier_cost=can_manage_supplier_cost,
+                           delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts)
 
 
 @asset_schemes.route('/asset-schemes/manage', methods=['GET', 'POST'])
@@ -563,6 +562,8 @@ def staff_action(order_id):
         flash('Asset request not found.', 'danger'); return redirect(url_for('asset_schemes.manage'))
     try:
         if action == 'quote':
+            if current_user.role not in {'admin', 'treasurer'}:
+                raise ValueError('Only the President/Admin or Treasurer may record supplier costs and issue a quote.')
             if order['status'] != 'sourcing_quote':
                 raise ValueError('This request is not awaiting a quote.')
             selling = finite_float(request.form.get('quoted_selling_price'))
