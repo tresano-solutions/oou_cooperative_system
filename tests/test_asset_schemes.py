@@ -91,6 +91,7 @@ def test_request_quote_acceptance_gate():
     assert b'images/asset-categories/television.jpg' in catalogue.data
     assert b'appliance-catalogue' in catalogue.data
     assert b'0 items selected' in catalogue.data
+    assert b"input.min='1000'" in catalogue.data
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
