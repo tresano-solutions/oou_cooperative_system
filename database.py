@@ -818,10 +818,24 @@ def init_db():
             tenure_months INTEGER DEFAULT 6,
             annual_interest_rate REAL DEFAULT 20,
             repayment_methods TEXT DEFAULT 'salary_deduction,bank_transfer,cash',
+            banner_enabled INTEGER DEFAULT 1,
+            newsletter_enabled INTEGER DEFAULT 0,
+            newsletter_frequency_days INTEGER DEFAULT 7,
+            newsletter_subject TEXT,
+            newsletter_intro TEXT,
+            newsletter_last_sent_at TIMESTAMP,
+            newsletter_next_send_at TIMESTAMP,
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     '''))
+    _add_col(db, 'asset_campaigns', 'banner_enabled', 'INTEGER DEFAULT 1')
+    _add_col(db, 'asset_campaigns', 'newsletter_enabled', 'INTEGER DEFAULT 0')
+    _add_col(db, 'asset_campaigns', 'newsletter_frequency_days', 'INTEGER DEFAULT 7')
+    _add_col(db, 'asset_campaigns', 'newsletter_subject', 'TEXT')
+    _add_col(db, 'asset_campaigns', 'newsletter_intro', 'TEXT')
+    _add_col(db, 'asset_campaigns', 'newsletter_last_sent_at', 'TIMESTAMP')
+    _add_col(db, 'asset_campaigns', 'newsletter_next_send_at', 'TIMESTAMP')
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS asset_products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

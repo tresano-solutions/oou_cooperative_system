@@ -1,11 +1,14 @@
+import hmac
+import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from asset_schemes import delivery_cleared, delivery_dispatch_allowed, finance_terms
 from database import get_db, last_insert_id
+from email_service import run_in_background
 from ledger import (FEE_INCOME, LOANS_RECEIVABLE, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
 import loan_workflow as lw
@@ -15,6 +18,80 @@ from utils import audit, finite_float, member_for_user, notify_member, role_requ
 asset_schemes = Blueprint('asset_schemes', __name__)
 STAGES = ('secretary', 'treasurer', 'president')
 NEXT = {'secretary': 'treasurer', 'treasurer': 'president', 'president': 'approved'}
+
+
+def _parse_campaign_date(value, end_of_day=False):
+    value = (value or '').strip()
+    if not value:
+        return None
+    parsed = datetime.strptime(value, '%Y-%m-%d')
+    if end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59)
+    return parsed
+
+
+def _campaign_body(db, campaign):
+    products = db.execute('''SELECT category, brand, size_spec, estimated_price_min,
+        estimated_price_max FROM asset_products WHERE campaign_id=? AND status='active'
+        ORDER BY category, brand, size_spec''', (campaign['id'],)).fetchall()
+    choices = []
+    for product in products[:12]:
+        price_min = float(product['estimated_price_min'] or 0)
+        price_max = float(product['estimated_price_max'] or 0)
+        price = (f" (indicative range: ₦{price_min:,.0f}–₦{price_max:,.0f})"
+                 if price_min or price_max else '')
+        choices.append(f"• {product['category']} — {product['brand'] or 'approved brands'}"
+                       f" {product['size_spec'] or ''}{price}".strip())
+    choice_text = '\n'.join(choices) or '• Home appliances selected by your cooperative'
+    intro = (campaign['newsletter_intro'] or '').strip() or (
+        'Acquire the home appliance you have been planning for without paying the full cost at once. '
+        'Choose what suits your household and budget, then let your cooperative source and review the final quote with you.'
+    )
+    return (
+        'Dear {first_name},\n\n'
+        f'{intro}\n\nAvailable choices include:\n{choice_text}\n\n'
+        f"Why consider it now:\n• Convenient {campaign['tenure_months']}-month repayment plan\n"
+        '• Cooperative-supported sourcing and approval\n'
+        '• You review the final selling price before accepting\n'
+        '• Select by appliance type, brand, size and expected budget\n\n'
+        'Explore the campaign and submit your interest here: {portal_link}/asset-schemes\n\n'
+        'Terms, eligibility review and final approval apply. Indicative prices may change after supplier quotation.\n\n'
+        'Thank you,\nCooperative Administration'
+    )
+
+
+def _queue_newsletter(db, campaign, portal_url):
+    from blueprints.communications import _process_campaign
+
+    members = db.execute("SELECT id,email FROM members WHERE status='active' ORDER BY id").fetchall()
+    subject = (campaign['newsletter_subject'] or '').strip() or f"{campaign['name']}: choose the appliance you need"
+    db.execute('''INSERT INTO communication_campaigns
+        (title,audience,channel,subject,body,status,recipient_count,created_by)
+        VALUES (?,?,?,?,?,'sending',?,?)''',
+        (f"Asset scheme: {campaign['name']}", 'active', 'email', subject,
+         _campaign_body(db, campaign), len(members), campaign['created_by']))
+    communication_id = last_insert_id(db)
+    skipped = queued = 0
+    for member in members:
+        destination = (member['email'] or '').strip()
+        status = 'queued' if destination else 'skipped'
+        queued += status == 'queued'
+        skipped += status == 'skipped'
+        db.execute('''INSERT INTO communication_recipients
+            (campaign_id,member_id,channel,destination,status,error)
+            VALUES (?,?,'email',?,?,?)''',
+            (communication_id, member['id'], destination, status,
+             '' if destination else 'No email address'))
+    now = datetime.now()
+    next_send = now + timedelta(days=int(campaign['newsletter_frequency_days'] or 7))
+    db.execute('UPDATE communication_campaigns SET skipped_count=? WHERE id=?',
+               (skipped, communication_id))
+    db.execute('''UPDATE asset_campaigns SET newsletter_last_sent_at=?,
+        newsletter_next_send_at=? WHERE id=?''', (now, next_send, campaign['id']))
+    db.commit()
+    if queued:
+        run_in_background(_process_campaign, communication_id, portal_url)
+    return communication_id, queued, skipped
 
 
 def _event(db, order_id, stage, action, comment=''):
@@ -47,9 +124,14 @@ def catalogue():
             return redirect(url_for('asset_schemes.manage'))
         flash('A member profile must be linked to use Asset Schemes.', 'warning')
         return redirect(url_for('main.dashboard'))
-    campaigns = db.execute("SELECT * FROM asset_campaigns WHERE status='open' ORDER BY id DESC").fetchall()
+    now = datetime.now()
+    campaigns = db.execute("""SELECT * FROM asset_campaigns WHERE status='open'
+        AND (opens_at IS NULL OR opens_at <= ?) AND (closes_at IS NULL OR closes_at >= ?)
+        ORDER BY id DESC""", (now, now)).fetchall()
     products = db.execute('''SELECT p.* FROM asset_products p JOIN asset_campaigns c ON c.id=p.campaign_id
-        WHERE p.status='active' AND c.status='open' ORDER BY p.campaign_id DESC, p.name''').fetchall()
+        WHERE p.status='active' AND c.status='open'
+        AND (c.opens_at IS NULL OR c.opens_at <= ?) AND (c.closes_at IS NULL OR c.closes_at >= ?)
+        ORDER BY p.campaign_id DESC, p.name''', (now, now)).fetchall()
     orders = db.execute('SELECT * FROM asset_orders WHERE member_id=? ORDER BY id DESC', (member['id'],)).fetchall()
     return render_template('asset_schemes/catalogue.html', member=member, campaigns=campaigns,
                            products=products, orders=orders)
@@ -60,7 +142,10 @@ def catalogue():
 def apply(campaign_id):
     db = get_db()
     member = member_for_user(db)
-    campaign = db.execute("SELECT * FROM asset_campaigns WHERE id=? AND status='open'", (campaign_id,)).fetchone()
+    now = datetime.now()
+    campaign = db.execute("""SELECT * FROM asset_campaigns WHERE id=? AND status='open'
+        AND (opens_at IS NULL OR opens_at <= ?) AND (closes_at IS NULL OR closes_at >= ?)""",
+        (campaign_id, now, now)).fetchone()
     if not member or not campaign:
         flash('This asset scheme is not available.', 'danger')
         return redirect(url_for('asset_schemes.catalogue'))
@@ -161,10 +246,29 @@ def manage():
             if not name or tenure < 1 or tenure > 60 or rate < 0:
                 raise ValueError('Enter valid scheme terms.')
             methods = ','.join(request.form.getlist('repayment_methods'))
+            status = request.form.get('status', 'draft')
+            if status not in {'draft', 'open'}:
+                raise ValueError('Choose a valid campaign status.')
+            opens_at = _parse_campaign_date(request.form.get('opens_at'))
+            closes_at = _parse_campaign_date(request.form.get('closes_at'), end_of_day=True)
+            if status == 'open' and not closes_at:
+                raise ValueError('Enter a campaign end date before opening it to members.')
+            if opens_at and closes_at and closes_at <= opens_at:
+                raise ValueError('Campaign end date must be after its opening date.')
+            newsletter_enabled = 1 if request.form.get('newsletter_enabled') == '1' else 0
+            frequency = int(request.form.get('newsletter_frequency_days', 7))
+            if frequency < 3 or frequency > 90:
+                raise ValueError('Newsletter frequency must be between 3 and 90 days.')
+            first_send = datetime.now() if status == 'open' and newsletter_enabled else None
             db.execute('''INSERT INTO asset_campaigns
-                (name,description,status,tenure_months,annual_interest_rate,repayment_methods,created_by)
-                VALUES (?,?,?,?,?,?,?)''', (name, request.form.get('description','').strip(),
-                request.form.get('status','draft'), tenure, rate, methods, current_user.id))
+                (name,description,status,opens_at,closes_at,tenure_months,annual_interest_rate,
+                 repayment_methods,banner_enabled,newsletter_enabled,newsletter_frequency_days,
+                 newsletter_subject,newsletter_intro,newsletter_next_send_at,created_by)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (name, request.form.get('description','').strip(), status, opens_at, closes_at,
+                 tenure, rate, methods, 1 if request.form.get('banner_enabled') == '1' else 0,
+                 newsletter_enabled, frequency, request.form.get('newsletter_subject','').strip(),
+                 request.form.get('newsletter_intro','').strip(), first_send, current_user.id))
             db.commit()
             flash('Asset scheme created.', 'success')
         except Exception as exc:
@@ -179,6 +283,84 @@ def manage():
         JOIN members m ON m.id=o.member_id JOIN asset_campaigns c ON c.id=o.campaign_id ORDER BY o.id DESC''').fetchall()
     return render_template('asset_schemes/manage.html', campaigns=campaigns, orders=orders,
                            library=library, campaign_products=campaign_products)
+
+
+@asset_schemes.route('/asset-schemes/campaigns/<int:campaign_id>/settings', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def update_campaign(campaign_id):
+    db = get_db()
+    campaign = db.execute('SELECT * FROM asset_campaigns WHERE id=?', (campaign_id,)).fetchone()
+    if not campaign:
+        flash('Campaign not found.', 'danger')
+        return redirect(url_for('asset_schemes.manage'))
+    try:
+        status = request.form.get('status', campaign['status'])
+        if status not in {'draft', 'open', 'closed'}:
+            raise ValueError('Choose a valid campaign status.')
+        opens_at = _parse_campaign_date(request.form.get('opens_at'))
+        closes_at = _parse_campaign_date(request.form.get('closes_at'), end_of_day=True)
+        if status == 'open' and not closes_at:
+            raise ValueError('An open campaign must have an end date.')
+        if opens_at and closes_at and closes_at <= opens_at:
+            raise ValueError('Campaign end date must be after its opening date.')
+        frequency = int(request.form.get('newsletter_frequency_days', 7))
+        if frequency < 3 or frequency > 90:
+            raise ValueError('Newsletter frequency must be between 3 and 90 days.')
+        enabled = 1 if request.form.get('newsletter_enabled') == '1' else 0
+        next_send = campaign['newsletter_next_send_at']
+        if status == 'open' and enabled and not next_send:
+            next_send = datetime.now()
+        if status != 'open' or not enabled:
+            next_send = None
+        db.execute('''UPDATE asset_campaigns SET status=?,opens_at=?,closes_at=?,banner_enabled=?,
+            newsletter_enabled=?,newsletter_frequency_days=?,newsletter_subject=?,newsletter_intro=?,
+            newsletter_next_send_at=? WHERE id=?''',
+            (status, opens_at, closes_at, 1 if request.form.get('banner_enabled') == '1' else 0,
+             enabled, frequency, request.form.get('newsletter_subject','').strip(),
+             request.form.get('newsletter_intro','').strip(), next_send, campaign_id))
+        db.commit()
+        audit(db, 'ASSET_CAMPAIGN_SETTINGS', 'asset_schemes',
+              f'Campaign {campaign_id} status={status}, newsletter={enabled}, frequency={frequency}')
+        flash('Campaign visibility and newsletter schedule updated.', 'success')
+    except Exception as exc:
+        db.rollback()
+        flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.manage'))
+
+
+@asset_schemes.route('/tasks/asset-schemes/newsletters', methods=['GET', 'POST'])
+def asset_campaign_newsletters():
+    db = get_db()
+    token = (os.environ.get('TASK_RUNNER_TOKEN', '') or '').strip()
+    provided = (request.headers.get('X-Task-Token', '') or request.args.get('token', '')).strip()
+    by_token = bool(token) and hmac.compare_digest(provided, token)
+    by_user = current_user.is_authenticated and current_user.role in {'admin', 'treasurer'}
+    if not (by_token or by_user):
+        return jsonify({'success': False, 'error': 'Unauthorised'}), 403
+    now = datetime.now()
+    due = db.execute('''SELECT * FROM asset_campaigns WHERE status='open'
+        AND newsletter_enabled=1 AND newsletter_next_send_at IS NOT NULL
+        AND newsletter_next_send_at <= ? AND (opens_at IS NULL OR opens_at <= ?)
+        AND (closes_at IS NULL OR closes_at >= ?) ORDER BY id''', (now, now, now)).fetchall()
+    base_url = request.url_root.rstrip('/')
+    results = []
+    for campaign in due:
+        communication_id, queued, skipped = _queue_newsletter(db, campaign, base_url)
+        results.append({'campaign_id': campaign['id'], 'communication_id': communication_id,
+                        'queued': queued, 'skipped': skipped})
+    expired = db.execute("""SELECT COUNT(*) FROM asset_campaigns
+        WHERE status='open' AND closes_at IS NOT NULL AND closes_at < ?""", (now,)).fetchone()[0]
+    db.execute("""UPDATE asset_campaigns SET status='closed',newsletter_next_send_at=NULL
+        WHERE status='open' AND closes_at IS NOT NULL AND closes_at < ?""", (now,))
+    db.commit()
+    if by_user and not by_token:
+        queued_total = sum(item['queued'] for item in results)
+        flash(f'Processed {len(results)} due campaign(s); {queued_total} member email(s) queued.',
+              'success' if results else 'info')
+        return redirect(url_for('asset_schemes.manage'))
+    return jsonify({'success': True, 'campaigns_processed': len(results),
+                    'expired_campaigns_closed': expired, 'results': results})
 
 
 @asset_schemes.route('/asset-schemes/campaigns/<int:campaign_id>/library', methods=['POST'])

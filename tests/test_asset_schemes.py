@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -54,6 +55,7 @@ def test_request_quote_acceptance_gate():
     app = app_module.app
     app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     email = 'asset-flow@example.test'
+    admin_username = 'asset-admin@example.test'
     with app.app_context():
         db = get_db()
         db.execute('DELETE FROM asset_order_events')
@@ -63,8 +65,11 @@ def test_request_quote_acceptance_gate():
         db.execute('DELETE FROM asset_campaigns')
         db.execute('DELETE FROM members WHERE email=?', (email,))
         db.execute('DELETE FROM users WHERE username=?', (email,))
+        db.execute('DELETE FROM users WHERE username=?', (admin_username,))
         db.execute("INSERT INTO users (username,email,password_hash,role,is_active) VALUES (?,?,?,'member',1)",
                    (email, email, generate_password_hash('MemberPass123!')))
+        db.execute("INSERT INTO users (username,email,password_hash,role,is_active) VALUES (?,?,?,'admin',1)",
+                   (admin_username, admin_username, generate_password_hash('AssetAdminPass123!')))
         db.execute("""INSERT INTO members
             (member_number,first_name,last_name,email,status,annual_salary)
             VALUES ('ASSET-TEST','Asset','Member',?,'active',2400000)""", (email,))
@@ -98,7 +103,7 @@ def test_request_quote_acceptance_gate():
         assert order['expected_spend'] == 500000
 
     client.get('/logout')
-    assert client.post('/login', data={'username': 'admin', 'password': 'TestAdmin123'}).status_code in (302, 303)
+    assert client.post('/login', data={'username': admin_username, 'password': 'AssetAdminPass123!'}).status_code in (302, 303)
     manage_page = client.get('/asset-schemes/manage')
     assert manage_page.status_code == 200
     assert b'Requests, quotations and fulfilment' in manage_page.data
@@ -143,3 +148,71 @@ def test_request_quote_acceptance_gate():
         assert order['status'] == 'submitted'
         assert order['approval_stage'] == 'secretary'
         assert order['quote_status'] == 'accepted'
+
+
+def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):
+    import os
+    from werkzeug.security import generate_password_hash
+    os.environ.setdefault('SECRET_KEY', 'asset-scheme-test-secret')
+    os.environ.setdefault('ADMIN_PASSWORD', 'TestAdmin123')
+    os.environ.setdefault('FLASK_DEBUG', '1')
+    os.environ.pop('DATABASE_URL', None)
+    os.environ.setdefault('SQLITE_DB_PATH', os.path.abspath('.test-asset-schemes.db'))
+    os.environ['TASK_RUNNER_TOKEN'] = 'asset-task-test-token'
+    import app as app_module
+    import blueprints.communications as communications_module
+    from database import get_db, last_insert_id
+
+    app = app_module.app
+    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+    email = 'asset-newsletter@example.test'
+    monkeypatch.setattr(communications_module, '_process_campaign', lambda *args, **kwargs: None)
+    now = datetime.now()
+    with app.app_context():
+        db = get_db()
+        db.execute('DELETE FROM members WHERE email=?', (email,))
+        db.execute('DELETE FROM users WHERE username=?', (email,))
+        db.execute("INSERT INTO users (username,email,password_hash,role,is_active) VALUES (?,?,?,'member',1)",
+                   (email, email, generate_password_hash('MemberPass123!')))
+        db.execute("""INSERT INTO members
+            (member_number,first_name,last_name,email,status,annual_salary)
+            VALUES ('ASSET-NEWS','News','Member',?,'active',2400000)""", (email,))
+        db.execute("""INSERT INTO asset_campaigns
+            (name,description,status,opens_at,closes_at,tenure_months,annual_interest_rate,
+             repayment_methods,banner_enabled,newsletter_enabled,newsletter_frequency_days,
+             newsletter_next_send_at)
+            VALUES ('Comfort at Home','Choose household appliances conveniently.','open',?,?,6,20,
+                    'salary_deduction',1,1,7,?)""",
+            (now - timedelta(days=1), now + timedelta(days=30), now - timedelta(minutes=1)))
+        campaign_id = last_insert_id(db)
+        db.execute("""INSERT INTO asset_products
+            (campaign_id,name,category,brand,size_spec,selling_price,estimated_price_min,estimated_price_max)
+            VALUES (?,'Smart TV','Television','Hisense','55 inch',0,350000,500000)""", (campaign_id,))
+        db.commit()
+
+    client = app.test_client()
+    assert client.post('/login', data={'username': email, 'password': 'MemberPass123!'}).status_code in (302, 303)
+    page = client.get('/dashboard', follow_redirects=True)
+    assert page.status_code == 200
+    assert b'Comfort at Home' in page.data
+    assert b'View appliances' in page.data
+    client.get('/logout')
+
+    first = client.post('/tasks/asset-schemes/newsletters',
+                        headers={'X-Task-Token': 'asset-task-test-token'})
+    assert first.status_code == 200
+    assert first.get_json()['campaigns_processed'] == 1
+    second = client.post('/tasks/asset-schemes/newsletters',
+                         headers={'X-Task-Token': 'asset-task-test-token'})
+    assert second.status_code == 200
+    assert second.get_json()['campaigns_processed'] == 0
+    with app.app_context():
+        db = get_db()
+        campaign = db.execute('SELECT * FROM asset_campaigns WHERE id=?', (campaign_id,)).fetchone()
+        assert campaign['newsletter_last_sent_at'] is not None
+        assert campaign['newsletter_next_send_at'] is not None
+        communication = db.execute(
+            "SELECT * FROM communication_campaigns WHERE title='Asset scheme: Comfort at Home' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert communication is not None
+        assert 'choose the appliance' in communication['subject'].lower()

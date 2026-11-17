@@ -11,6 +11,11 @@
     <h2 class="mb-1">Asset Schemes</h2>
     <p class="text-muted mb-0">Manage campaigns, sourcing requests, quotations, approvals and fulfilment.</p>
   </div>
+  {% if current_user.role in ['admin', 'treasurer'] %}
+  <form method="post" action="{{ url_for('asset_schemes.asset_campaign_newsletters') }}">
+    <button class="btn btn-outline-primary"><i class="fas fa-paper-plane me-1"></i>Send due newsletters</button>
+  </form>
+  {% endif %}
 </header>
 
 <section class="asset-admin-grid">
@@ -50,6 +55,21 @@
             <option value="open">Open to members</option>
           </select>
         </div>
+        <div class="row g-2 mb-3">
+          <div class="col-sm-6"><label class="form-label" for="campaign_opens">Opening date</label><input class="form-control" id="campaign_opens" name="opens_at" type="date"></div>
+          <div class="col-sm-6"><label class="form-label" for="campaign_closes">End date</label><input class="form-control" id="campaign_closes" name="closes_at" type="date"><div class="form-text">Required when opening a campaign.</div></div>
+        </div>
+        <fieldset class="border rounded p-3 mb-3">
+          <legend class="h6">Member promotion</legend>
+          <label class="d-block mb-2"><input type="checkbox" name="banner_enabled" value="1" checked> Show campaign banner throughout the member portal</label>
+          <label class="d-block mb-2"><input type="checkbox" name="newsletter_enabled" value="1" checked> Send periodic benefit-led newsletters</label>
+          <label class="form-label" for="campaign_frequency">Email every</label>
+          <select class="form-select mb-2" id="campaign_frequency" name="newsletter_frequency_days"><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option></select>
+          <label class="form-label" for="campaign_subject">Email subject <span class="text-muted">(optional)</span></label>
+          <input class="form-control mb-2" id="campaign_subject" name="newsletter_subject" placeholder="Choose the appliance your household needs">
+          <label class="form-label" for="campaign_intro">Newsletter introduction <span class="text-muted">(optional)</span></label>
+          <textarea class="form-control" id="campaign_intro" name="newsletter_intro" rows="3" placeholder="Explain the member benefit in your cooperative's voice."></textarea>
+        </fieldset>
         <button class="btn btn-primary w-100"><i class="fas fa-plus me-1"></i>Create campaign</button>
       </form>
       {% else %}
@@ -69,6 +89,22 @@
           <span class="badge bg-{{ 'success' if c.status == 'open' else 'secondary' }}">{{ c.status|title }}</span>
         </div>
         {% if current_user.role in ['admin', 'treasurer'] %}
+        <details class="mb-2">
+          <summary class="btn btn-outline-secondary btn-sm">Promotion settings</summary>
+          <form method="post" action="{{ url_for('asset_schemes.update_campaign', campaign_id=c.id) }}" class="mt-3 border rounded p-3">
+            <div class="row g-2">
+              <div class="col-sm-4"><label class="form-label small">Status</label><select class="form-select form-select-sm" name="status">{% for value in ['draft','open','closed'] %}<option value="{{ value }}" {% if c.status == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></div>
+              <div class="col-sm-4"><label class="form-label small">Opening date</label><input class="form-control form-control-sm" name="opens_at" type="date" value="{{ (c.opens_at|string)[:10] if c.opens_at else '' }}"></div>
+              <div class="col-sm-4"><label class="form-label small">End date</label><input class="form-control form-control-sm" name="closes_at" type="date" value="{{ (c.closes_at|string)[:10] if c.closes_at else '' }}"></div>
+              <div class="col-12"><label class="d-block small"><input type="checkbox" name="banner_enabled" value="1" {% if c.banner_enabled %}checked{% endif %}> Keep banner visible on member pages until the end date</label></div>
+              <div class="col-12"><label class="d-block small"><input type="checkbox" name="newsletter_enabled" value="1" {% if c.newsletter_enabled %}checked{% endif %}> Send periodic member newsletters</label></div>
+              <div class="col-sm-4"><label class="form-label small">Email frequency</label><select class="form-select form-select-sm" name="newsletter_frequency_days">{% for days in [7,14,30] %}<option value="{{ days }}" {% if c.newsletter_frequency_days == days %}selected{% endif %}>Every {{ days }} days</option>{% endfor %}</select></div>
+              <div class="col-sm-8"><label class="form-label small">Email subject</label><input class="form-control form-control-sm" name="newsletter_subject" value="{{ c.newsletter_subject or '' }}" placeholder="{{ c.name }}: choose the appliance you need"></div>
+              <div class="col-12"><label class="form-label small">Newsletter introduction</label><textarea class="form-control form-control-sm" name="newsletter_intro" rows="2">{{ c.newsletter_intro or '' }}</textarea></div>
+              <div class="col-12 d-flex justify-content-between align-items-center"><span class="small text-muted">{% if c.newsletter_last_sent_at %}Last sent {{ c.newsletter_last_sent_at }}{% else %}No campaign email sent yet{% endif %}</span><button class="btn btn-primary btn-sm">Save promotion settings</button></div>
+            </div>
+          </form>
+        </details>
         <details>
           <summary class="btn btn-outline-primary btn-sm">Select appliances from library</summary>
           <form method="post" action="{{ url_for('asset_schemes.add_from_library', campaign_id=c.id) }}" class="mt-3 library-picker">

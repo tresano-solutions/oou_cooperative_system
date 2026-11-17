@@ -187,6 +187,7 @@ csrf.exempt(app.view_functions['payments.paystack_webhook'])
 csrf.exempt(app.view_functions['payments.flutterwave_webhook'])
 # Scheduler-driven loan request sweep (authenticated with TASK_RUNNER_TOKEN).
 csrf.exempt(app.view_functions['loans.loan_pipeline_sweep'])
+csrf.exempt(app.view_functions['asset_schemes.asset_campaign_newsletters'])
 # Scheduler-driven CTAS automatic contribution charges (same token guard).
 csrf.exempt(app.view_functions['ctas.ctas_charge_due'])
 
@@ -281,6 +282,7 @@ def utility_processor():
     linked_member_profile = False
     can_switch_to_member_view = False
     active_member_view = False
+    active_asset_campaign = None
     show_feedback_nudge = False
     feedback_features = []
     feedback_improve_options = []
@@ -299,6 +301,16 @@ def utility_processor():
             linked_member_profile = False
         can_switch_to_member_view = role in ('admin', 'treasurer', 'secretary', 'exco') and linked_member_profile
         active_member_view = role == 'member' or (can_switch_to_member_view and session.get('view_mode') == 'member')
+        if active_member_view:
+            try:
+                stamp = datetime.now()
+                active_asset_campaign = db.execute('''SELECT id,name,description,closes_at
+                    FROM asset_campaigns WHERE status='open' AND banner_enabled=1
+                    AND (opens_at IS NULL OR opens_at <= ?)
+                    AND closes_at IS NOT NULL AND closes_at >= ?
+                    ORDER BY closes_at, id DESC LIMIT 1''', (stamp, stamp)).fetchone()
+            except Exception:
+                active_asset_campaign = None
         try:
             row = db.execute(
                 'SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0',
@@ -330,6 +342,7 @@ def utility_processor():
         'linked_member_profile':    linked_member_profile,
         'can_switch_to_member_view': can_switch_to_member_view,
         'active_member_view':       active_member_view,
+        'active_asset_campaign':    active_asset_campaign,
         'show_feedback_nudge':      show_feedback_nudge,
         'feedback_features':        feedback_features,
         'feedback_improve_options': feedback_improve_options,
