@@ -16,11 +16,10 @@ run_tenant() {
   fi
 
   (
-    set -a
-    # Tenant files are root-owned deployment configuration.
-    source "$env_file"
-    set +a
-    if [[ -z "${TASK_RUNNER_TOKEN:-}" ]]; then
+    # Docker env files are data, not shell scripts; values such as MAIL_FROM
+    # may contain spaces and angle brackets. Read only the token we require.
+    TASK_RUNNER_TOKEN="$(sed -n 's/^TASK_RUNNER_TOKEN=//p' "$env_file" | tail -n 1 | tr -d '\r')"
+    if [[ -z "$TASK_RUNNER_TOKEN" ]]; then
       echo "[$tenant] TASK_RUNNER_TOKEN is not configured" >&2
       exit 1
     fi
