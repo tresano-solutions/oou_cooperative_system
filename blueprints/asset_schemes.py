@@ -147,10 +147,13 @@ def order_detail(order_id):
 
 @asset_schemes.route('/asset-schemes/manage', methods=['GET', 'POST'])
 @login_required
-@role_required('admin', 'treasurer')
+@role_required('admin', 'treasurer', 'secretary')
 def manage():
     db = get_db()
     if request.method == 'POST':
+        if current_user.role not in {'admin', 'treasurer'}:
+            flash('Only the President/Admin or Treasurer may create asset campaigns.', 'danger')
+            return redirect(url_for('asset_schemes.manage'))
         try:
             name = request.form['name'].strip()
             tenure = int(request.form.get('tenure_months', 6))
