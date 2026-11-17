@@ -304,7 +304,8 @@ def utility_processor():
         if active_member_view:
             try:
                 stamp = datetime.now()
-                active_asset_campaign = db.execute('''SELECT id,name,description,closes_at
+                active_asset_campaign = db.execute('''SELECT id,name,description,closes_at,
+                    tenure_months,annual_interest_rate,repayment_methods
                     FROM asset_campaigns WHERE status='open' AND banner_enabled=1
                     AND (opens_at IS NULL OR opens_at <= ?)
                     AND closes_at IS NOT NULL AND closes_at >= ?

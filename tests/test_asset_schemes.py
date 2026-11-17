@@ -89,6 +89,7 @@ def test_request_quote_acceptance_gate():
     assert catalogue.status_code == 200
     assert b'What would you like us to source?' in catalogue.data
     assert b'images/asset-categories/television.jpg' in catalogue.data
+    assert catalogue.data.count(b'asset-scheme-campaign-v1.png') == 1
     assert b'appliance-catalogue' in catalogue.data
     assert b'0 items selected' in catalogue.data
     assert b'min="1000" step="1000"' in catalogue.data
@@ -241,6 +242,8 @@ def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):
     assert b'Comfort at Home' in page.data
     assert b'Explore appliances' in page.data
     assert b'asset-scheme-campaign-v1.png' in page.data
+    assert b'6-month repayment plan' in page.data
+    assert b'20' in page.data and b'per annum' in page.data
     client.get('/logout')
 
     first = client.post('/tasks/asset-schemes/newsletters',

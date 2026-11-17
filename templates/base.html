@@ -30,9 +30,10 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/workspace.css') }}">
     <style>
-      .member-campaign-banner{display:block;position:relative;overflow:hidden;margin:0 0 1rem;border:1px solid #d4deeb;border-radius:8px;background:#082c63;text-decoration:none;aspect-ratio:16/5;min-height:190px}
-      .member-campaign-banner img{display:block;width:100%;height:100%;object-fit:cover;object-position:center 36%}.member-campaign-banner__cta{position:absolute;right:1rem;bottom:1rem;padding:.75rem 1rem;border-radius:6px;background:#fdbb18;color:#082c63;font-weight:800;box-shadow:0 8px 22px rgba(0,0,0,.22)}.member-campaign-banner:hover .member-campaign-banner__cta{background:#ffd052}
-      @media(max-width:576px){.member-campaign-banner{aspect-ratio:16/10;min-height:180px}.member-campaign-banner img{object-position:center}.member-campaign-banner__cta{left:.75rem;right:.75rem;bottom:.75rem;text-align:center;padding:.65rem}}
+      .member-campaign-banner{display:block;position:relative;overflow:hidden;margin:0 0 1rem;border:1px solid #d4deeb;border-radius:8px;background:#082c63;color:#fff;text-decoration:none;aspect-ratio:16/5;min-height:220px}
+      .member-campaign-banner img{display:block;width:100%;height:100%;object-fit:cover;object-position:center 36%}.member-campaign-banner::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,20,48,.92) 0%,rgba(3,20,48,.68) 42%,rgba(3,20,48,.08) 72%)}.member-campaign-banner__message{position:absolute;z-index:2;left:1.25rem;top:50%;width:min(52%,620px);transform:translateY(-58%);color:#fff}.member-campaign-banner__message strong{display:block;font-size:clamp(1.35rem,2.4vw,2.35rem);line-height:1.08}.member-campaign-banner__message span{display:block;margin-top:.45rem;font-size:clamp(.9rem,1.2vw,1.05rem)}.member-campaign-banner__cta{position:absolute;z-index:3;right:1rem;bottom:3.25rem;padding:.75rem 1rem;border-radius:6px;background:#fdbb18;color:#082c63;font-weight:800;box-shadow:0 8px 22px rgba(0,0,0,.22)}.member-campaign-banner:hover .member-campaign-banner__cta{background:#ffd052}.member-campaign-banner__ticker{position:absolute;z-index:3;left:0;right:0;bottom:0;overflow:hidden;padding:.55rem 0;background:rgba(4,33,73,.94);color:#fff;white-space:nowrap}.member-campaign-banner__track{display:inline-block;min-width:100%;padding-left:100%;font-weight:700;animation:campaignTicker 22s linear infinite}@keyframes campaignTicker{to{transform:translateX(-100%)}}
+      @media(prefers-reduced-motion:reduce){.member-campaign-banner__track{animation:none;padding-left:1rem;white-space:normal}}
+      @media(max-width:576px){.member-campaign-banner{aspect-ratio:4/3;min-height:285px}.member-campaign-banner img{object-position:center}.member-campaign-banner::after{background:linear-gradient(180deg,rgba(3,20,48,.18) 0%,rgba(3,20,48,.88) 62%,rgba(3,20,48,.96) 100%)}.member-campaign-banner__message{left:1rem;right:1rem;top:auto;bottom:6.7rem;width:auto;transform:none}.member-campaign-banner__message strong{font-size:1.45rem}.member-campaign-banner__message span{font-size:.9rem}.member-campaign-banner__cta{left:1rem;right:1rem;bottom:2.9rem;text-align:center;padding:.6rem}.member-campaign-banner__ticker{padding:.42rem 0}.member-campaign-banner__track{font-size:.82rem;animation-duration:18s}}
     </style>
     <meta name="csrf-token" content="{{ csrf_token() }}">
     {% block extra_css %}{% endblock %}
@@ -389,10 +390,12 @@
                 {% endif %}
             {% endwith %}
 
-            {% if active_member_view and active_asset_campaign %}
+            {% if active_member_view and active_asset_campaign and request.endpoint != 'asset_schemes.catalogue' %}
             <a class="member-campaign-banner" href="{{ url_for('asset_schemes.catalogue') }}" aria-label="Explore {{ active_asset_campaign.name }}">
                 <img src="{{ url_for('static', filename='images/asset-scheme-campaign-v1.png') }}" alt="{{ active_asset_campaign.name }} home appliance campaign">
+                <span class="member-campaign-banner__message"><strong>{{ active_asset_campaign.name }}</strong><span>{{ active_asset_campaign.description or 'Choose useful home appliances now and repay conveniently through your cooperative.' }}</span></span>
                 <span class="member-campaign-banner__cta">Explore appliances <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></span>
+                <span class="member-campaign-banner__ticker"><span class="member-campaign-banner__track">{{ active_asset_campaign.tenure_months }}-month repayment plan &nbsp; • &nbsp; {{ active_asset_campaign.annual_interest_rate }}% per annum &nbsp; • &nbsp; Choose several appliances &nbsp; • &nbsp; Review the final selling price before approval &nbsp; • &nbsp; Campaign closes {{ active_asset_campaign.closes_at|fmtdt('%d %B %Y') }}</span></span>
             </a>
             {% endif %}
 
