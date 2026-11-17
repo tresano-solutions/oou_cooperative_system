@@ -1,10 +1,116 @@
-{% extends 'base.html' %}{% block title %}Asset Scheme Management{% endblock %}{% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3"><div><div class="text-uppercase text-muted small fw-bold">Commerce operations</div><h2>Asset Schemes</h2><p class="text-muted">Manage campaigns, catalogue pricing, approvals and fulfilment.</p></div></div>
-<div class="row g-3 mb-4"><div class="col-lg-5"><div class="card h-100"><div class="card-header bg-white fw-bold">New campaign</div><div class="card-body"><form method="post">
-<div class="mb-2"><label class="form-label">Campaign name</label><input class="form-control" name="name" required></div><div class="mb-2"><label class="form-label">Description</label><textarea class="form-control" name="description"></textarea></div>
-<div class="row"><div class="col"><label class="form-label">Months</label><input class="form-control" name="tenure_months" type="number" min="1" max="60" value="6" required></div><div class="col"><label class="form-label">Annual rate %</label><input class="form-control" name="annual_interest_rate" type="number" min="0" step="0.01" value="20" required></div></div>
-<div class="my-2"><label class="form-label">Repayment methods</label><div>{% for value,label in [('salary_deduction','Salary deduction'),('bank_transfer','Bank transfer'),('cash','Cash')] %}<label class="me-3"><input type="checkbox" name="repayment_methods" value="{{ value }}" {% if value=='salary_deduction' %}checked{% endif %}> {{ label }}</label>{% endfor %}</div></div>
-<div class="mb-3"><label class="form-label">Status</label><select class="form-select" name="status"><option value="draft">Draft</option><option value="open">Open to members</option></select></div><button class="btn btn-primary">Create campaign</button></form></div></div></div>
-<div class="col-lg-7"><div class="card h-100"><div class="card-header bg-white fw-bold">Campaigns and request catalogue</div><div class="card-body">{% if not campaigns %}<p class="text-muted">Create the first campaign.</p>{% endif %}{% for c in campaigns %}<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><div><strong>{{ c.name }}</strong><div class="small text-muted">{{ c.tenure_months }} months · {{ c.annual_interest_rate }}% p.a.</div></div><span class="badge bg-{{ 'success' if c.status=='open' else 'secondary' }}">{{ c.status }}</span></div><hr><form method="post" action="{{ url_for('asset_schemes.add_product', campaign_id=c.id) }}"><div class="row g-2"><div class="col-md-4"><input class="form-control" name="name" placeholder="Option name, e.g. Smart TV" required></div><div class="col-md-3"><input class="form-control" name="category" placeholder="Type, e.g. Television" required></div><div class="col-md-2"><input class="form-control" name="brand" placeholder="Brand or Any"></div><div class="col-md-3"><input class="form-control" name="size_spec" placeholder="Size/capacity"></div><div class="col-md-3"><input class="form-control" name="estimated_price_min" type="number" min="1" step="1000" placeholder="Estimate from" required></div><div class="col-md-3"><input class="form-control" name="estimated_price_max" type="number" min="1" step="1000" placeholder="Estimate to" required></div><div class="col-md-6"><input class="form-control" name="image_url" type="url" placeholder="Product image URL"></div><div class="col-12"><input class="form-control" name="description" placeholder="Specifications or sourcing guidance"></div><div class="col-12"><button class="btn btn-outline-primary btn-sm">Add selectable appliance type</button></div></div></form></div>{% endfor %}</div></div></div></div></div>
-<div class="card"><div class="card-header bg-white fw-bold">Requests, quotations and fulfilment</div><div class="table-responsive"><table class="table mb-0 align-middle"><thead><tr><th>Request</th><th>Member</th><th>Campaign</th><th>Budget / quote</th><th>Stage</th><th></th></tr></thead><tbody>{% for o in orders %}<tr><td>{{ o.order_number }}</td><td>{{ o.first_name }} {{ o.last_name }}</td><td>{{ o.campaign_name }}</td><td>Budget ₦{{ '{:,.2f}'.format(o.expected_spend or 0) }}{% if o.quote_status in ['quoted','accepted'] %}<div class="small text-success">Quote ₦{{ '{:,.2f}'.format(o.selling_subtotal) }}</div>{% endif %}</td><td><span class="badge bg-info text-dark">{{ o.status.replace('_',' ') }}</span><div class="small">{{ o.approval_stage }}</div></td><td><a class="btn btn-sm btn-primary" href="{{ url_for('asset_schemes.order_detail', order_id=o.id) }}">Open</a></td></tr>{% else %}<tr><td colspan="6" class="text-center text-muted py-4">No applications yet.</td></tr>{% endfor %}</tbody></table></div></div>
+{% extends 'base.html' %}
+{% block title %}Asset Scheme Management{% endblock %}
+{% block content %}
+<style>
+.asset-admin-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem}.asset-admin-grid{display:grid;grid-template-columns:minmax(300px,420px) minmax(0,1fr);gap:1rem;align-items:start}.asset-admin-grid .card{min-width:0}.asset-campaign{border:1px solid #dfe6ef;border-radius:8px;padding:1rem;margin-bottom:1rem}.asset-table-card{margin-top:1rem;overflow:hidden}.asset-table-card .table-responsive{max-width:100%}@media(max-width:1050px){.asset-admin-grid{grid-template-columns:1fr}.asset-admin-header{display:block}}
+</style>
+
+<header class="asset-admin-header">
+  <div>
+    <div class="text-uppercase text-muted small fw-bold">Commerce operations</div>
+    <h2 class="mb-1">Asset Schemes</h2>
+    <p class="text-muted mb-0">Manage campaigns, sourcing requests, quotations, approvals and fulfilment.</p>
+  </div>
+</header>
+
+<section class="asset-admin-grid">
+  <div class="card shadow-sm">
+    <div class="card-header bg-white fw-bold">New campaign</div>
+    <div class="card-body">
+      {% if current_user.role in ['admin', 'treasurer'] %}
+      <form method="post">
+        <div class="mb-3">
+          <label class="form-label" for="campaign_name">Campaign name</label>
+          <input class="form-control" id="campaign_name" name="name" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="campaign_description">Description</label>
+          <textarea class="form-control" id="campaign_description" name="description" rows="3"></textarea>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-sm-6">
+            <label class="form-label" for="campaign_tenure">Repayment months</label>
+            <input class="form-control" id="campaign_tenure" name="tenure_months" type="number" min="1" max="60" value="6" required>
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label" for="campaign_rate">Annual rate %</label>
+            <input class="form-control" id="campaign_rate" name="annual_interest_rate" type="number" min="0" step="0.01" value="20" required>
+          </div>
+        </div>
+        <fieldset class="mb-3">
+          <legend class="form-label mb-1">Repayment methods</legend>
+          {% for value, label in [('salary_deduction','Salary deduction'),('bank_transfer','Bank transfer'),('cash','Cash')] %}
+          <label class="d-block mb-1"><input type="checkbox" name="repayment_methods" value="{{ value }}" {% if value == 'salary_deduction' %}checked{% endif %}> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+        <div class="mb-3">
+          <label class="form-label" for="campaign_status">Status</label>
+          <select class="form-select" id="campaign_status" name="status">
+            <option value="draft">Draft</option>
+            <option value="open">Open to members</option>
+          </select>
+        </div>
+        <button class="btn btn-primary w-100"><i class="fas fa-plus me-1"></i>Create campaign</button>
+      </form>
+      {% else %}
+      <p class="text-muted mb-0">Campaign setup is managed by the President/Admin or Treasurer. Your approval queue appears below.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-header bg-white fw-bold">Campaigns and request catalogue</div>
+    <div class="card-body">
+      {% if not campaigns %}<p class="text-muted mb-0">No campaigns have been created.</p>{% endif %}
+      {% for c in campaigns %}
+      <section class="asset-campaign">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
+          <div><strong>{{ c.name }}</strong><div class="small text-muted">{{ c.tenure_months }} months · {{ c.annual_interest_rate }}% p.a.</div></div>
+          <span class="badge bg-{{ 'success' if c.status == 'open' else 'secondary' }}">{{ c.status|title }}</span>
+        </div>
+        {% if current_user.role in ['admin', 'treasurer'] %}
+        <form method="post" action="{{ url_for('asset_schemes.add_product', campaign_id=c.id) }}">
+          <div class="row g-2">
+            <div class="col-md-6"><label class="form-label small">Display name</label><input class="form-control" name="name" placeholder="e.g. Smart television" required></div>
+            <div class="col-md-6"><label class="form-label small">Appliance type</label><input class="form-control" name="category" placeholder="e.g. Television" required></div>
+            <div class="col-md-6"><label class="form-label small">Brand</label><input class="form-control" name="brand" placeholder="Brand or Any suitable brand"></div>
+            <div class="col-md-6"><label class="form-label small">Size / capacity</label><input class="form-control" name="size_spec" placeholder="e.g. 55 inch"></div>
+            <div class="col-md-6"><label class="form-label small">Estimated minimum</label><input class="form-control" name="estimated_price_min" type="number" min="1" step="1000" required></div>
+            <div class="col-md-6"><label class="form-label small">Estimated maximum</label><input class="form-control" name="estimated_price_max" type="number" min="1" step="1000" required></div>
+            <div class="col-12"><label class="form-label small">Product image URL</label><input class="form-control" name="image_url" type="url" placeholder="https://..."></div>
+            <div class="col-12"><label class="form-label small">Specifications or sourcing guidance</label><input class="form-control" name="description"></div>
+            <div class="col-12"><button class="btn btn-outline-primary btn-sm"><i class="fas fa-plus me-1"></i>Add selectable appliance type</button></div>
+          </div>
+        </form>
+        {% else %}
+        <div class="small text-muted">Catalogue setup is read-only for the Secretary.</div>
+        {% endif %}
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="card shadow-sm asset-table-card">
+  <div class="card-header bg-white fw-bold">Requests, quotations and fulfilment</div>
+  <div class="table-responsive">
+    <table class="table mb-0 align-middle">
+      <thead><tr><th>Request</th><th>Member</th><th>Campaign</th><th>Budget / quote</th><th>Stage</th><th class="text-end">Action</th></tr></thead>
+      <tbody>
+      {% for o in orders %}
+        <tr>
+          <td><strong>{{ o.order_number }}</strong></td>
+          <td>{{ o.first_name }} {{ o.last_name }}</td>
+          <td>{{ o.campaign_name }}</td>
+          <td>Budget ₦{{ '{:,.2f}'.format(o.expected_spend or 0) }}{% if o.quote_status in ['quoted','accepted'] %}<div class="small text-success">Quote ₦{{ '{:,.2f}'.format(o.selling_subtotal) }}</div>{% endif %}</td>
+          <td><span class="badge bg-info text-dark">{{ o.status.replace('_',' ')|title }}</span><div class="small text-muted">{{ o.approval_stage|title }}</div></td>
+          <td class="text-end"><a class="btn btn-sm btn-primary" href="{{ url_for('asset_schemes.order_detail', order_id=o.id) }}">Open</a></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">No applications yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}

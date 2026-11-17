@@ -99,6 +99,9 @@ def test_request_quote_acceptance_gate():
 
     client.get('/logout')
     assert client.post('/login', data={'username': 'admin', 'password': 'TestAdmin123'}).status_code in (302, 303)
+    manage_page = client.get('/asset-schemes/manage')
+    assert manage_page.status_code == 200
+    assert b'Requests, quotations and fulfilment' in manage_page.data
     response = client.post(f'/asset-schemes/orders/{order_id}/action', data={
         'action': 'quote', 'quoted_supplier_cost': '450000',
         'quoted_selling_price': '500000', 'quoted_delivery_fee': '15000',
