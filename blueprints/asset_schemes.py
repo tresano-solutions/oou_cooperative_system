@@ -3,16 +3,19 @@ import os
 import random
 from datetime import datetime, timedelta
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 
 from asset_schemes import delivery_cleared, delivery_dispatch_allowed, finance_terms
+from asset_notifications import notify_asset_member, notify_asset_roles
+from asset_documents import (document_rows, ensure_asset_documents, render_asset_pdf,
+                             update_asset_documents)
 from database import get_db, last_insert_id
 from email_service import run_in_background
 from ledger import (FEE_INCOME, LOANS_RECEIVABLE, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
 import loan_workflow as lw
-from utils import (audit, finite_float, member_for_user, notify_member,
+from utils import (audit, finite_float, member_for_user,
                    product_image_data_uri, role_required, validate_image)
 
 
@@ -118,10 +121,8 @@ def _order(db, order_id):
         JOIN members m ON m.id=o.member_id WHERE o.id=?''', (order_id,)).fetchone()
 
 
-def _notify_order(db, order, title, message):
-    if order['email']:
-        notify_member(db, order['email'], title, message, 'info',
-                      f'/asset-schemes/orders/{order["id"]}')
+def _portal_url():
+    return request.url_root.rstrip('/')
 
 
 @asset_schemes.route('/asset-schemes')
@@ -218,6 +219,13 @@ def apply(campaign_id):
              product['purchase_cost'], 0, 0, expected))
     _event(db, order_id, 'quote', 'sourcing_requested',
            f'Member budget ₦{subtotal:,.2f}. {reason}')
+    order = _order(db, order_id)
+    notify_asset_member(db, order, 'Asset request received',
+                        'Your interest has been recorded. The cooperative is sourcing suitable options and will send you a final quote.',
+                        'success', _portal_url())
+    notify_asset_roles(db, order, ('admin', 'treasurer'), 'New asset request to source',
+                       f'{member["first_name"]} {member["last_name"]} submitted an asset request requiring a supplier quote.',
+                       'info', _portal_url())
     db.commit()
     audit(db, 'ASSET_ORDER_SUBMITTED', 'asset_schemes', f'{order_number} submitted')
     flash(f'Asset request {order_number} submitted. The cooperative will now source options and send you a final quote.', 'success')
@@ -238,10 +246,12 @@ def order_detail(order_id):
     items = db.execute('SELECT * FROM asset_order_items WHERE order_id=? ORDER BY id', (order_id,)).fetchall()
     events = db.execute('SELECT * FROM asset_order_events WHERE order_id=? ORDER BY id DESC', (order_id,)).fetchall()
     cash_accounts = get_postable_cash_accounts(db) if staff else []
+    invoice, delivery_order = document_rows(db, order_id)
     template_staff = staff and (order['status'] != 'sourcing_quote' or can_manage_supplier_cost)
     return render_template('asset_schemes/order.html', order=order, items=items, events=events,
                            staff=template_staff, can_manage_supplier_cost=can_manage_supplier_cost,
-                           delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts)
+                           delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts,
+                           invoice=invoice, delivery_order=delivery_order)
 
 
 @asset_schemes.route('/asset-schemes/manage', methods=['GET', 'POST'])
@@ -590,6 +600,7 @@ def staff_action(order_id):
             if action == 'reject':
                 if not comment: raise ValueError('A rejection reason is required.')
                 db.execute("UPDATE asset_orders SET status='rejected',approval_stage='rejected' WHERE id=?", (order_id,))
+                update_asset_documents(db, order_id, invoice_status='rejected', delivery_status='cancelled')
                 _event(db, order_id, stage, 'rejected', comment)
             else:
                 nxt = NEXT[stage]
@@ -615,11 +626,13 @@ def staff_action(order_id):
             db.execute('''UPDATE asset_orders SET status='procured',procured_at=?,procurement_cost=?,
                 procurement_account=?,procurement_reference=?,procurement_journal_id=? WHERE id=?''',
                 (datetime.now(), cost, account, reference, journal_id, order_id))
+            update_asset_documents(db, order_id, delivery_status='procured')
             _event(db, order_id, 'procurement', 'procured', comment)
         elif action == 'dispatch':
             if order['status'] != 'procured': raise ValueError('Record procurement first.')
             if not delivery_dispatch_allowed(order): raise ValueError('Delivery fee must be paid, waived, or marked pay-on-delivery.')
             db.execute("UPDATE asset_orders SET status='ready_for_receipt',dispatched_at=? WHERE id=?", (datetime.now(), order_id))
+            update_asset_documents(db, order_id, delivery_status='ready_for_delivery', ready=True)
             _event(db, order_id, 'delivery', 'dispatched', comment)
         elif action == 'delivery_fee':
             fee_status = request.form.get('delivery_fee_status')
@@ -645,8 +658,37 @@ def staff_action(order_id):
         else:
             raise ValueError('Unknown action.')
         updated = _order(db, order_id)
-        _notify_order(db, updated, 'Asset scheme request updated',
-                      f'Your request {updated["order_number"]} is now {updated["status"].replace("_", " ")}.')
+        if action == 'quote':
+            notify_asset_member(db, updated, 'Your final asset quote is ready',
+                                'Review the cooperative selling price, delivery fee and repayment schedule. Accept, decline, or request a revision.',
+                                'action', _portal_url())
+        elif action == 'reject':
+            notify_asset_member(db, updated, 'Asset request not approved',
+                                f'Your request was not approved. Reason: {comment}', 'warning', _portal_url())
+        elif action == 'approve':
+            if updated['approval_stage'] == 'treasurer':
+                next_roles = ('treasurer',); next_label = 'Treasurer verification'
+            elif updated['approval_stage'] == 'president':
+                next_roles = ('admin',); next_label = 'President approval'
+            else:
+                next_roles = ('admin', 'treasurer'); next_label = 'procurement'
+            notify_asset_member(db, updated, 'Asset request moved forward',
+                                f'Your request passed {stage.title()} review and is now awaiting {next_label}.',
+                                'success', _portal_url())
+            notify_asset_roles(db, updated, next_roles, 'Asset request requires your action',
+                               f'{updated["order_number"]} is awaiting {next_label}.', 'action', _portal_url())
+        elif action == 'procured':
+            notify_asset_member(db, updated, 'Your appliances have been procured',
+                                'The cooperative has purchased your approved items and is preparing them for delivery.',
+                                'success', _portal_url())
+        elif action == 'dispatch':
+            notify_asset_member(db, updated, 'Your appliances are ready',
+                                'Your items are ready for collection or delivery. Confirm receipt in CoopMS only after you receive them.',
+                                'action', _portal_url())
+        elif action == 'delivery_fee':
+            notify_asset_member(db, updated, 'Delivery fee status updated',
+                                f'Your delivery fee is now recorded as {updated["delivery_fee_status"].replace("_", " ")}.',
+                                'info', _portal_url())
         db.commit(); flash('Asset request updated.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
@@ -666,12 +708,96 @@ def accept_quote(order_id):
             raise ValueError('Confirm that you accept the final quote and repayment schedule.')
         db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
             quote_status='accepted',quote_accepted_at=? WHERE id=?""", (datetime.now(), order_id))
+        invoice, delivery_order = ensure_asset_documents(db, order_id)
         _event(db, order_id, 'quote', 'accepted', 'Member accepted final selling price and repayment schedule')
+        _event(db, order_id, 'documents', 'invoice_generated', invoice['invoice_number'])
+        _event(db, order_id, 'documents', 'delivery_order_generated', delivery_order['delivery_number'])
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Final quote accepted',
+                            f'Invoice {invoice["invoice_number"]} and delivery order {delivery_order["delivery_number"]} are ready. Your request is awaiting Secretary review; the loan begins only after you confirm delivery.',
+                            'success', _portal_url())
+        notify_asset_roles(db, updated, ('secretary',), 'Asset request awaiting Secretary review',
+                           f'{updated["order_number"]} has been accepted by the member and requires your review.',
+                           'action', _portal_url())
         db.commit(); audit(db, 'ASSET_QUOTE_ACCEPTED', 'asset_schemes', order['order_number'])
         flash('Final quote accepted. Your request has entered the approval workflow.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/orders/<int:order_id>/decline-quote', methods=['POST'])
+@login_required
+def decline_quote(order_id):
+    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    try:
+        if not order or not member or order['member_id'] != member['id']:
+            raise ValueError('You cannot decline this quote.')
+        if order['status'] != 'awaiting_member_quote' or order['quote_status'] != 'quoted':
+            raise ValueError('There is no final quote awaiting your response.')
+        reason = request.form.get('reason', '').strip() or 'Member declined the final quote.'
+        db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+            quote_status='declined' WHERE id=?""", (order_id,))
+        _event(db, order_id, 'quote', 'declined', reason)
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Asset quote declined',
+                            'Your request has been closed and no loan or accounting entry was created.',
+                            'info', _portal_url())
+        notify_asset_roles(db, updated, ('admin', 'treasurer'), 'Member declined asset quote',
+                           f'{updated["order_number"]} was declined. Reason: {reason}',
+                           'info', _portal_url())
+        db.commit(); audit(db, 'ASSET_QUOTE_DECLINED', 'asset_schemes', f'{order["order_number"]}: {reason}')
+        flash('Quote declined. The request is closed and no loan was created.', 'success')
+    except Exception as exc:
+        db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/orders/<int:order_id>/request-revision', methods=['POST'])
+@login_required
+def request_quote_revision(order_id):
+    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    try:
+        if not order or not member or order['member_id'] != member['id']:
+            raise ValueError('You cannot request a revision for this quote.')
+        if order['status'] != 'awaiting_member_quote' or order['quote_status'] != 'quoted':
+            raise ValueError('There is no final quote awaiting your response.')
+        reason = request.form.get('reason', '').strip()
+        if len(reason) < 5:
+            raise ValueError('Tell the cooperative what should be changed in the quote.')
+        db.execute("""UPDATE asset_orders SET status='sourcing_quote',approval_stage='quote',
+            quote_status='revision_requested' WHERE id=?""", (order_id,))
+        _event(db, order_id, 'quote', 'revision_requested', reason)
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Quote revision requested',
+                            'Your request has returned to the sourcing team. You will be notified when a revised quote is ready.',
+                            'success', _portal_url())
+        notify_asset_roles(db, updated, ('admin', 'treasurer'), 'Asset quote revision requested',
+                           f'{updated["order_number"]} needs a revised quote. Member note: {reason}',
+                           'action', _portal_url())
+        db.commit(); audit(db, 'ASSET_QUOTE_REVISION_REQUESTED', 'asset_schemes', f'{order["order_number"]}: {reason}')
+        flash('Revision requested. The sourcing team has been notified.', 'success')
+    except Exception as exc:
+        db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/orders/<int:order_id>/<document_type>.pdf')
+@login_required
+def asset_document_pdf(order_id, document_type):
+    if document_type not in {'invoice', 'delivery-order'}:
+        return jsonify({'error': 'Document not found.'}), 404
+    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    staff = current_user.role in {'admin', 'treasurer', 'secretary', 'exco'}
+    if not order or (not staff and (not member or order['member_id'] != member['id'])):
+        return jsonify({'error': 'Document not found.'}), 404
+    try:
+        pdf_type = 'invoice' if document_type == 'invoice' else 'delivery_order'
+        buffer, number = render_asset_pdf(db, order_id, pdf_type)
+        filename = f'{document_type}_{number.replace("/", "_")}.pdf'
+        return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name=filename)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
 
 
 @asset_schemes.route('/asset-schemes/orders/<int:order_id>/confirm-receipt', methods=['POST'])
@@ -705,7 +831,18 @@ def confirm_receipt(order_id):
            created_by=current_user.id)
         db.execute("UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=? WHERE id=? AND linked_loan_id IS NULL",
                    (datetime.now(), loan_id, order_id))
+        update_asset_documents(db, order_id, invoice_status='delivered_loan_active',
+                               delivery_status='delivered', confirmed=True,
+                               confirmed_by=current_user.id)
         _event(db, order_id, 'receipt', 'confirmed', f'Loan {loan_number} activated')
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Receipt confirmed and repayment activated',
+                            f'Thank you for confirming delivery. Loan {loan_number} is now active and will follow the agreed repayment schedule.',
+                            'success', _portal_url())
+        notify_asset_roles(db, updated, ('admin', 'secretary', 'treasurer', 'exco'),
+                           'Member confirmed asset receipt',
+                           f'{updated["order_number"]} was received and {loan_number} is now active.',
+                           'success', _portal_url())
         db.commit(); audit(db, 'ASSET_RECEIPT_CONFIRMED', 'asset_schemes', f'{order["order_number"]} -> {loan_number}')
         flash('Receipt confirmed. Your repayment plan is now active.', 'success')
     except Exception as exc:

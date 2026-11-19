@@ -175,6 +175,10 @@ export type AssetOrder = {
   annual_interest_rate: number;
   repayment_method: string;
   quote_note: string;
+  invoice_number: string | null;
+  invoice_status: string | null;
+  delivery_number: string | null;
+  delivery_status: string | null;
   created_at: string;
 };
 

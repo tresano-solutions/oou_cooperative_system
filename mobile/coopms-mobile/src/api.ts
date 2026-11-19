@@ -208,9 +208,21 @@ export async function applyForAssets(token: string, input: Record<string, unknow
 }
 
 export async function acceptAssetQuote(token: string, orderId: number) {
-  return request<{ success: boolean; message: string }>(
+  return request<{ success: boolean; message: string; invoice_number: string; delivery_number: string }>(
     `/api/mobile/v1/assets/orders/${orderId}/accept-quote`,
     { method: 'POST', token, body: { accept_quote: true } });
+}
+
+export async function declineAssetQuote(token: string, orderId: number, reason: string) {
+  return request<{ success: boolean; message: string }>(
+    `/api/mobile/v1/assets/orders/${orderId}/decline-quote`,
+    { method: 'POST', token, body: { reason } });
+}
+
+export async function requestAssetQuoteRevision(token: string, orderId: number, reason: string) {
+  return request<{ success: boolean; message: string }>(
+    `/api/mobile/v1/assets/orders/${orderId}/request-revision`,
+    { method: 'POST', token, body: { reason } });
 }
 
 export async function confirmAssetReceipt(token: string, orderId: number) {

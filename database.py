@@ -952,10 +952,47 @@ def init_db():
             FOREIGN KEY (order_id) REFERENCES asset_orders(id)
         )
     '''))
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_number TEXT UNIQUE NOT NULL,
+            order_id INTEGER UNIQUE NOT NULL,
+            member_id INTEGER NOT NULL,
+            campaign_id INTEGER NOT NULL,
+            issue_date TIMESTAMP NOT NULL,
+            selling_subtotal REAL NOT NULL,
+            finance_charge REAL NOT NULL,
+            total_repayment REAL NOT NULL,
+            delivery_fee REAL DEFAULT 0,
+            status TEXT DEFAULT 'accepted_pending_delivery',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (order_id) REFERENCES asset_orders(id),
+            FOREIGN KEY (member_id) REFERENCES members(id),
+            FOREIGN KEY (campaign_id) REFERENCES asset_campaigns(id)
+        )
+    '''))
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS asset_delivery_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            delivery_number TEXT UNIQUE NOT NULL,
+            order_id INTEGER UNIQUE NOT NULL,
+            invoice_id INTEGER UNIQUE NOT NULL,
+            status TEXT DEFAULT 'pending_approval',
+            issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ready_at TIMESTAMP,
+            confirmed_at TIMESTAMP,
+            confirmed_by INTEGER,
+            FOREIGN KEY (order_id) REFERENCES asset_orders(id),
+            FOREIGN KEY (invoice_id) REFERENCES asset_invoices(id),
+            FOREIGN KEY (confirmed_by) REFERENCES users(id)
+        )
+    '''))
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_products_campaign ON asset_products(campaign_id)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_orders_member ON asset_orders(member_id)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_orders_stage ON asset_orders(approval_stage)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_events_order ON asset_order_events(order_id)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_invoices_member ON asset_invoices(member_id)')
+    _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_asset_delivery_status ON asset_delivery_orders(status)')
 
     # Investments table
     db.execute(_adapt('''

@@ -31,6 +31,7 @@ import {
   changePassword,
   clearToken,
   confirmAssetReceipt,
+  declineAssetQuote,
   getCtas,
   getAssets,
   getDashboard,
@@ -46,6 +47,7 @@ import {
   markAllNotificationsRead,
   previewLoanSchedule,
   registerDevice,
+  requestAssetQuoteRevision,
   requestPasswordReset,
   resolveTenant,
   setPayInPreference,
@@ -1217,6 +1219,7 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
   const [selected, setSelected] = useState<Record<number, { quantity: string; preferred_spend: string }>>({});
   const [signature, setSignature] = useState(memberName);
   const [terms, setTerms] = useState(false);
+  const [quoteNotes, setQuoteNotes] = useState<Record<number, string>>({});
 
   const load = () => getAssets(token).then(setData).catch((error) => Alert.alert('Asset scheme', error instanceof Error ? error.message : 'Could not load the campaign.'));
   useEffect(() => { void load(); }, [token]);
@@ -1254,9 +1257,30 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
 
   async function acceptQuote(orderId: number) {
     setBusy(true);
-    try { const result = await acceptAssetQuote(token, orderId); Alert.alert('Quote accepted', result.message); await load(); }
+    try { const result = await acceptAssetQuote(token, orderId); Alert.alert('Quote accepted', `${result.message}\n\nInvoice: ${result.invoice_number}\nDelivery order: ${result.delivery_number}`); await load(); }
     catch (error) { Alert.alert('Unable to accept quote', error instanceof Error ? error.message : 'Please try again.'); }
     finally { setBusy(false); }
+  }
+
+  async function requestRevision(orderId: number) {
+    const reason = (quoteNotes[orderId] || '').trim();
+    if (reason.length < 5) { Alert.alert('What should change?', 'Enter the product, specification, price, quantity or delivery change you need.'); return; }
+    setBusy(true);
+    try { const result = await requestAssetQuoteRevision(token, orderId, reason); Alert.alert('Revision requested', result.message); setQuoteNotes((current) => ({ ...current, [orderId]: '' })); await load(); }
+    catch (error) { Alert.alert('Unable to request revision', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { setBusy(false); }
+  }
+
+  function declineQuote(orderId: number) {
+    Alert.alert('Decline this quote?', 'This closes the request without creating a loan.', [
+      { text: 'Keep quote', style: 'cancel' },
+      { text: 'Decline', style: 'destructive', onPress: async () => {
+        setBusy(true);
+        try { const result = await declineAssetQuote(token, orderId, quoteNotes[orderId] || ''); Alert.alert('Quote declined', result.message); await load(); }
+        catch (error) { Alert.alert('Unable to decline quote', error instanceof Error ? error.message : 'Please try again.'); }
+        finally { setBusy(false); }
+      } }
+    ]);
   }
 
   async function confirmReceipt(orderId: number) {
@@ -1293,7 +1317,8 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
 
       <View style={styles.card}><Text style={styles.cardTitle}>My asset requests</Text>
         {data.orders.map((order) => <View key={order.id} style={styles.listRow}><Text style={styles.rowTitle}>{order.order_number} · {order.status.replace(/_/g, ' ')}</Text><Text style={styles.rowSub}>{order.campaign_name} · Preferred budget {money(order.preferred_budget)}</Text>
-          {order.quote_status === 'quoted' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Final selling price: {money(order.selling_price || 0)}</Text><Text style={styles.rowSub}>Total repayment {money(order.total_repayment || 0)} · {order.tenure_months} payments of {money(order.monthly_repayment || 0)} · Delivery {money(order.delivery_fee || 0)}</Text><Pressable style={styles.primaryButton} onPress={() => acceptQuote(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Accept final quote</Text></Pressable></View> : null}
+          {order.invoice_number ? <View style={styles.documentBox}><Ionicons name="document-text" size={20} color={BLUE} /><View style={{ flex: 1 }}><Text style={styles.rowTitle}>Invoice {order.invoice_number}</Text><Text style={styles.rowSub}>Delivery order {order.delivery_number} · {(order.delivery_status || '').replace(/_/g, ' ')}</Text><Text style={styles.quickHelper}>The loan starts only after you confirm receipt.</Text></View></View> : null}
+          {order.quote_status === 'quoted' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Final selling price: {money(order.selling_price || 0)}</Text><Text style={styles.rowSub}>Total repayment {money(order.total_repayment || 0)} · {order.tenure_months} payments of {money(order.monthly_repayment || 0)} · Delivery {money(order.delivery_fee || 0)}</Text><Pressable style={styles.primaryButton} onPress={() => acceptQuote(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Accept final quote</Text></Pressable><TextInput value={quoteNotes[order.id] || ''} onChangeText={(value) => setQuoteNotes((current) => ({ ...current, [order.id]: value }))} style={styles.inputLight} placeholder="What should change, or why are you declining?" multiline /><View style={styles.assetQuoteActions}><Pressable style={[styles.secondaryButton, { flex: 1 }]} onPress={() => requestRevision(order.id)} disabled={busy}><Text style={styles.secondaryButtonText}>Request revision</Text></Pressable><Pressable style={styles.dangerOutlineButton} onPress={() => declineQuote(order.id)} disabled={busy}><Text style={styles.dangerOutlineText}>Decline</Text></Pressable></View></View> : null}
           {order.status === 'ready_for_receipt' ? <Pressable style={styles.primaryButton} onPress={() => confirmReceipt(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Confirm items received</Text></Pressable> : null}
         </View>)}
         {data.orders.length === 0 ? <Text style={styles.emptyText}>No asset requests yet.</Text> : null}
@@ -1560,6 +1585,10 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#fff', fontWeight: '800', fontSize: 16 },
   secondaryButton: { minHeight: 48, backgroundColor: '#EEF4FF', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 4, marginBottom: 10 },
   secondaryButtonText: { color: BLUE, fontWeight: '900' },
+  assetQuoteActions: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  documentBox: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', backgroundColor: '#F4F8FF', borderWidth: 1, borderColor: '#D7E7FF', borderRadius: 12, padding: 12, marginTop: 10 },
+  dangerOutlineButton: { flex: 1, minHeight: 48, borderWidth: 1, borderColor: '#D93030', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 4, marginBottom: 10 },
+  dangerOutlineText: { color: '#B42318', fontWeight: '900' },
   textButton: { alignItems: 'center', paddingVertical: 12 },
   resetPanel: { borderWidth: 1, borderColor: '#D7E7FF', backgroundColor: '#F4F8FF', borderRadius: 14, padding: 12, marginTop: 2, marginBottom: 8 },
   dangerButton: { minHeight: 48, backgroundColor: '#D93030', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 4 },

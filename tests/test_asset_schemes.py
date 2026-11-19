@@ -115,6 +115,7 @@ def test_request_quote_acceptance_gate():
         'terms_accepted': True,
     })
     assert mobile_apply.status_code == 201
+    mobile_order_id = mobile_apply.get_json()['order_id']
     assert mobile_apply.get_json()['order_number'].startswith('AS/')
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
@@ -205,6 +206,35 @@ def test_request_quote_acceptance_gate():
 
     assert client.get(f'/asset-schemes/orders/{order_id}').status_code == 200
 
+    # Mobile members can request a revised quote or close it without creating a loan.
+    response = client.post(f'/asset-schemes/orders/{mobile_order_id}/action', data={
+        'action': 'quote', 'quoted_supplier_cost': '420000',
+        'quoted_selling_price': '480000', 'quoted_delivery_fee': '12000',
+        'quote_note': 'Initial mobile quote',
+    })
+    assert response.status_code in (302, 303)
+    revised = client.post(f'/api/mobile/v1/assets/orders/{mobile_order_id}/request-revision',
+                          headers=mobile_headers, json={'reason': 'Please quote a smaller television.'})
+    assert revised.status_code == 200
+    with app.app_context():
+        revised_order = get_db().execute('SELECT * FROM asset_orders WHERE id=?', (mobile_order_id,)).fetchone()
+        assert revised_order['status'] == 'sourcing_quote'
+        assert revised_order['quote_status'] == 'revision_requested'
+    client.post(f'/asset-schemes/orders/{mobile_order_id}/action', data={
+        'action': 'quote', 'quoted_supplier_cost': '390000',
+        'quoted_selling_price': '450000', 'quoted_delivery_fee': '10000',
+        'quote_note': 'Revised mobile quote',
+    })
+    declined = client.post(f'/api/mobile/v1/assets/orders/{mobile_order_id}/decline-quote',
+                           headers=mobile_headers, json={'reason': 'I will not proceed now.'})
+    assert declined.status_code == 200
+    with app.app_context():
+        declined_order = get_db().execute('SELECT * FROM asset_orders WHERE id=?', (mobile_order_id,)).fetchone()
+        assert declined_order['status'] == 'cancelled'
+        assert declined_order['quote_status'] == 'declined'
+        assert get_db().execute('SELECT COUNT(*) FROM loans WHERE description=?',
+                                (f'Asset scheme order {declined_order["order_number"]}',)).fetchone()[0] == 0
+
     client.get('/logout')
     client.post('/login', data={'username': email, 'password': 'MemberPass123!'})
     response = client.post(f'/asset-schemes/orders/{order_id}/accept-quote', data={'accept_quote': '1'})
@@ -214,6 +244,22 @@ def test_request_quote_acceptance_gate():
         assert order['status'] == 'submitted'
         assert order['approval_stage'] == 'secretary'
         assert order['quote_status'] == 'accepted'
+        invoice = get_db().execute('SELECT * FROM asset_invoices WHERE order_id=?', (order_id,)).fetchone()
+        delivery = get_db().execute('SELECT * FROM asset_delivery_orders WHERE order_id=?', (order_id,)).fetchone()
+        assert invoice['status'] == 'accepted_pending_delivery'
+        assert delivery['status'] == 'pending_approval'
+        assert get_db().execute('SELECT COUNT(*) FROM loans WHERE description=?',
+                                (f'Asset scheme order {order["order_number"]}',)).fetchone()[0] == 0
+        member_user = get_db().execute('SELECT id FROM users WHERE username=?', (email,)).fetchone()
+        admin_user = get_db().execute('SELECT id FROM users WHERE username=?', (admin_username,)).fetchone()
+        assert get_db().execute('SELECT COUNT(*) FROM notifications WHERE user_id=?',
+                                (member_user['id'],)).fetchone()[0] >= 3
+        assert get_db().execute('SELECT COUNT(*) FROM notifications WHERE user_id=?',
+                                (admin_user['id'],)).fetchone()[0] >= 1
+    invoice_pdf = client.get(f'/asset-schemes/orders/{order_id}/invoice.pdf')
+    delivery_pdf = client.get(f'/asset-schemes/orders/{order_id}/delivery-order.pdf')
+    assert invoice_pdf.status_code == 200 and invoice_pdf.mimetype == 'application/pdf'
+    assert delivery_pdf.status_code == 200 and delivery_pdf.mimetype == 'application/pdf'
 
 
 def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):

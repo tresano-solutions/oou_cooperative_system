@@ -48,6 +48,8 @@ from utils import (
     pause_message,
 )
 from asset_schemes import delivery_cleared, finance_terms
+from asset_notifications import notify_asset_member, notify_asset_roles
+from asset_documents import ensure_asset_documents, update_asset_documents
 from ledger import LOANS_RECEIVABLE, post_journal_required
 
 mobile_api = Blueprint('mobile_api', __name__)
@@ -846,8 +848,18 @@ def _mobile_asset_order(db, order):
         'tenure_months': int(order['tenure_months'] or 0),
         'annual_interest_rate': float(order['annual_interest_rate'] or 0),
         'repayment_method': order['repayment_method'], 'quote_note': order['quote_note'] or '',
+        'invoice_number': order['invoice_number'] if 'invoice_number' in order.keys() else None,
+        'invoice_status': order['invoice_status'] if 'invoice_status' in order.keys() else None,
+        'delivery_number': order['delivery_number'] if 'delivery_number' in order.keys() else None,
+        'delivery_status': order['delivery_status'] if 'delivery_status' in order.keys() else None,
         'created_at': str(order['created_at'] or ''),
     }
+
+
+def _asset_order_for_notifications(db, order_id):
+    return db.execute('''SELECT o.*,c.name campaign_name,m.first_name,m.last_name,m.email
+        FROM asset_orders o JOIN asset_campaigns c ON c.id=o.campaign_id
+        JOIN members m ON m.id=o.member_id WHERE o.id=?''', (order_id,)).fetchone()
 
 
 @mobile_api.route('/api/mobile/v1/assets')
@@ -869,8 +881,12 @@ def mobile_assets():
             'description': row['description'] or '',
             'image_url': _mobile_asset_image(row['category'], row['image_url']),
         } for row in rows]
-    order_rows = db.execute('''SELECT o.*,c.name campaign_name FROM asset_orders o
-        JOIN asset_campaigns c ON c.id=o.campaign_id WHERE o.member_id=? ORDER BY o.id DESC''',
+    order_rows = db.execute('''SELECT o.*,c.name campaign_name,ai.invoice_number,
+        ai.status invoice_status,ado.delivery_number,ado.status delivery_status
+        FROM asset_orders o JOIN asset_campaigns c ON c.id=o.campaign_id
+        LEFT JOIN asset_invoices ai ON ai.order_id=o.id
+        LEFT JOIN asset_delivery_orders ado ON ado.order_id=o.id
+        WHERE o.member_id=? ORDER BY o.id DESC''',
         (g.member['id'],)).fetchall()
     orders = [_mobile_asset_order(db, row) for row in order_rows]
     return jsonify({'success': True, 'campaigns': campaigns, 'products': products, 'orders': orders,
@@ -938,6 +954,14 @@ def mobile_assets_apply():
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment) VALUES (?, 'quote','sourcing_requested',?,?,?)''',
         (order_id, g.user_id, g.username, f'Member preferred budget ₦{subtotal:,.2f}. {reason}'))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Asset request received',
+                        'Your interest has been recorded. The cooperative is sourcing suitable options and will send you a final quote.',
+                        'success', portal_url)
+    notify_asset_roles(db, notification_order, ('admin', 'treasurer'), 'New asset request to source',
+                       f'{g.member["first_name"]} {g.member["last_name"]} submitted an asset request requiring a supplier quote.',
+                       'info', portal_url)
     db.commit()
     return jsonify({'success': True, 'order_id': order_id, 'order_number': order_number,
                     'message': 'Your request was submitted for supplier sourcing.'}), 201
@@ -956,12 +980,87 @@ def mobile_assets_accept_quote(order_id):
         return _json_error('Confirm that you accept the final selling price and repayment schedule.', 400, 'acceptance_required')
     db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
         quote_status='accepted',quote_accepted_at=? WHERE id=?""", (datetime.now(), order_id))
+    invoice, delivery_order = ensure_asset_documents(db, order_id)
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment)
         VALUES (?,'quote','accepted',?,?, 'Member accepted final selling price and repayment schedule')''',
         (order_id, g.user_id, g.username))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'documents','invoice_generated',?,?,?)''',
+        (order_id, g.user_id, g.username, invoice['invoice_number']))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'documents','delivery_order_generated',?,?,?)''',
+        (order_id, g.user_id, g.username, delivery_order['delivery_number']))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Final quote accepted',
+                        f'Invoice {invoice["invoice_number"]} and delivery order {delivery_order["delivery_number"]} are ready. Your request is awaiting Secretary review; the loan begins only after you confirm delivery.',
+                        'success', portal_url)
+    notify_asset_roles(db, notification_order, ('secretary',), 'Asset request awaiting Secretary review',
+                       f'{notification_order["order_number"]} has been accepted by the member and requires your review.',
+                       'action', portal_url)
     db.commit()
-    return jsonify({'success': True, 'message': 'Quote accepted and submitted for approval.'})
+    return jsonify({'success': True, 'message': 'Quote accepted and submitted for approval.',
+                    'invoice_number': invoice['invoice_number'],
+                    'delivery_number': delivery_order['delivery_number']})
+
+
+@mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/decline-quote', methods=['POST'])
+@member_required
+def mobile_assets_decline_quote(order_id):
+    db = g.db
+    order = db.execute('SELECT * FROM asset_orders WHERE id=? AND member_id=?',
+                       (order_id, g.member['id'])).fetchone()
+    if not order or order['status'] != 'awaiting_member_quote' or order['quote_status'] != 'quoted':
+        return _json_error('There is no final quote awaiting your response.', 409, 'quote_unavailable')
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get('reason') or '').strip() or 'Member declined the final quote.'
+    db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+        quote_status='declined' WHERE id=?""", (order_id,))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'quote','declined',?,?,?)''', (order_id, g.user_id, g.username, reason))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Asset quote declined',
+                        'Your request has been closed and no loan or accounting entry was created.',
+                        'info', portal_url)
+    notify_asset_roles(db, notification_order, ('admin', 'treasurer'), 'Member declined asset quote',
+                       f'{notification_order["order_number"]} was declined. Reason: {reason}',
+                       'info', portal_url)
+    db.commit()
+    return jsonify({'success': True, 'message': 'Quote declined. No loan was created.'})
+
+
+@mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/request-revision', methods=['POST'])
+@member_required
+def mobile_assets_request_revision(order_id):
+    db = g.db
+    order = db.execute('SELECT * FROM asset_orders WHERE id=? AND member_id=?',
+                       (order_id, g.member['id'])).fetchone()
+    if not order or order['status'] != 'awaiting_member_quote' or order['quote_status'] != 'quoted':
+        return _json_error('There is no final quote awaiting your response.', 409, 'quote_unavailable')
+    reason = str((request.get_json(silent=True) or {}).get('reason') or '').strip()
+    if len(reason) < 5:
+        return _json_error('Tell the cooperative what should be changed in the quote.', 400, 'reason_required')
+    db.execute("""UPDATE asset_orders SET status='sourcing_quote',approval_stage='quote',
+        quote_status='revision_requested' WHERE id=?""", (order_id,))
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'quote','revision_requested',?,?,?)''',
+        (order_id, g.user_id, g.username, reason))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Quote revision requested',
+                        'Your request has returned to the sourcing team. You will be notified when a revised quote is ready.',
+                        'success', portal_url)
+    notify_asset_roles(db, notification_order, ('admin', 'treasurer'), 'Asset quote revision requested',
+                       f'{notification_order["order_number"]} needs a revised quote. Member note: {reason}',
+                       'action', portal_url)
+    db.commit()
+    return jsonify({'success': True, 'message': 'Revision requested. The sourcing team has been notified.'})
 
 
 @mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/confirm-receipt', methods=['POST'])
@@ -995,10 +1094,22 @@ def mobile_assets_confirm_receipt(order_id):
        created_by=g.user_id)
     db.execute("UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=? WHERE id=? AND linked_loan_id IS NULL",
                (datetime.now(), loan_id, order_id))
+    update_asset_documents(db, order_id, invoice_status='delivered_loan_active',
+                           delivery_status='delivered', confirmed=True,
+                           confirmed_by=g.user_id)
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment)
         VALUES (?,'receipt','confirmed',?,?,?)''',
         (order_id, g.user_id, g.username, f'Loan {loan_number} activated'))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Receipt confirmed and repayment activated',
+                        f'Thank you for confirming delivery. Loan {loan_number} is now active and will follow the agreed repayment schedule.',
+                        'success', portal_url)
+    notify_asset_roles(db, notification_order, ('admin', 'secretary', 'treasurer', 'exco'),
+                       'Member confirmed asset receipt',
+                       f'{notification_order["order_number"]} was received and {loan_number} is now active.',
+                       'success', portal_url)
     db.commit()
     return jsonify({'success': True, 'loan_id': loan_id, 'loan_number': loan_number,
                     'message': 'Receipt confirmed. Your repayment plan is now active.'})
