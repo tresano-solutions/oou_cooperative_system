@@ -939,6 +939,12 @@ def init_db():
         )
     '''))
     _add_col(db, 'asset_order_items', 'expected_unit_spend', 'REAL DEFAULT 0')
+    _add_col(db, 'asset_order_items', 'size_spec', 'TEXT')
+    _add_col(db, 'asset_order_items', 'agreed_product_name', 'TEXT')
+    _add_col(db, 'asset_order_items', 'agreed_brand', 'TEXT')
+    _add_col(db, 'asset_order_items', 'agreed_model', 'TEXT')
+    _add_col(db, 'asset_order_items', 'agreed_specification', 'TEXT')
+    _add_col(db, 'asset_order_items', 'agreed_warranty', 'TEXT')
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS asset_order_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

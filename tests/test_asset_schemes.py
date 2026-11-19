@@ -203,6 +203,11 @@ def test_request_quote_acceptance_gate():
         assert order['status'] == 'awaiting_member_quote'
         assert order['total_repayment'] == 550000
         assert order['delivery_fee'] == 15000
+        agreed = get_db().execute('SELECT * FROM asset_order_items WHERE order_id=?', (order_id,)).fetchone()
+        assert agreed['agreed_product_name'] == 'Smart TV'
+        assert agreed['agreed_brand'] == 'Any'
+        assert agreed['agreed_specification'] == '55 inch'
+        assert agreed['unit_selling_price'] == 500000
 
     assert client.get(f'/asset-schemes/orders/{order_id}').status_code == 200
 
@@ -260,6 +265,38 @@ def test_request_quote_acceptance_gate():
     delivery_pdf = client.get(f'/asset-schemes/orders/{order_id}/delivery-order.pdf')
     assert invoice_pdf.status_code == 200 and invoice_pdf.mimetype == 'application/pdf'
     assert delivery_pdf.status_code == 200 and delivery_pdf.mimetype == 'application/pdf'
+    with app.app_context():
+        db = get_db()
+        db.execute("""UPDATE asset_orders SET status='ready_for_receipt',approval_stage='approved',
+            delivery_fee_status='waived',approved_at=CURRENT_TIMESTAMP WHERE id=?""", (order_id,))
+        db.execute("UPDATE asset_delivery_orders SET status='ready_for_delivery' WHERE order_id=?", (order_id,))
+        db.commit()
+    client.get('/logout')
+    client.post('/login', data={'username': admin_username, 'password': 'AssetAdminPass123!'})
+    confirmed = client.post(f'/asset-schemes/orders/{order_id}/confirm-receipt-officer',
+                            data={'confirmation_note': 'Collected at cooperative office; DO signed.'})
+    assert confirmed.status_code in (302, 303)
+    with app.app_context():
+        db = get_db()
+        delivered = db.execute('SELECT * FROM asset_orders WHERE id=?', (order_id,)).fetchone()
+        loan = db.execute('SELECT * FROM loans WHERE id=?', (delivered['linked_loan_id'],)).fetchone()
+        delivery = db.execute('SELECT * FROM asset_delivery_orders WHERE order_id=?', (order_id,)).fetchone()
+        event = db.execute("""SELECT * FROM asset_order_events WHERE order_id=?
+            AND action='confirmed' ORDER BY id DESC LIMIT 1""", (order_id,)).fetchone()
+        assert delivered['status'] == 'received'
+        assert loan['status'] == 'active'
+        assert loan['submission_channel'] == 'asset_scheme_officer'
+        assert delivery['status'] == 'delivered' and delivery['confirmed_by'] == admin_user['id']
+        assert event['actor_name'] == admin_username
+        loan_count = db.execute('SELECT COUNT(*) FROM loans WHERE description=?',
+                                (f'Asset scheme order {delivered["order_number"]}',)).fetchone()[0]
+        assert loan_count == 1
+    repeated = client.post(f'/asset-schemes/orders/{order_id}/confirm-receipt-officer',
+                           data={'confirmation_note': 'Attempted duplicate confirmation.'})
+    assert repeated.status_code in (302, 303)
+    with app.app_context():
+        assert get_db().execute('SELECT COUNT(*) FROM loans WHERE description=?',
+                                (f'Asset scheme order {delivered["order_number"]}',)).fetchone()[0] == 1
 
 
 def test_active_campaign_banner_and_newsletter_schedule(monkeypatch):

@@ -10,9 +10,10 @@ from asset_schemes import delivery_cleared, delivery_dispatch_allowed, finance_t
 from asset_notifications import notify_asset_member, notify_asset_roles
 from asset_documents import (document_rows, ensure_asset_documents, render_asset_pdf,
                              update_asset_documents)
+from asset_fulfilment import activate_delivered_asset
 from database import get_db, last_insert_id
 from email_service import run_in_background
-from ledger import (FEE_INCOME, LOANS_RECEIVABLE, OPERATING_EXPENSES,
+from ledger import (FEE_INCOME, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
 import loan_workflow as lw
 from utils import (audit, finite_float, member_for_user,
@@ -213,10 +214,10 @@ def apply(campaign_id):
     order_id = last_insert_id(db)
     for product, qty, expected in selected:
         db.execute('''INSERT INTO asset_order_items
-            (order_id,product_id,product_name,brand,model,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?)''',
-            (order_id, product['id'], product['name'], product['brand'], product['model'], qty,
-             product['purchase_cost'], 0, 0, expected))
+            (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
+             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            (order_id, product['id'], product['name'], product['brand'], product['model'],
+             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected))
     _event(db, order_id, 'quote', 'sourcing_requested',
            f'Member budget ₦{subtotal:,.2f}. {reason}')
     order = _order(db, order_id)
@@ -576,11 +577,44 @@ def staff_action(order_id):
                 raise ValueError('Only the President/Admin or Treasurer may record supplier costs and issue a quote.')
             if order['status'] != 'sourcing_quote':
                 raise ValueError('This request is not awaiting a quote.')
-            selling = finite_float(request.form.get('quoted_selling_price'))
             supplier_cost = finite_float(request.form.get('quoted_supplier_cost'))
             delivery = finite_float(request.form.get('quoted_delivery_fee') or 0)
+            quote_items = db.execute(
+                'SELECT * FROM asset_order_items WHERE order_id=? ORDER BY id', (order_id,)
+            ).fetchall()
+            if not quote_items:
+                raise ValueError('This request has no appliance items to quote.')
+            item_updates = []
+            selling = 0.0
+            legacy_total = request.form.get('quoted_selling_price')
+            for item in quote_items:
+                item_id = item['id']
+                name = request.form.get(f'agreed_product_name_{item_id}', '').strip()
+                brand = request.form.get(f'agreed_brand_{item_id}', '').strip()
+                model = request.form.get(f'agreed_model_{item_id}', '').strip()
+                specification = request.form.get(f'agreed_specification_{item_id}', '').strip()
+                warranty = request.form.get(f'agreed_warranty_{item_id}', '').strip()
+                unit_value = request.form.get(f'item_unit_price_{item_id}')
+                # Keep existing single-item API/tests compatible while moving the UI
+                # to line-level agreed products and prices.
+                if not unit_value and legacy_total and len(quote_items) == 1:
+                    unit_value = finite_float(legacy_total) / max(int(item['quantity'] or 1), 1)
+                unit_price = finite_float(unit_value)
+                name = name or item['product_name']
+                brand = brand or item['brand'] or 'To be confirmed'
+                specification = specification or item['size_spec'] or item['product_name']
+                if not name or not brand or not specification or unit_price <= 0:
+                    raise ValueError('Complete the final item name, brand, specification and selling price for every appliance.')
+                quantity = max(int(item['quantity'] or 1), 1)
+                selling += unit_price * quantity
+                item_updates.append((name, brand, model, specification, warranty, unit_price, item_id))
+            selling = round(selling, 2)
             if selling <= 0 or supplier_cost <= 0 or selling < supplier_cost or delivery < 0:
                 raise ValueError('Enter valid supplier cost, selling price and delivery fee.')
+            for values in item_updates:
+                db.execute('''UPDATE asset_order_items SET agreed_product_name=?,agreed_brand=?,
+                    agreed_model=?,agreed_specification=?,agreed_warranty=?,unit_selling_price=?
+                    WHERE id=?''', values)
             interest, total, monthly = finance_terms(selling, order['annual_interest_rate'], order['tenure_months'])
             db.execute('''UPDATE asset_orders SET status='awaiting_member_quote',quote_status='quoted',
                 selling_subtotal=?,interest_amount=?,total_repayment=?,monthly_repayment=?,
@@ -807,34 +841,8 @@ def confirm_receipt(order_id):
     try:
         if not order or not member or order['member_id'] != member['id']:
             raise ValueError('You cannot confirm this order.')
-        if order['status'] != 'ready_for_receipt': raise ValueError('This order is not ready for receipt confirmation.')
-        if not delivery_cleared(order): raise ValueError('The delivery fee has not been cleared.')
-        if order['linked_loan_id']: raise ValueError('Receipt was already confirmed.')
-        loan_number = f"LOAN/AS/{datetime.now():%Y%m%d}/{random.randint(1000,9999)}"
-        db.execute('''INSERT INTO loans
-            (loan_number,member_id,amount,purpose,description,tenure,interest_rate,interest_method,
-             total_repayment,balance,status,approval_stage,disbursed_amount,disbursement_date,
-             approved_at,terms_accepted,signature_name,date_applied,submission_channel)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (loan_number, member['id'], order['selling_subtotal'], 'Asset Purchase',
-             f"Asset scheme order {order['order_number']}", order['tenure_months'],
-             order['annual_interest_rate'], 'flat', order['total_repayment'],
-             order['total_repayment'], 'active', 'approved', order['selling_subtotal'],
-             datetime.now(), order['approved_at'], 1, order['signature_name'], order['submitted_at'], 'asset_scheme'))
-        loan_id = last_insert_id(db)
-        # Selling price becomes the member receivable; interest remains
-        # unearned and is recognised by the normal repayment splitter.
-        post_journal_required(db, f"Asset delivered - {order['order_number']}", [
-            {'account': LOANS_RECEIVABLE, 'debit': order['selling_subtotal'], 'memo': loan_number},
-            {'account': '4050', 'credit': order['selling_subtotal'], 'memo': order['order_number']},
-        ], reference=order['order_number'], source_module='asset_scheme', source_id=order_id,
-           created_by=current_user.id)
-        db.execute("UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=? WHERE id=? AND linked_loan_id IS NULL",
-                   (datetime.now(), loan_id, order_id))
-        update_asset_documents(db, order_id, invoice_status='delivered_loan_active',
-                               delivery_status='delivered', confirmed=True,
-                               confirmed_by=current_user.id)
-        _event(db, order_id, 'receipt', 'confirmed', f'Loan {loan_number} activated')
+        loan_id, loan_number = activate_delivered_asset(
+            db, order, current_user.id, current_user.username, 'asset_scheme_member')
         updated = _order(db, order_id)
         notify_asset_member(db, updated, 'Receipt confirmed and repayment activated',
                             f'Thank you for confirming delivery. Loan {loan_number} is now active and will follow the agreed repayment schedule.',
@@ -845,6 +853,36 @@ def confirm_receipt(order_id):
                            'success', _portal_url())
         db.commit(); audit(db, 'ASSET_RECEIPT_CONFIRMED', 'asset_schemes', f'{order["order_number"]} -> {loan_number}')
         flash('Receipt confirmed. Your repayment plan is now active.', 'success')
+    except Exception as exc:
+        db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/orders/<int:order_id>/confirm-receipt-officer', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer', 'secretary')
+def confirm_receipt_officer(order_id):
+    db = get_db(); order = _order(db, order_id)
+    try:
+        if not order:
+            raise ValueError('Asset request not found.')
+        note = request.form.get('confirmation_note', '').strip()
+        if len(note) < 5:
+            raise ValueError('Enter a delivery note or evidence reference before confirming for the member.')
+        loan_id, loan_number = activate_delivered_asset(
+            db, order, current_user.id, current_user.username, 'asset_scheme_officer',
+            f'Officer confirmed on behalf of member: {note}')
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Delivery confirmed by cooperative officer',
+                            f'{current_user.username} confirmed delivery on your behalf. Loan {loan_number} is now active. Contact the cooperative immediately if you have not received the items.',
+                            'warning', _portal_url())
+        notify_asset_roles(db, updated, ('admin', 'secretary', 'treasurer', 'exco'),
+                           'Officer confirmed asset delivery',
+                           f'{current_user.username} confirmed {updated["order_number"]} on behalf of the member. {loan_number} is now active.',
+                           'warning', _portal_url())
+        db.commit(); audit(db, 'ASSET_RECEIPT_CONFIRMED_BY_OFFICER', 'asset_schemes',
+                           f'{order["order_number"]} -> {loan_number}; {note}')
+        flash('Delivery confirmed for the member. The asset loan is now active.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))

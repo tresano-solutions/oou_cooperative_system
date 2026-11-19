@@ -47,10 +47,10 @@ from utils import (
     clear_account_failures,
     pause_message,
 )
-from asset_schemes import delivery_cleared, finance_terms
+from asset_schemes import finance_terms
 from asset_notifications import notify_asset_member, notify_asset_roles
-from asset_documents import ensure_asset_documents, update_asset_documents
-from ledger import LOANS_RECEIVABLE, post_journal_required
+from asset_documents import ensure_asset_documents
+from asset_fulfilment import activate_delivered_asset
 
 mobile_api = Blueprint('mobile_api', __name__)
 
@@ -834,6 +834,18 @@ def mobile_loans():
 
 def _mobile_asset_order(db, order):
     quoted = order['quote_status'] in {'quoted', 'accepted'}
+    item_rows = db.execute('SELECT * FROM asset_order_items WHERE order_id=? ORDER BY id',
+                           (order['id'],)).fetchall()
+    items = [{
+        'id': item['id'],
+        'name': item['agreed_product_name'] or item['product_name'],
+        'brand': item['agreed_brand'] or item['brand'] or '',
+        'model': item['agreed_model'] or item['model'] or '',
+        'specification': item['agreed_specification'] or item['size_spec'] or '',
+        'warranty': item['agreed_warranty'] or '',
+        'quantity': int(item['quantity'] or 1),
+        'unit_selling_price': float(item['unit_selling_price'] or 0) if quoted else None,
+    } for item in item_rows]
     return {
         'id': order['id'], 'order_number': order['order_number'],
         'campaign_id': order['campaign_id'], 'campaign_name': order['campaign_name'],
@@ -852,6 +864,7 @@ def _mobile_asset_order(db, order):
         'invoice_status': order['invoice_status'] if 'invoice_status' in order.keys() else None,
         'delivery_number': order['delivery_number'] if 'delivery_number' in order.keys() else None,
         'delivery_status': order['delivery_status'] if 'delivery_status' in order.keys() else None,
+        'items': items,
         'created_at': str(order['created_at'] or ''),
     }
 
@@ -947,10 +960,10 @@ def mobile_assets_apply():
     order_id = last_insert_id(db)
     for product, qty, expected in selected:
         db.execute('''INSERT INTO asset_order_items
-            (order_id,product_id,product_name,brand,model,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?)''',
-            (order_id, product['id'], product['name'], product['brand'], product['model'], qty,
-             product['purchase_cost'], 0, 0, expected))
+            (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
+             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            (order_id, product['id'], product['name'], product['brand'], product['model'],
+             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected))
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment) VALUES (?, 'quote','sourcing_requested',?,?,?)''',
         (order_id, g.user_id, g.username, f'Member preferred budget ₦{subtotal:,.2f}. {reason}'))
@@ -1071,36 +1084,12 @@ def mobile_assets_confirm_receipt(order_id):
                        (order_id, g.member['id'])).fetchone()
     if not order or order['status'] != 'ready_for_receipt':
         return _json_error('This order is not ready for receipt confirmation.', 409, 'receipt_unavailable')
-    if not delivery_cleared(order):
-        return _json_error('The delivery fee has not been cleared.', 409, 'delivery_fee_pending')
-    if order['linked_loan_id']:
-        return _json_error('Receipt was already confirmed.', 409, 'already_confirmed')
-    loan_number = f"LOAN/AS/{datetime.now():%Y%m%d}/{random.randint(1000,9999)}"
-    db.execute('''INSERT INTO loans
-        (loan_number,member_id,amount,purpose,description,tenure,interest_rate,interest_method,
-         total_repayment,balance,status,approval_stage,disbursed_amount,disbursement_date,
-         approved_at,terms_accepted,signature_name,date_applied,submission_channel)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (loan_number, g.member['id'], order['selling_subtotal'], 'Asset Purchase',
-         f"Asset scheme order {order['order_number']}", order['tenure_months'],
-         order['annual_interest_rate'], 'flat', order['total_repayment'], order['total_repayment'],
-         'active', 'approved', order['selling_subtotal'], datetime.now(), order['approved_at'], 1,
-         order['signature_name'], order['submitted_at'], 'asset_scheme_mobile'))
-    loan_id = last_insert_id(db)
-    post_journal_required(db, f"Asset delivered - {order['order_number']}", [
-        {'account': LOANS_RECEIVABLE, 'debit': order['selling_subtotal'], 'memo': loan_number},
-        {'account': '4050', 'credit': order['selling_subtotal'], 'memo': order['order_number']},
-    ], reference=order['order_number'], source_module='asset_scheme', source_id=order_id,
-       created_by=g.user_id)
-    db.execute("UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=? WHERE id=? AND linked_loan_id IS NULL",
-               (datetime.now(), loan_id, order_id))
-    update_asset_documents(db, order_id, invoice_status='delivered_loan_active',
-                           delivery_status='delivered', confirmed=True,
-                           confirmed_by=g.user_id)
-    db.execute('''INSERT INTO asset_order_events
-        (order_id,stage,action,actor_id,actor_name,comment)
-        VALUES (?,'receipt','confirmed',?,?,?)''',
-        (order_id, g.user_id, g.username, f'Loan {loan_number} activated'))
+    try:
+        loan_id, loan_number = activate_delivered_asset(
+            db, order, g.user_id, g.username, 'asset_scheme_mobile')
+    except ValueError as exc:
+        db.rollback()
+        return _json_error(str(exc), 409, 'receipt_unavailable')
     notification_order = _asset_order_for_notifications(db, order_id)
     portal_url = request.url_root.rstrip('/')
     notify_asset_member(db, notification_order, 'Receipt confirmed and repayment activated',

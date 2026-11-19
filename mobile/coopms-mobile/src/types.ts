@@ -179,6 +179,16 @@ export type AssetOrder = {
   invoice_status: string | null;
   delivery_number: string | null;
   delivery_status: string | null;
+  items: Array<{
+    id: number;
+    name: string;
+    brand: string;
+    model: string;
+    specification: string;
+    warranty: string;
+    quantity: number;
+    unit_selling_price: number | null;
+  }>;
   created_at: string;
 };
 
