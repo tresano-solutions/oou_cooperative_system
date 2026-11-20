@@ -28,10 +28,10 @@ import {
   applyForAssets,
   applyCtas,
   applyForLoan,
+  cancelAssetRequest,
   changePassword,
   clearToken,
   confirmAssetReceipt,
-  declineAssetQuote,
   getCtas,
   getAssets,
   getDashboard,
@@ -1216,7 +1216,10 @@ function CtasScreen({ token }: { token: string }) {
 function AssetsScreen({ token, memberName }: { token: string; memberName: string }) {
   const [data, setData] = useState<AssetsPayload | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<Record<number, { quantity: string; preferred_spend: string }>>({});
+  const [selected, setSelected] = useState<Record<number, {
+    quantity: string; preferred_spend: string; requested_brand: string;
+    requested_model: string; requested_size_spec: string; requested_notes: string;
+  }>>({});
   const [signature, setSignature] = useState(memberName);
   const [terms, setTerms] = useState(false);
   const [quoteNotes, setQuoteNotes] = useState<Record<number, string>>({});
@@ -1228,7 +1231,10 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
     setSelected((current) => {
       const next = { ...current };
       if (next[product.id]) delete next[product.id];
-      else next[product.id] = { quantity: '1', preferred_spend: '' };
+      else next[product.id] = {
+        quantity: '1', preferred_spend: '', requested_brand: '', requested_model: '',
+        requested_size_spec: '', requested_notes: ''
+      };
       return next;
     });
   }
@@ -1236,7 +1242,9 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
   async function submit() {
     if (!data?.campaigns[0]) return;
     const items = Object.entries(selected).map(([productId, item]) => ({
-      product_id: Number(productId), quantity: Number(item.quantity), preferred_spend: Number(item.preferred_spend)
+      product_id: Number(productId), quantity: Number(item.quantity), preferred_spend: Number(item.preferred_spend),
+      requested_brand: item.requested_brand.trim(), requested_model: item.requested_model.trim(),
+      requested_size_spec: item.requested_size_spec.trim(), requested_notes: item.requested_notes.trim()
     }));
     if (!items.length || items.some((item) => !item.quantity || item.preferred_spend < 1000)) {
       Alert.alert('Complete your selection', 'Select at least one appliance and enter your preferred spend for each item.'); return;
@@ -1271,13 +1279,15 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
     finally { setBusy(false); }
   }
 
-  function declineQuote(orderId: number) {
-    Alert.alert('Decline this quote?', 'This closes the request without creating a loan.', [
-      { text: 'Keep quote', style: 'cancel' },
-      { text: 'Decline', style: 'destructive', onPress: async () => {
+  function cancelRequest(orderId: number) {
+    const reason = (quoteNotes[orderId] || '').trim();
+    if (reason.length < 5) { Alert.alert('Cancellation reason required', 'Tell the cooperative why you changed your mind.'); return; }
+    Alert.alert('Cancel this asset request?', 'This closes the request. It cannot be reopened, but no invoice or loan will be created.', [
+      { text: 'Keep request', style: 'cancel' },
+      { text: 'Cancel request', style: 'destructive', onPress: async () => {
         setBusy(true);
-        try { const result = await declineAssetQuote(token, orderId, quoteNotes[orderId] || ''); Alert.alert('Quote declined', result.message); await load(); }
-        catch (error) { Alert.alert('Unable to decline quote', error instanceof Error ? error.message : 'Please try again.'); }
+        try { const result = await cancelAssetRequest(token, orderId, reason); Alert.alert('Request cancelled', result.message); await load(); }
+        catch (error) { Alert.alert('Unable to cancel request', error instanceof Error ? error.message : 'Please try again.'); }
         finally { setBusy(false); }
       } }
     ]);
@@ -1307,7 +1317,7 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
               <View style={styles.assetProductInfo}><Text style={styles.rowTitle}>{product.name}</Text><Text style={styles.rowSub}>{product.brand || 'Suitable brand'} · {product.size_spec || 'Size to be confirmed'}</Text></View>
               <Ionicons name={choice ? 'checkmark-circle' : 'ellipse-outline'} size={26} color={choice ? YELLOW : MUTED} />
             </Pressable>
-            {choice ? <View style={styles.assetBudgetRow}><TextInput keyboardType="number-pad" value={choice.quantity} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], quantity: value } }))} style={[styles.inputLight, styles.assetQty]} placeholder="Qty" /><TextInput keyboardType="number-pad" value={choice.preferred_spend} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], preferred_spend: value } }))} style={[styles.inputLight, styles.assetBudget]} placeholder="Preferred spend (NGN)" /></View> : null}
+            {choice ? <View style={styles.assetPreferenceFields}><View style={styles.assetBudgetRow}><TextInput keyboardType="number-pad" value={choice.quantity} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], quantity: value } }))} style={[styles.inputLight, styles.assetQty]} placeholder="Qty" /><TextInput keyboardType="number-pad" value={choice.preferred_spend} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], preferred_spend: value } }))} style={[styles.inputLight, styles.assetBudget]} placeholder="Preferred spend (NGN)" /></View><Text style={styles.rowTitle}>Describe what you need</Text><Text style={styles.quickHelper}>Optional details help the sourcing team quote the right appliance.</Text><TextInput value={choice.requested_brand} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], requested_brand: value } }))} style={styles.inputLight} placeholder="Preferred brand, e.g. Samsung" maxLength={100} /><TextInput value={choice.requested_model} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], requested_model: value } }))} style={styles.inputLight} placeholder="Model name or number" maxLength={100} /><TextInput value={choice.requested_size_spec} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], requested_size_spec: value } }))} style={styles.inputLight} placeholder="Size / capacity, e.g. 55 inch" maxLength={160} /><TextInput value={choice.requested_notes} onChangeText={(value) => setSelected((current) => ({ ...current, [product.id]: { ...current[product.id], requested_notes: value } }))} style={[styles.inputLight, { minHeight: 84, textAlignVertical: 'top' }]} placeholder="Colour, features, installation needs or alternatives" maxLength={500} multiline /></View> : null}
           </View>;
         })}
         <TextInput value={signature} onChangeText={setSignature} style={styles.inputLight} placeholder="Your full name" />
@@ -1317,9 +1327,10 @@ function AssetsScreen({ token, memberName }: { token: string; memberName: string
 
       <View style={styles.card}><Text style={styles.cardTitle}>My asset requests</Text>
         {data.orders.map((order) => <View key={order.id} style={styles.listRow}><Text style={styles.rowTitle}>{order.order_number} · {order.status.replace(/_/g, ' ')}</Text><Text style={styles.rowSub}>{order.campaign_name} · Preferred budget {money(order.preferred_budget)}</Text>
-          {order.items.map((item) => <View key={item.id} style={styles.documentBox}><Ionicons name="cube" size={20} color={BLUE} /><View style={{ flex: 1 }}><Text style={styles.rowTitle}>{item.quantity} × {item.name}</Text><Text style={styles.rowSub}>{[item.brand, item.model].filter(Boolean).join(' · ') || 'Final brand to be confirmed'}</Text>{item.specification ? <Text style={styles.quickHelper}>{item.specification}</Text> : null}{item.warranty ? <Text style={styles.quickHelper}>Warranty: {item.warranty}</Text> : null}{item.unit_selling_price ? <Text style={styles.rowSub}>Selling price per item: {money(item.unit_selling_price)}</Text> : null}</View></View>)}
+          {order.items.map((item) => <View key={item.id} style={styles.documentBox}><Ionicons name="cube" size={20} color={BLUE} /><View style={{ flex: 1 }}><Text style={styles.rowTitle}>{item.quantity} × {item.name}</Text><Text style={styles.rowSub}>{[item.brand, item.model].filter(Boolean).join(' · ') || 'Final brand to be confirmed'}</Text>{item.specification ? <Text style={styles.quickHelper}>{item.specification}</Text> : null}{item.requested_brand || item.requested_model || item.requested_size_spec || item.requested_notes ? <Text style={styles.quickHelper}>You requested: {[item.requested_brand, item.requested_model, item.requested_size_spec].filter(Boolean).join(' · ')}{item.requested_notes ? ` — ${item.requested_notes}` : ''}</Text> : null}{item.warranty ? <Text style={styles.quickHelper}>Warranty: {item.warranty}</Text> : null}{item.unit_selling_price ? <Text style={styles.rowSub}>Selling price per item: {money(item.unit_selling_price)}</Text> : null}</View></View>)}
           {order.invoice_number ? <View style={styles.documentBox}><Ionicons name="document-text" size={20} color={BLUE} /><View style={{ flex: 1 }}><Text style={styles.rowTitle}>Invoice {order.invoice_number}</Text><Text style={styles.rowSub}>Delivery order {order.delivery_number} · {(order.delivery_status || '').replace(/_/g, ' ')}</Text><Text style={styles.quickHelper}>The loan starts only after you confirm receipt.</Text></View></View> : null}
-          {order.quote_status === 'quoted' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Final selling price: {money(order.selling_price || 0)}</Text><Text style={styles.rowSub}>Total repayment {money(order.total_repayment || 0)} · {order.tenure_months} payments of {money(order.monthly_repayment || 0)} · Delivery {money(order.delivery_fee || 0)}</Text><Pressable style={styles.primaryButton} onPress={() => acceptQuote(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Accept final quote</Text></Pressable><TextInput value={quoteNotes[order.id] || ''} onChangeText={(value) => setQuoteNotes((current) => ({ ...current, [order.id]: value }))} style={styles.inputLight} placeholder="What should change, or why are you declining?" multiline /><View style={styles.assetQuoteActions}><Pressable style={[styles.secondaryButton, { flex: 1 }]} onPress={() => requestRevision(order.id)} disabled={busy}><Text style={styles.secondaryButtonText}>Request revision</Text></Pressable><Pressable style={styles.dangerOutlineButton} onPress={() => declineQuote(order.id)} disabled={busy}><Text style={styles.dangerOutlineText}>Decline</Text></Pressable></View></View> : null}
+          {order.quote_status === 'quoted' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Final selling price: {money(order.selling_price || 0)}</Text><Text style={styles.rowSub}>Total repayment {money(order.total_repayment || 0)} · {order.tenure_months} payments of {money(order.monthly_repayment || 0)} · Delivery {money(order.delivery_fee || 0)}</Text><Pressable style={styles.primaryButton} onPress={() => acceptQuote(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Accept final quote</Text></Pressable><TextInput value={quoteNotes[order.id] || ''} onChangeText={(value) => setQuoteNotes((current) => ({ ...current, [order.id]: value }))} style={styles.inputLight} placeholder="What should change, or why are you cancelling?" multiline /><View style={styles.assetQuoteActions}><Pressable style={[styles.secondaryButton, { flex: 1 }]} onPress={() => requestRevision(order.id)} disabled={busy}><Text style={styles.secondaryButtonText}>Request revision</Text></Pressable><Pressable style={styles.dangerOutlineButton} onPress={() => cancelRequest(order.id)} disabled={busy}><Text style={styles.dangerOutlineText}>Cancel request</Text></Pressable></View></View> : null}
+          {order.status === 'sourcing_quote' ? <View style={styles.quoteBox}><Text style={styles.rowTitle}>Changed your mind?</Text><Text style={styles.quickHelper}>You can cancel before accepting a final quote and before an invoice is created.</Text><TextInput value={quoteNotes[order.id] || ''} onChangeText={(value) => setQuoteNotes((current) => ({ ...current, [order.id]: value }))} style={styles.inputLight} placeholder="Why are you cancelling?" multiline /><Pressable style={styles.dangerOutlineButton} onPress={() => cancelRequest(order.id)} disabled={busy}><Text style={styles.dangerOutlineText}>Cancel asset request</Text></Pressable></View> : null}
           {order.status === 'ready_for_receipt' ? <Pressable style={styles.primaryButton} onPress={() => confirmReceipt(order.id)} disabled={busy}><Text style={styles.primaryButtonText}>Confirm items received</Text></Pressable> : null}
         </View>)}
         {data.orders.length === 0 ? <Text style={styles.emptyText}>No asset requests yet.</Text> : null}
@@ -1688,6 +1699,7 @@ const styles = StyleSheet.create({
   assetProductImage: { width: 76, height: 68, backgroundColor: '#F1F5F9', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   assetProductInfo: { flex: 1 },
   assetBudgetRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 10 },
+  assetPreferenceFields: { paddingHorizontal: 10, paddingBottom: 8 },
   assetQty: { flex: 0.32 },
   assetBudget: { flex: 0.68 },
   assetTermsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 10 },

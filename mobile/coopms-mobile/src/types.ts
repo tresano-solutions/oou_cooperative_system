@@ -188,6 +188,10 @@ export type AssetOrder = {
     warranty: string;
     quantity: number;
     unit_selling_price: number | null;
+    requested_brand: string;
+    requested_model: string;
+    requested_size_spec: string;
+    requested_notes: string;
   }>;
   created_at: string;
 };

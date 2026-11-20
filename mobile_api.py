@@ -845,6 +845,10 @@ def _mobile_asset_order(db, order):
         'warranty': item['agreed_warranty'] or '',
         'quantity': int(item['quantity'] or 1),
         'unit_selling_price': float(item['unit_selling_price'] or 0) if quoted else None,
+        'requested_brand': item['requested_brand'] or '',
+        'requested_model': item['requested_model'] or '',
+        'requested_size_spec': item['requested_size_spec'] or '',
+        'requested_notes': item['requested_notes'] or '',
     } for item in item_rows]
     return {
         'id': order['id'], 'order_number': order['order_number'],
@@ -933,13 +937,20 @@ def mobile_assets_apply():
             return _json_error('Enter valid quantities and preferred spend.', 400, 'invalid_items')
         if qty < 1 or qty > 20 or expected < 1000:
             return _json_error(f'Check quantity and preferred spend for {product["name"]}.', 400, 'invalid_items')
-        selected.append((product, qty, expected))
+        preferences = {}
+        for key, limit in (('requested_brand', 100), ('requested_model', 100),
+                           ('requested_size_spec', 160), ('requested_notes', 500)):
+            value = str(item.get(key) or '').strip()
+            if len(value) > limit:
+                return _json_error('One of the appliance preference fields is too long.', 400, 'invalid_items')
+            preferences[key] = value
+        selected.append((product, qty, expected, preferences))
     if not selected:
         return _json_error('Select at least one appliance.', 400, 'items_required')
     signature = str(data.get('signature_name') or '').strip()
     if not signature:
         return _json_error('Type your full name as confirmation.', 400, 'signature_required')
-    subtotal = round(sum(expected * qty for _, qty, expected in selected), 2)
+    subtotal = round(sum(expected * qty for _, qty, expected, preferences in selected), 2)
     interest, total, monthly = finance_terms(subtotal, campaign['annual_interest_rate'], campaign['tenure_months'])
     annual_salary = float(g.member['annual_salary'] or 0)
     eligible = annual_salary <= 0 or monthly <= annual_salary / 12 * 0.4
@@ -958,15 +969,24 @@ def mobile_assets_apply():
          interest, total, monthly, 0, repayment_method, 'eligible' if eligible else 'review',
          reason, 1, signature, g.user_id))
     order_id = last_insert_id(db)
-    for product, qty, expected in selected:
+    preference_summary = []
+    for product, qty, expected, preferences in selected:
         db.execute('''INSERT INTO asset_order_items
             (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+             unit_selling_price,unit_delivery_fee,expected_unit_spend,requested_brand,requested_model,
+             requested_size_spec,requested_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (order_id, product['id'], product['name'], product['brand'], product['model'],
-             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected))
+             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected,
+             preferences['requested_brand'], preferences['requested_model'],
+             preferences['requested_size_spec'], preferences['requested_notes']))
+        details = ', '.join(value for value in (
+            preferences['requested_brand'], preferences['requested_model'],
+            preferences['requested_size_spec']) if value)
+        preference_summary.append(f'{product["name"]}: {details or "open specification"}')
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment) VALUES (?, 'quote','sourcing_requested',?,?,?)''',
-        (order_id, g.user_id, g.username, f'Member preferred budget ₦{subtotal:,.2f}. {reason}'))
+        (order_id, g.user_id, g.username,
+         f'Member preferred budget ₦{subtotal:,.2f}. Requested: {"; ".join(preference_summary)}. {reason}'))
     notification_order = _asset_order_for_notifications(db, order_id)
     portal_url = request.url_root.rstrip('/')
     notify_asset_member(db, notification_order, 'Asset request received',
@@ -978,6 +998,48 @@ def mobile_assets_apply():
     db.commit()
     return jsonify({'success': True, 'order_id': order_id, 'order_number': order_number,
                     'message': 'Your request was submitted for supplier sourcing.'}), 201
+
+
+@mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/cancel', methods=['POST'])
+@member_required
+def mobile_assets_cancel(order_id):
+    db = g.db
+    order = db.execute('SELECT * FROM asset_orders WHERE id=? AND member_id=?',
+                       (order_id, g.member['id'])).fetchone()
+    if not order:
+        return _json_error('Asset request not found.', 404, 'request_not_found')
+    if order['status'] not in {'sourcing_quote', 'awaiting_member_quote'} or order['quote_status'] == 'accepted':
+        return _json_error('This request can no longer be cancelled because invoicing or approval has begun.',
+                           409, 'cancellation_unavailable')
+    if db.execute('SELECT 1 FROM asset_invoices WHERE order_id=?', (order_id,)).fetchone():
+        return _json_error('This request has already been invoiced and cannot be cancelled here.',
+                           409, 'cancellation_unavailable')
+    reason = str((request.get_json(silent=True) or {}).get('reason') or '').strip()
+    if len(reason) < 5:
+        return _json_error('Tell the cooperative why you are cancelling this request.', 400, 'reason_required')
+    changed = db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+        quote_status='cancelled_by_member' WHERE id=?
+        AND status IN ('sourcing_quote','awaiting_member_quote')
+        AND quote_status <> 'accepted'""", (order_id,)).rowcount
+    if changed != 1:
+        db.rollback()
+        return _json_error('This request can no longer be cancelled.', 409, 'cancellation_unavailable')
+    db.execute('''INSERT INTO asset_order_events
+        (order_id,stage,action,actor_id,actor_name,comment)
+        VALUES (?,'member','cancelled',?,?,?)''', (order_id, g.user_id, g.username, reason))
+    notification_order = _asset_order_for_notifications(db, order_id)
+    portal_url = request.url_root.rstrip('/')
+    notify_asset_member(db, notification_order, 'Asset request cancelled',
+                        'Your request has been closed. No invoice, loan, or accounting entry was created.',
+                        'info', portal_url)
+    notify_asset_roles(db, notification_order, ('admin', 'treasurer'),
+                       'Member cancelled asset request',
+                       f'{notification_order["order_number"]} was cancelled before invoicing. Reason: {reason}',
+                       'info', portal_url)
+    db.commit()
+    audit(db, 'ASSET_REQUEST_CANCELLED_BY_MEMBER', 'asset_schemes',
+          f'{order["order_number"]}: {reason}')
+    return jsonify({'success': True, 'message': 'Asset request cancelled. No invoice or loan was created.'})
 
 
 @mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/accept-quote', methods=['POST'])

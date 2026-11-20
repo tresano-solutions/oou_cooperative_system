@@ -126,6 +126,22 @@ def _portal_url():
     return request.url_root.rstrip('/')
 
 
+def _member_item_preferences(product_id):
+    fields = {
+        'requested_brand': (f'brand_{product_id}', 100),
+        'requested_model': (f'model_{product_id}', 100),
+        'requested_size_spec': (f'size_{product_id}', 160),
+        'requested_notes': (f'notes_{product_id}', 500),
+    }
+    values = {}
+    for key, (form_key, limit) in fields.items():
+        value = request.form.get(form_key, '').strip()
+        if len(value) > limit:
+            raise ValueError('One of the appliance preference fields is too long.')
+        values[key] = value
+    return values
+
+
 @asset_schemes.route('/asset-schemes')
 @login_required
 def catalogue():
@@ -187,11 +203,16 @@ def apply(campaign_id):
             if expected <= 0:
                 flash(f'Enter your expected spend for {product["name"]}.', 'danger')
                 return redirect(url_for('asset_schemes.catalogue'))
-            selected.append((product, qty, expected))
+            try:
+                preferences = _member_item_preferences(product['id'])
+            except ValueError as exc:
+                flash(str(exc), 'danger')
+                return redirect(url_for('asset_schemes.catalogue'))
+            selected.append((product, qty, expected, preferences))
     if not selected:
         flash('Select at least one appliance.', 'danger')
         return redirect(url_for('asset_schemes.catalogue'))
-    subtotal = round(sum(expected * q for p, q, expected in selected), 2)
+    subtotal = round(sum(expected * q for p, q, expected, preferences in selected), 2)
     delivery = 0.0
     interest, total, monthly = finance_terms(subtotal, campaign['annual_interest_rate'], campaign['tenure_months'])
     annual_salary = float(member['annual_salary'] or 0)
@@ -212,14 +233,22 @@ def apply(campaign_id):
          'eligible' if eligible else 'review', reason, 1,
          request.form.get('signature_name', '').strip(), current_user.id))
     order_id = last_insert_id(db)
-    for product, qty, expected in selected:
+    preference_summary = []
+    for product, qty, expected, preferences in selected:
         db.execute('''INSERT INTO asset_order_items
             (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+             unit_selling_price,unit_delivery_fee,expected_unit_spend,requested_brand,requested_model,
+             requested_size_spec,requested_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (order_id, product['id'], product['name'], product['brand'], product['model'],
-             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected))
+             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected,
+             preferences['requested_brand'], preferences['requested_model'],
+             preferences['requested_size_spec'], preferences['requested_notes']))
+        details = ', '.join(value for value in (
+            preferences['requested_brand'], preferences['requested_model'],
+            preferences['requested_size_spec']) if value)
+        preference_summary.append(f'{product["name"]}: {details or "open specification"}')
     _event(db, order_id, 'quote', 'sourcing_requested',
-           f'Member budget ₦{subtotal:,.2f}. {reason}')
+           f'Member budget ₦{subtotal:,.2f}. Requested: {"; ".join(preference_summary)}. {reason}')
     order = _order(db, order_id)
     notify_asset_member(db, order, 'Asset request received',
                         'Your interest has been recorded. The cooperative is sourcing suitable options and will send you a final quote.',
@@ -601,8 +630,11 @@ def staff_action(order_id):
                     unit_value = finite_float(legacy_total) / max(int(item['quantity'] or 1), 1)
                 unit_price = finite_float(unit_value)
                 name = name or item['product_name']
-                brand = brand or item['brand'] or 'To be confirmed'
-                specification = specification or item['size_spec'] or item['product_name']
+                brand = brand or item['requested_brand'] or item['brand'] or 'To be confirmed'
+                model = model or item['requested_model'] or item['model'] or ''
+                specification = specification or item['requested_size_spec'] or item['size_spec'] or item['product_name']
+                if item['requested_notes'] and item['requested_notes'] not in specification:
+                    specification = f'{specification} — {item["requested_notes"]}'
                 if not name or not brand or not specification or unit_price <= 0:
                     raise ValueError('Complete the final item name, brand, specification and selling price for every appliance.')
                 quantity = max(int(item['quantity'] or 1), 1)
@@ -724,6 +756,42 @@ def staff_action(order_id):
                                 f'Your delivery fee is now recorded as {updated["delivery_fee_status"].replace("_", " ")}.',
                                 'info', _portal_url())
         db.commit(); flash('Asset request updated.', 'success')
+    except Exception as exc:
+        db.rollback(); flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/orders/<int:order_id>/cancel', methods=['POST'])
+@login_required
+def cancel_request(order_id):
+    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    try:
+        if not order or not member or order['member_id'] != member['id']:
+            raise ValueError('You cannot cancel this request.')
+        if order['status'] not in {'sourcing_quote', 'awaiting_member_quote'} or order['quote_status'] == 'accepted':
+            raise ValueError('This request can no longer be cancelled because invoicing or approval has begun.')
+        if db.execute('SELECT 1 FROM asset_invoices WHERE order_id=?', (order_id,)).fetchone():
+            raise ValueError('This request has already been invoiced and cannot be cancelled here.')
+        reason = request.form.get('reason', '').strip()
+        if len(reason) < 5:
+            raise ValueError('Tell the cooperative why you are cancelling this request.')
+        changed = db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+            quote_status='cancelled_by_member' WHERE id=?
+            AND status IN ('sourcing_quote','awaiting_member_quote')
+            AND quote_status <> 'accepted'""", (order_id,)).rowcount
+        if changed != 1:
+            raise ValueError('This request can no longer be cancelled.')
+        _event(db, order_id, 'member', 'cancelled', reason)
+        updated = _order(db, order_id)
+        notify_asset_member(db, updated, 'Asset request cancelled',
+                            'Your request has been closed. No invoice, loan, or accounting entry was created.',
+                            'info', _portal_url())
+        notify_asset_roles(db, updated, ('admin', 'treasurer'), 'Member cancelled asset request',
+                           f'{updated["order_number"]} was cancelled before invoicing. Reason: {reason}',
+                           'info', _portal_url())
+        db.commit(); audit(db, 'ASSET_REQUEST_CANCELLED_BY_MEMBER', 'asset_schemes',
+                           f'{order["order_number"]}: {reason}')
+        flash('Asset request cancelled. No invoice or loan was created.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))

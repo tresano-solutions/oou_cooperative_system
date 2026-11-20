@@ -92,6 +92,9 @@ def test_request_quote_acceptance_gate():
     assert catalogue.data.count(b'asset-scheme-campaign-v1.png') == 1
     assert b'appliance-catalogue' in catalogue.data
     assert b'0 items selected' in catalogue.data
+    assert b'Describe what you need' in catalogue.data
+    assert b'Preferred brand' in catalogue.data
+    assert b'Size / capacity' in catalogue.data
     assert b'min="1000" step="1000"' in catalogue.data
     assert b'350,000' not in catalogue.data
     assert b'500,000' not in catalogue.data
@@ -109,8 +112,10 @@ def test_request_quote_acceptance_gate():
     assert 'estimated_price_min' not in mobile_payload['products'][0]
     assert 'purchase_cost' not in mobile_payload['products'][0]
     mobile_apply = client.post('/api/mobile/v1/assets/apply', headers=mobile_headers, json={
-        'campaign_id': campaign_id,
-        'items': [{'product_id': product_id, 'quantity': 1, 'preferred_spend': 480000}],
+            'campaign_id': campaign_id,
+            'items': [{'product_id': product_id, 'quantity': 1, 'preferred_spend': 480000,
+                       'requested_brand': 'LG', 'requested_model': 'NanoCell NANO80',
+                       'requested_size_spec': '50 inch', 'requested_notes': 'Black, wall mount ready'}],
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
         'terms_accepted': True,
     })
@@ -119,6 +124,8 @@ def test_request_quote_acceptance_gate():
     assert mobile_apply.get_json()['order_number'].startswith('AS/')
     response = client.post(f'/asset-schemes/apply/{campaign_id}', data={
         f'qty_{product_id}': '1', f'budget_{product_id}': '500000',
+            f'brand_{product_id}': 'Samsung', f'model_{product_id}': 'Crystal UHD CU8000',
+            f'size_{product_id}': '55 inch', f'notes_{product_id}': 'Black with two HDMI ports',
         'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
         'terms_accepted': '1',
     })
@@ -130,6 +137,50 @@ def test_request_quote_acceptance_gate():
         assert order['status'] == 'sourcing_quote'
         assert order['approval_stage'] == 'quote'
         assert order['expected_spend'] == 500000
+        requested = db.execute('SELECT * FROM asset_order_items WHERE order_id=?', (order_id,)).fetchone()
+        assert requested['requested_brand'] == 'Samsung'
+        assert requested['requested_model'] == 'Crystal UHD CU8000'
+        assert requested['requested_size_spec'] == '55 inch'
+        assert requested['requested_notes'] == 'Black with two HDMI ports'
+        mobile_requested = db.execute('SELECT * FROM asset_order_items WHERE order_id=?', (mobile_order_id,)).fetchone()
+        assert mobile_requested['requested_brand'] == 'LG'
+        assert mobile_requested['requested_model'] == 'NanoCell NANO80'
+        assert mobile_requested['requested_size_spec'] == '50 inch'
+        assert mobile_requested['requested_notes'] == 'Black, wall mount ready'
+
+    assert b'Cancel asset request' in client.get(f'/asset-schemes/orders/{order_id}').data
+    web_cancel_apply = client.post(f'/asset-schemes/apply/{campaign_id}', data={
+        f'qty_{product_id}': '1', f'budget_{product_id}': '300000',
+        'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
+        'terms_accepted': '1',
+    })
+    assert web_cancel_apply.status_code in (302, 303)
+    with app.app_context():
+        web_cancel_id = get_db().execute('SELECT id FROM asset_orders ORDER BY id DESC LIMIT 1').fetchone()['id']
+    missing_reason = client.post(f'/asset-schemes/orders/{web_cancel_id}/cancel', data={'reason': 'no'})
+    assert missing_reason.status_code in (302, 303)
+    cancelled = client.post(f'/asset-schemes/orders/{web_cancel_id}/cancel',
+                            data={'reason': 'I changed my purchase plan.'})
+    assert cancelled.status_code in (302, 303)
+    mobile_cancel_apply = client.post('/api/mobile/v1/assets/apply', headers=mobile_headers, json={
+        'campaign_id': campaign_id,
+        'items': [{'product_id': product_id, 'quantity': 1, 'preferred_spend': 320000}],
+        'repayment_method': 'salary_deduction', 'signature_name': 'Asset Member',
+        'terms_accepted': True,
+    }).get_json()
+    mobile_cancelled = client.post(
+        f'/api/mobile/v1/assets/orders/{mobile_cancel_apply["order_id"]}/cancel',
+        headers=mobile_headers, json={'reason': 'I no longer need this appliance.'})
+    assert mobile_cancelled.status_code == 200
+    with app.app_context():
+        db = get_db()
+        for cancelled_id in (web_cancel_id, mobile_cancel_apply['order_id']):
+            cancelled_order = db.execute('SELECT * FROM asset_orders WHERE id=?', (cancelled_id,)).fetchone()
+            assert cancelled_order['status'] == 'cancelled'
+            assert cancelled_order['quote_status'] == 'cancelled_by_member'
+            assert db.execute('SELECT COUNT(*) FROM asset_invoices WHERE order_id=?', (cancelled_id,)).fetchone()[0] == 0
+            assert db.execute('SELECT COUNT(*) FROM loans WHERE description=?',
+                              (f'Asset scheme order {cancelled_order["order_number"]}',)).fetchone()[0] == 0
 
     client.get('/logout')
     assert client.post('/login', data={'username': admin_username, 'password': 'AssetAdminPass123!'}).status_code in (302, 303)
@@ -205,8 +256,9 @@ def test_request_quote_acceptance_gate():
         assert order['delivery_fee'] == 15000
         agreed = get_db().execute('SELECT * FROM asset_order_items WHERE order_id=?', (order_id,)).fetchone()
         assert agreed['agreed_product_name'] == 'Smart TV'
-        assert agreed['agreed_brand'] == 'Any'
-        assert agreed['agreed_specification'] == '55 inch'
+        assert agreed['agreed_brand'] == 'Samsung'
+        assert agreed['agreed_model'] == 'Crystal UHD CU8000'
+        assert agreed['agreed_specification'] == '55 inch — Black with two HDMI ports'
         assert agreed['unit_selling_price'] == 500000
 
     assert client.get(f'/asset-schemes/orders/{order_id}').status_code == 200
@@ -261,6 +313,11 @@ def test_request_quote_acceptance_gate():
                                 (member_user['id'],)).fetchone()[0] >= 3
         assert get_db().execute('SELECT COUNT(*) FROM notifications WHERE user_id=?',
                                 (admin_user['id'],)).fetchone()[0] >= 1
+    blocked_cancel = client.post(f'/asset-schemes/orders/{order_id}/cancel',
+                                 data={'reason': 'Trying to cancel after invoice.'})
+    assert blocked_cancel.status_code in (302, 303)
+    with app.app_context():
+        assert get_db().execute('SELECT status FROM asset_orders WHERE id=?', (order_id,)).fetchone()['status'] == 'submitted'
     invoice_pdf = client.get(f'/asset-schemes/orders/{order_id}/invoice.pdf')
     delivery_pdf = client.get(f'/asset-schemes/orders/{order_id}/delivery-order.pdf')
     assert invoice_pdf.status_code == 200 and invoice_pdf.mimetype == 'application/pdf'

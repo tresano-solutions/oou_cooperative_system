@@ -213,6 +213,12 @@ export async function acceptAssetQuote(token: string, orderId: number) {
     { method: 'POST', token, body: { accept_quote: true } });
 }
 
+export async function cancelAssetRequest(token: string, orderId: number, reason: string) {
+  return request<{ success: boolean; message: string }>(
+    `/api/mobile/v1/assets/orders/${orderId}/cancel`,
+    { method: 'POST', token, body: { reason } });
+}
+
 export async function declineAssetQuote(token: string, orderId: number, reason: string) {
   return request<{ success: boolean; message: string }>(
     `/api/mobile/v1/assets/orders/${orderId}/decline-quote`,
