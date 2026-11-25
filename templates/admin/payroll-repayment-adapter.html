@@ -45,7 +45,7 @@
       {% if item.savings_error %}<p class="text-danger mt-2 mb-0" role="alert">{{ item.savings_error }}</p>{% endif %}
       {% if item.loans %}<div class="table-responsive mt-2"><table class="table table-sm align-middle">
         <thead class="table-light"><tr><th>Loan</th><th>Type</th><th class="text-end">Outstanding</th><th class="text-end">Expected this month</th><th>Schedule basis</th><th>Allocation</th></tr></thead>
-        <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="text-end">{{ '%.2f'|format(loan.balance) }}</td><td class="text-end">{{ loan.expected if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td style="min-width:150px"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
+        <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="text-end">{{ loan.balance }}</td><td class="text-end">{{ loan.expected if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td style="min-width:150px"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
       </table></div>{% endif %}
     </section>
     {% endfor %}

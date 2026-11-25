@@ -39,6 +39,19 @@ class PayrollRoutes(unittest.TestCase):
         self.assertTrue('name="review_token"' in response.text, str(messages))
         return response
 
+    def test_final_payment_uses_cent_rounded_allocation_limit(self):
+        with app.app_context():
+            db = get_db()
+            db.execute('UPDATE loans SET balance=? WHERE id=?', (91666.669999, self.loan))
+            db.commit()
+        response = self.preview()
+        self.assertIn(f'max="91666.67" step="0.01" name="amount_2_{self.loan}" value="91666.67"', response.text)
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        data = dict(action='export', review_token=token, confirm_2='on')
+        data[f'amount_2_{self.loan}'] = '91666.67'
+        result = self.client.post('/loans/payroll-adapter', data=data)
+        self.assertIn('attachment', result.headers.get('Content-Disposition', ''))
+
     def test_preview_export_and_no_posting(self):
         response = self.preview()
         self.assertEqual(response.status_code, 200)

@@ -279,6 +279,7 @@ def match_payroll(rows, members, book):
                 result.append(item)
                 continue
             for loan in loans:
+                loan['balance'] = str(money(loan['balance']))
                 loan['allocation'] = ''
             if len(loans) == 1 and amount <= money(loans[0]['balance']):
                 loans[0]['allocation'] = str(amount)
