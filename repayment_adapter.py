@@ -261,6 +261,8 @@ def match_payroll(rows, members, book):
                 raise ValueError('No unique member match. Select the correct member for review.')
             member = candidates[0]
             if not manual and row.get('name') and name_key(member['member_name']) != name_key(row['name']):
+                item['identity_candidate'] = {key: member.get(key) for key in
+                                              ('id', 'member_name', 'member_number', 'employee_id')}
                 raise ValueError('Name and identifier disagree. Select the verified member for review.')
             if member['id'] in seen:
                 raise ValueError('Duplicate member row; consolidate the deduction before matching.')
@@ -283,9 +285,24 @@ def match_payroll(rows, members, book):
                 loan['allocation'] = ''
             if len(loans) == 1 and amount <= money(loans[0]['balance']):
                 loans[0]['allocation'] = str(amount)
+            elif sum((money(l['balance']) for l in loans), Decimal(0)) == amount:
+                for loan in loans:
+                    loan['allocation'] = loan['balance']
             elif all(l['expected'] != '' for l in loans) and sum((money(l['expected']) for l in loans), Decimal(0)) == amount:
                 for loan in loans:
                     loan['allocation'] = loan['expected']
+            if all(l['allocation'] != '' for l in loans):
+                item['allocation_note'] = 'Suggested allocations match the HR deduction. Review before confirming.'
+            elif amount > sum((money(l['balance']) for l in loans), Decimal(0)):
+                item['allocation_note'] = 'HR deducted more than the total outstanding. Verify the excess with HR.'
+            elif any(l['expected'] == '' for l in loans):
+                item['allocation_note'] = 'At least one expected payment is unknown. Verify the split with HR.'
+            else:
+                expected = sum((money(l['expected']) for l in loans), Decimal(0))
+                item['allocation_note'] = (
+                    f'HR deduction {amount:,.2f} differs from expected payments of {expected:,.2f}. '
+                    'Verify the split with HR before entering allocations.'
+                )
             item['loans'] = loans
         except ValueError as exc:
             item['error'] = str(exc)
