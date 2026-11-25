@@ -156,7 +156,7 @@ def read_payroll(raw, filename):
                 raise ValueError('Upload a workbook with one payroll sheet.')
             matrix = []
             for row in book.active.iter_rows(values_only=True):
-                if len(matrix) >= 2002:
+                if len(matrix) >= 2021:
                     raise ValueError('Maximum 2,000 payroll rows.')
                 matrix.append(row)
         finally:
@@ -170,9 +170,14 @@ def read_payroll(raw, filename):
         matrix = list(csv.reader(io.StringIO(text), dialect))
     else:
         raise ValueError('Upload an Excel .xlsx or CSV file.')
-    if not matrix or len(matrix) > 2001:
+    header_index = next(
+        (i for i, row in enumerate(matrix[:21])
+         if any(value is not None and str(value).strip() for value in row)),
+        None,
+    )
+    if header_index is None or len(matrix) - header_index > 2001:
         raise ValueError('Upload between 1 and 2,000 payroll rows.')
-    headers = [re.sub(r'[^a-z0-9]+', '_', str(v or '').strip().lower()).strip('_') for v in matrix[0]]
+    headers = [re.sub(r'[^a-z0-9]+', '_', str(v or '').strip().lower()).strip('_') for v in matrix[header_index]]
     columns = {}
     for key, aliases in ALIASES.items():
         indices = [i for i, h in enumerate(headers) if h in aliases]
@@ -183,7 +188,7 @@ def read_payroll(raw, filename):
     if not set(columns).intersection(('amount', 'savings_amount')) or not set(columns).intersection(('member_number', 'employee_id', 'name')):
         raise ValueError('Include loan/savings deductions and member_number, Employee Number or Full name columns.')
     rows = []
-    for number, values in enumerate(matrix[1:], 2):
+    for number, values in enumerate(matrix[header_index + 1:], header_index + 2):
         if not any(v not in (None, '') for v in values):
             continue
         row = {key: identifier(values[i]) if i < len(values) else '' for key, i in columns.items()}

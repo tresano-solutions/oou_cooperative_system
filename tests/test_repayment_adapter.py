@@ -1,4 +1,21 @@
 import io
+
+
+def test_hr_workbook_with_blank_rows_and_index_column():
+    import openpyxl
+    from repayment_adapter import read_payroll
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append([None, None, 'Employee Number', 'Full name', 'COOPERATIVE LOAN', 'COOPERATIVE SAVINGS'])
+    sheet.insert_rows(1, 4)
+    sheet.append([None, 1, '00123', 'Sample Member', 15000, 10000])
+    data = io.BytesIO()
+    workbook.save(data)
+    assert read_payroll(data.getvalue(), 'hr.xlsx') == [{
+        'row': 6, 'employee_id': '00123', 'name': 'Sample Member',
+        'amount': '15000', 'savings_amount': '10000',
+    }]
 import unittest
 from decimal import Decimal
 import repayment_adapter as adapter
