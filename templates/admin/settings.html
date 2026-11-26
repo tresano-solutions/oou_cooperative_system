@@ -479,6 +479,36 @@
                                 </div>
 
                                 <div class="mb-3">
+                                    <label class="form-label">Asset Scheme Accounts</label>
+                                    <div class="row g-2">
+                                        <div class="col-md-4"><input type="text" class="form-control" name="asset_inventory_account"
+                                               value="{{ settings.asset_inventory_account|default('1300') }}" maxlength="12" aria-label="Inventory account code">
+                                               <small class="text-muted">Inventory (asset)</small></div>
+                                        <div class="col-md-4"><input type="text" class="form-control" name="asset_cogs_account"
+                                               value="{{ settings.asset_cogs_account|default('5200') }}" maxlength="12" aria-label="Cost of sales account code">
+                                               <small class="text-muted">Cost of sales (expense)</small></div>
+                                        <div class="col-md-4"><input type="text" class="form-control" name="asset_sales_account"
+                                               value="{{ settings.asset_sales_account|default('4050') }}" maxlength="12" aria-label="Sales account code">
+                                               <small class="text-muted">Sales (income)</small></div>
+                                    </div>
+                                    <small class="text-muted">Stock bought for a member sits in Inventory until delivery, when its cost moves to Cost of sales and the price to Sales. The codes must exist in your chart of accounts with those types.</small>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label">Asset Scheme: Days a Quote Stays Open</label>
+                                    <input type="number" class="form-control" name="asset_quote_valid_days"
+                                           value="{{ settings.asset_quote_valid_days|default(7) }}" min="1" max="60">
+                                    <small class="text-muted">After this the member must ask for a refreshed quote, because supplier prices change.</small>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label">Asset Scheme: Days Before an Officer Can Confirm Delivery for a Member</label>
+                                    <input type="number" class="form-control" name="asset_officer_confirm_days"
+                                           value="{{ settings.asset_officer_confirm_days|default(3) }}" min="0" max="30">
+                                    <small class="text-muted">Gives the member time to confirm receipt themselves before an officer does it for them.</small>
+                                </div>
+
+                                <div class="mb-3">
                                     <label class="form-label">Number of Guarantors Required</label>
                                     <input type="number" class="form-control" name="guarantors_required" 
                                            value="{{ settings.guarantors_required|default(2) }}" min="1" max="5">

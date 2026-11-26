@@ -176,6 +176,25 @@ def render_asset_pdf(db, order_id, document_type):
         story.append(Table(totals, colWidths=[105*mm, 62*mm], style=TableStyle([
             ('ALIGN',(1,0),(1,-1),'RIGHT'), ('LINEABOVE',(0,2),(-1,2),1,colors.HexColor('#0B3475')),
             ('FONTNAME',(0,2),(-1,2),'Helvetica-Bold'), ('PADDING',(0,0),(-1,-1),6)])))
+        import json
+        import repayment_start
+        from asset_schemes import effective_annual_rate, schedule_snapshot
+        snapshot = (json.loads(order['repayment_schedule_snapshot']) if order['repayment_schedule_snapshot']
+                    else schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'], order['tenure_months']))
+        rows = [['Instalment', 'Amount', 'Principal', 'Finance charge', 'Balance after']]
+        for row in snapshot['schedule']:
+            rows.append([str(row['month']), f'NGN {row["payment"]:,.2f}', f'NGN {row["principal"]:,.2f}',
+                         f'NGN {row["interest"]:,.2f}', f'NGN {row["balance"]:,.2f}'])
+        story.extend([Spacer(1, 10), Paragraph('Repayment schedule', styles['Heading3']),
+                      Table(rows, colWidths=[24*mm, 35*mm, 35*mm, 35*mm, 38*mm], repeatRows=1, style=TableStyle([
+                          ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#EEF4FF')),
+                          ('GRID', (0,0), (-1,-1), .5, colors.HexColor('#D9E2EF')),
+                          ('ALIGN', (1,1), (-1,-1), 'RIGHT'), ('PADDING', (0,0), (-1,-1), 4)])),
+                      Spacer(1, 6), Paragraph(
+            f'Instalments are deducted through the monthly payroll run once delivery is confirmed: a delivery confirmed '
+            f'on or before the {repayment_start.cutoff_day(db)}th starts that month, a later one the next month. '
+            f'Equivalent yearly rate on the balance you owe: <b>{effective_annual_rate(order["selling_subtotal"], order["annual_interest_rate"], order["tenure_months"])}%</b> '
+            f'(the finance charge is flat, but you repay the principal month by month).', styles['Small'])])
         story.extend([Spacer(1, 10), Paragraph(
             '<b>Important:</b> This accepted invoice records the agreed commercial terms. '
             'The appliance descriptions above are the final items agreed between the cooperative and member. '

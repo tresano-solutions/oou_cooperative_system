@@ -12,6 +12,7 @@
     <p class="text-muted mb-0">Manage campaigns, sourcing requests, quotations, approvals and fulfilment.</p>
   </div>
   {% if current_user.role in ['admin', 'treasurer'] %}
+  <a class="btn btn-outline-secondary" href="{{ url_for('asset_schemes.inventory') }}"><i class="fas fa-boxes-stacked me-1"></i>Inventory</a>
   <form method="post" action="{{ url_for('asset_schemes.asset_campaign_newsletters') }}">
     <button class="btn btn-outline-primary"><i class="fas fa-paper-plane me-1"></i>Send due newsletters</button>
   </form>

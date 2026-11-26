@@ -1,16 +1,16 @@
 import hmac
 import json
 import os
-import uuid
 from datetime import datetime, timedelta
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 
 from asset_schemes import (CANCELLABLE_AFTER_PURCHASE, CANCELLABLE_BEFORE_PURCHASE, OFFICER_CONFIRM_WAIT_DAYS,
-                           delivery_cleared, delivery_dispatch_allowed, finance_terms, member_can_cancel,
-                           schedule_snapshot)
+                           delivery_cleared, delivery_dispatch_allowed, effective_annual_rate, finance_terms,
+                           member_can_cancel, quote_expired, quote_expiry, schedule_snapshot)
 from asset_notifications import notify_asset_member, notify_asset_roles
+from asset_requests import AssetRequestError, check_item, check_terms, clean_preferences, create_request
 from asset_documents import (document_rows, ensure_asset_documents, render_asset_pdf,
                              update_asset_documents)
 from asset_fulfilment import activate_delivered_asset
@@ -18,6 +18,8 @@ from database import for_update, get_db, last_insert_id
 from email_service import run_in_background
 from ledger import (FEE_INCOME, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
+import asset_accounting
+import asset_eligibility
 import loan_workflow as lw
 from utils import (audit, claim_submission, finite_float, member_for_user,
                    product_image_data_uri, role_required, validate_image)
@@ -175,22 +177,6 @@ def _portal_url():
     return request.url_root.rstrip('/')
 
 
-def _member_item_preferences(product_id):
-    fields = {
-        'requested_brand': (f'brand_{product_id}', 100),
-        'requested_model': (f'model_{product_id}', 100),
-        'requested_size_spec': (f'size_{product_id}', 160),
-        'requested_notes': (f'notes_{product_id}', 500),
-    }
-    values = {}
-    for key, (form_key, limit) in fields.items():
-        value = request.form.get(form_key, '').strip()
-        if len(value) > limit:
-            raise ValueError('One of the appliance preference fields is too long.')
-        values[key] = value
-    return values
-
-
 @asset_schemes.route('/asset-schemes')
 @login_required
 def catalogue():
@@ -227,92 +213,41 @@ def apply(campaign_id):
     if not member or not campaign:
         flash('This asset scheme is not available.', 'danger')
         return redirect(url_for('asset_schemes.catalogue'))
-    if request.form.get('terms_accepted') != '1':
-        flash('Accept the scheme terms before submitting.', 'danger')
-        return redirect(url_for('asset_schemes.catalogue'))
-    repayment_method = request.form.get('repayment_method', '').strip()
-    allowed = {x.strip() for x in (campaign['repayment_methods'] or '').split(',') if x.strip()}
-    if repayment_method not in allowed:
-        flash('Choose an available repayment method.', 'danger')
-        return redirect(url_for('asset_schemes.catalogue'))
-    selected = []
-    for product in db.execute("SELECT * FROM asset_products WHERE campaign_id=? AND status='active'", (campaign_id,)).fetchall():
-        try:
-            qty = int(request.form.get(f'qty_{product["id"]}', 0) or 0)
-        except ValueError:
-            qty = 0
-        if qty < 0 or qty > 20:
-            flash('Invalid product quantity.', 'danger')
-            return redirect(url_for('asset_schemes.catalogue'))
-        if qty:
+    try:
+        repayment_method = check_terms(campaign, request.form.get('repayment_method', ''),
+                                       request.form.get('terms_accepted') == '1')
+        selected = []
+        for product in db.execute("SELECT * FROM asset_products WHERE campaign_id=? AND status='active'",
+                                  (campaign_id,)).fetchall():
+            try:
+                qty = int(request.form.get(f'qty_{product["id"]}', 0) or 0)
+            except ValueError:
+                qty = 0
+            if not qty:
+                continue
             try:
                 expected = finite_float(request.form.get(f'budget_{product["id"]}', 0))
             except ValueError:
                 expected = 0
-            if expected <= 0:
-                flash(f'Enter your expected spend for {product["name"]}.', 'danger')
-                return redirect(url_for('asset_schemes.catalogue'))
-            try:
-                preferences = _member_item_preferences(product['id'])
-            except ValueError as exc:
-                flash(str(exc), 'danger')
-                return redirect(url_for('asset_schemes.catalogue'))
+            check_item(product, qty, expected)
+            fields = {'requested_brand': 'brand', 'requested_model': 'model',
+                      'requested_size_spec': 'size', 'requested_notes': 'notes'}
+            preferences = clean_preferences(
+                lambda key, pid=product['id']: request.form.get(f'{fields[key]}_{pid}'))
             selected.append((product, qty, expected, preferences))
-    if not selected:
-        flash('Select at least one appliance.', 'danger')
-        return redirect(url_for('asset_schemes.catalogue'))
-    subtotal = round(sum(expected * q for p, q, expected, preferences in selected), 2)
-    delivery = 0.0
-    interest, total, monthly = finance_terms(subtotal, campaign['annual_interest_rate'], campaign['tenure_months'])
-    annual_salary = float(member['annual_salary'] or 0)
-    eligible = annual_salary <= 0 or monthly <= annual_salary / 12 * 0.4
-    reason = ('Monthly repayment is within 40% of recorded monthly salary.' if annual_salary and eligible
-              else 'Monthly repayment exceeds 40% of recorded monthly salary; committee review required.' if annual_salary
-              else 'No salary recorded; committee affordability review required.')
-    if not claim_submission(db, request.form.get('submission_token')):
+        if selected and not claim_submission(db, request.form.get('submission_token')):
+            db.rollback()
+            flash('That request was already submitted. Check "My requests" below.', 'info')
+            return redirect(url_for('asset_schemes.catalogue'))
+        order_id, order_number = create_request(
+            db, campaign=campaign, member=member, selected=selected, repayment_method=repayment_method,
+            signature=request.form.get('signature_name', ''), user_id=current_user.id,
+            username=current_user.username, portal_url=_portal_url())
+        db.commit()
+    except AssetRequestError as exc:
         db.rollback()
-        flash('That request was already submitted. Check "My requests" below.', 'info')
+        flash(str(exc), 'danger')
         return redirect(url_for('asset_schemes.catalogue'))
-    order_number = f'AS/TMP/{uuid.uuid4().hex}'
-    db.execute('''INSERT INTO asset_orders
-        (order_number,campaign_id,member_id,status,approval_stage,expected_spend,quote_status,
-         selling_subtotal,annual_interest_rate,tenure_months,
-         interest_amount,total_repayment,monthly_repayment,delivery_fee,repayment_method,
-         eligibility_status,eligibility_reason,terms_accepted,signature_name,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (order_number, campaign_id, member['id'], 'sourcing_quote', 'quote', subtotal, 'not_quoted',
-         subtotal, campaign['annual_interest_rate'],
-         campaign['tenure_months'], interest, total, monthly, delivery, repayment_method,
-         'eligible' if eligible else 'review', reason, 1,
-         request.form.get('signature_name', '').strip(), current_user.id))
-    order_id = last_insert_id(db)
-    # Numbered from the order's own id, so two requests on one day can never collide.
-    order_number = f"AS/{datetime.now():%Y%m%d}/{order_id:05d}"
-    db.execute('UPDATE asset_orders SET order_number=? WHERE id=?', (order_number, order_id))
-    preference_summary = []
-    for product, qty, expected, preferences in selected:
-        db.execute('''INSERT INTO asset_order_items
-            (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend,requested_brand,requested_model,
-             requested_size_spec,requested_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (order_id, product['id'], product['name'], product['brand'], product['model'],
-             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected,
-             preferences['requested_brand'], preferences['requested_model'],
-             preferences['requested_size_spec'], preferences['requested_notes']))
-        details = ', '.join(value for value in (
-            preferences['requested_brand'], preferences['requested_model'],
-            preferences['requested_size_spec']) if value)
-        preference_summary.append(f'{product["name"]}: {details or "open specification"}')
-    _event(db, order_id, 'quote', 'sourcing_requested',
-           f'Member budget ₦{subtotal:,.2f}. Requested: {"; ".join(preference_summary)}. {reason}')
-    order = _order(db, order_id)
-    notify_asset_member(db, order, 'Asset request received',
-                        'Your interest has been recorded. The cooperative is sourcing suitable options and will send you a final quote.',
-                        'success', _portal_url())
-    notify_asset_roles(db, order, ('admin', 'treasurer'), 'New asset request to source',
-                       f'{member["first_name"]} {member["last_name"]} submitted an asset request requiring a supplier quote.',
-                       'info', _portal_url())
-    db.commit()
     audit(db, 'ASSET_ORDER_SUBMITTED', 'asset_schemes', f'{order_number} submitted')
     flash(f'Asset request {order_number} submitted. The cooperative will now source options and send you a final quote.', 'success')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
@@ -346,6 +281,10 @@ def order_detail(order_id):
                            member_can_cancel=bool(member and order['member_id'] == member['id']
                                                   and member_can_cancel(order)),
                            officer_confirm_from=officer_confirm_from, officer_confirm_block=officer_confirm_block,
+                           quote_valid_until=quote_expiry(order), quote_expired=quote_expired(order),
+                           effective_rate=(effective_annual_rate(order['selling_subtotal'], order['annual_interest_rate'],
+                                                                 order['tenure_months'])
+                                           if order['quote_status'] in ('quoted', 'accepted') else None),
                            can_manage_supplier_cost=can_manage_supplier_cost,
                            delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts,
                            invoice=invoice, delivery_order=delivery_order)
@@ -455,7 +394,7 @@ def update_campaign(campaign_id):
 def asset_campaign_newsletters():
     db = get_db()
     token = (os.environ.get('TASK_RUNNER_TOKEN', '') or '').strip()
-    provided = (request.headers.get('X-Task-Token', '') or request.args.get('token', '')).strip()
+    provided = (request.headers.get('X-Task-Token', '')).strip()
     by_token = bool(token) and hmac.compare_digest(provided, token)
     by_user = current_user.is_authenticated and current_user.role in {'admin', 'treasurer'}
     if not (by_token or by_user):
@@ -569,12 +508,6 @@ def update_library_item(item_id):
             (category, name, brand, size_spec, request.form.get('description','').strip(),
              image_value, price_min, price_max,
              1 if request.form.get('is_active') == '1' else 0, datetime.now(), item_id))
-        db.execute('''UPDATE asset_products SET category=?,name=?,brand=?,size_spec=?,description=?,
-            image_url=?,estimated_price_min=?,estimated_price_max=?
-            WHERE category=? AND name=? AND brand=? AND size_spec=?''',
-            (category, name, brand, size_spec, request.form.get('description','').strip(),
-             image_value, price_min, price_max, item['category'], item['name'],
-             item['brand'], item['size_spec']))
         db.execute('''UPDATE asset_products SET category=?,name=?,brand=?,size_spec=?,description=?,
             image_url=?,estimated_price_min=?,estimated_price_max=?
             WHERE category=? AND name=? AND brand=? AND size_spec=?''',
@@ -719,13 +652,20 @@ def staff_action(order_id):
                     agreed_model=?,agreed_specification=?,agreed_warranty=?,unit_selling_price=?
                     WHERE id=?''', values)
             interest, total, monthly = finance_terms(selling, order['annual_interest_rate'], order['tenure_months'])
+            valid_until = datetime.now() + timedelta(days=_setting_days(db, 'asset_quote_valid_days', 7))
             moved = db.execute('''UPDATE asset_orders SET status='awaiting_member_quote',quote_status='quoted',
                 selling_subtotal=?,interest_amount=?,total_repayment=?,monthly_repayment=?,
-                delivery_fee=?,procurement_cost=?,quote_note=?,quoted_at=? WHERE id=? AND status=?''',
+                delivery_fee=?,procurement_cost=?,quote_note=?,quoted_at=?,quote_valid_until=? WHERE id=? AND status=?''',
                 (selling, interest, total, monthly, delivery, supplier_cost,
-                 request.form.get('quote_note','').strip(), datetime.now(), order_id, 'sourcing_quote')).rowcount
+                 request.form.get('quote_note','').strip(), datetime.now(), valid_until, order_id, 'sourcing_quote')).rowcount
             if moved != 1:
                 raise ValueError('This request is no longer awaiting a quote.')
+            # The request was assessed on the member's budget; now the real price is known, assess it again.
+            borrower = db.execute('SELECT * FROM members WHERE id=?', (order['member_id'],)).fetchone()
+            eligibility, eligibility_reason = asset_eligibility.review(
+                db, borrower, monthly, total, order['repayment_method'], exclude_order_id=order_id)
+            db.execute('UPDATE asset_orders SET eligibility_status=?,eligibility_reason=? WHERE id=?',
+                       (eligibility, eligibility_reason, order_id))
             _event(db, order_id, 'quote', 'quoted',
                    f'Final selling price ₦{selling:,.2f}; delivery ₦{delivery:,.2f}')
         elif action in {'approve', 'reject'}:
@@ -764,16 +704,14 @@ def staff_action(order_id):
             if account not in valid: raise ValueError('Select the bank or cash account used to purchase the items.')
             if not reference: raise ValueError('Enter the supplier invoice or payment reference.')
             claimed = db.execute('''UPDATE asset_orders SET status='procured',procured_at=?,procurement_cost=?,
-                procurement_account=?,procurement_reference=? WHERE id=? AND status='approved_for_procurement'
+                procurement_account=?,procurement_reference=?,procurement_treatment='inventory',
+                inventory_status='bought' WHERE id=? AND status='approved_for_procurement'
                 AND procurement_journal_id IS NULL''',
                 (datetime.now(), cost, account, reference, order_id)).rowcount
             if claimed != 1:
                 raise ValueError('Procurement was already posted for this request.')
-            journal_id = post_journal_required(db, f"Asset procurement - {order['order_number']}", [
-                {'account': OPERATING_EXPENSES, 'debit': cost, 'memo': order['order_number']},
-                {'account': account, 'credit': cost, 'memo': reference},
-            ], reference=reference, source_module='asset_procurement', source_id=order_id,
-               created_by=current_user.id)
+            journal_id = asset_accounting.post_purchase(db, order_id, order['order_number'], cost, account,
+                                                        reference, current_user.id)
             db.execute('UPDATE asset_orders SET procurement_journal_id=? WHERE id=?', (journal_id, order_id))
             update_asset_documents(db, order_id, delivery_status='procured')
             _event(db, order_id, 'procurement', 'procured', comment)
@@ -840,6 +778,7 @@ def staff_action(order_id):
                 raise ValueError('This request has already been cancelled or completed.')
             update_asset_documents(db, order_id, invoice_status='cancelled', delivery_status='cancelled')
             detail = comment
+            new_stock_status = None
             if outcome == 'returned':
                 refund = finite_float(request.form.get('refund_amount'))
                 refund_account = request.form.get('refund_account', '').strip()
@@ -852,14 +791,24 @@ def staff_action(order_id):
                 if not refund_reference:
                     raise ValueError('Enter the supplier refund reference.')
                 refund = round(refund, 2)
-                post_journal_required(db, f"Asset purchase refunded - {order['order_number']}", [
-                    {'account': refund_account, 'debit': refund, 'memo': refund_reference},
-                    {'account': OPERATING_EXPENSES, 'credit': refund, 'memo': order['order_number']},
-                ], reference=refund_reference, source_module='asset_procurement_refund', source_id=order_id,
-                   created_by=current_user.id)
+                post_journal_required(db, f"Asset purchase refunded - {order['order_number']}",
+                                      asset_accounting.refund_lines(db, order, refund, refund_account, refund_reference),
+                                      reference=refund_reference, source_module='asset_procurement_refund',
+                                      source_id=order_id, created_by=current_user.id)
+                unrecovered = round(cost - refund, 2)
                 detail = f'{comment} | Returned to supplier; refund ₦{refund:,.2f} ({refund_reference}).'
+                if unrecovered > 0 and asset_accounting.treatment(order) == asset_accounting.INVENTORY:
+                    detail += f' Unrecovered cost ₦{unrecovered:,.2f} written off to expenses.'
+                new_stock_status = 'returned'
             else:
-                detail = f'{comment} | Items kept by the cooperative; purchase cost stays as an expense.'
+                if asset_accounting.treatment(order) == asset_accounting.INVENTORY:
+                    detail = f'{comment} | Items kept by the cooperative; the cost stays in Inventory as stock held for resale.'
+                    new_stock_status = 'held'
+                else:
+                    detail = f'{comment} | Items kept by the cooperative; the purchase was expensed when paid.'
+                    new_stock_status = None
+            if asset_accounting.treatment(order) == asset_accounting.INVENTORY:
+                db.execute('UPDATE asset_orders SET inventory_status=? WHERE id=?', (new_stock_status, order_id))
             _event(db, order_id, 'cancellation', f'cancelled_after_purchase_{outcome}', detail)
         else:
             raise ValueError('Unknown action.')
@@ -905,6 +854,52 @@ def staff_action(order_id):
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
+
+
+@asset_schemes.route('/asset-schemes/inventory')
+@login_required
+@role_required('admin', 'treasurer')
+def inventory():
+    """Stock held for asset requests, reconciled to the ledger, and earlier purchases awaiting reclassification."""
+    db = get_db()
+    try:
+        held_account = asset_accounting.accounts(db, 'inventory')['inventory']
+        problem = ''
+    except ValueError as exc:
+        held_account, problem = None, str(exc)
+    stock, stock_total = asset_accounting.stock_on_hand(db)
+    ledger_total = asset_accounting.ledger_balance(db, held_account) if held_account else 0.0
+    to_reclassify = asset_accounting.open_expensed_purchases(db)
+    return render_template('asset_schemes/inventory.html', stock=stock, stock_total=stock_total,
+                           ledger_total=ledger_total, difference=round(ledger_total - stock_total, 2),
+                           held_account=held_account, problem=problem, to_reclassify=to_reclassify,
+                           reclass_total=round(sum(float(o['procurement_cost'] or 0) for o in to_reclassify), 2),
+                           today=datetime.now().strftime('%Y-%m-%d'))
+
+
+@asset_schemes.route('/asset-schemes/inventory/reclassify', methods=['POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def reclassify_inventory():
+    """One-off: move purchases that were expensed when paid, and are still undelivered, into Inventory."""
+    db = get_db()
+    try:
+        date = datetime.strptime(request.form.get('posting_date', ''), '%Y-%m-%d')
+        wanted = {int(x) for x in request.form.getlist('order_ids') if x.isdigit()}
+        orders = [o for o in asset_accounting.open_expensed_purchases(db) if o['id'] in wanted]
+        if not orders:
+            raise ValueError('Select at least one purchase to reclassify.')
+        for order in orders:
+            asset_accounting.reclassify(db, order, date, current_user.id)
+        audit(db, 'ASSET_INVENTORY_RECLASSIFIED', 'asset_schemes',
+              f'{len(orders)} purchase(s) moved from expenses to inventory as at {date:%Y-%m-%d}: '
+              + ', '.join(o['order_number'] for o in orders))
+        db.commit()
+        flash(f'{len(orders)} purchase(s) moved from Operating Expenses to Inventory.', 'success')
+    except Exception as exc:
+        db.rollback()
+        flash(str(exc), 'danger')
+    return redirect(url_for('asset_schemes.inventory'))
 
 
 @asset_schemes.route('/asset-schemes/orders/<int:order_id>/cancel', methods=['POST'])
@@ -954,6 +949,9 @@ def accept_quote(order_id):
             raise ValueError('There is no final quote awaiting acceptance.')
         if request.form.get('accept_quote') != '1':
             raise ValueError('Confirm that you accept the final quote and repayment schedule.')
+        if quote_expired(order):
+            raise ValueError(f'This quote expired on {quote_expiry(order):%d %b %Y}. Ask for a revised quote and the '
+                             'cooperative will refresh the price.')
         snapshot = json.dumps(schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'],
                                                 order['tenure_months']))
         accepted = db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',

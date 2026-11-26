@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Asset Scheme Inventory{% endblock %}
+{% macro n(v) -%}{{ '{:,.2f}'.format(v) }}{%- endmacro %}
+{% block content %}
+<div class="container-fluid">
+  <div class="row mb-3">
+    <div class="col-md-8">
+      <h2>Asset Scheme Inventory</h2>
+      <p class="text-muted mb-0">Goods bought for members are held in Inventory until delivery, when their cost moves to Cost of Asset Sales. This page lists what is held and checks it against the ledger.</p>
+    </div>
+    <div class="col-md-4">
+      <a class="btn btn-outline-secondary" href="{{ url_for('asset_schemes.manage') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i> Asset Schemes</a>
+    </div>
+  </div>
+
+  {% if problem %}<div class="alert alert-danger">{{ problem }}</div>{% endif %}
+
+  <div class="row g-3 mb-3">
+    <div class="col-md-4"><div class="card h-100"><div class="card-body"><div class="small text-muted">Stock listed below</div><div class="h4 mb-0">&#8358;{{ n(stock_total) }}</div></div></div></div>
+    <div class="col-md-4"><div class="card h-100"><div class="card-body"><div class="small text-muted">Ledger balance{% if held_account %} (account {{ held_account }}){% endif %}</div><div class="h4 mb-0">&#8358;{{ n(ledger_total) }}</div></div></div></div>
+    <div class="col-md-4"><div class="card h-100 {{ 'border-success' if difference == 0 else 'border-danger' }}"><div class="card-body"><div class="small text-muted">Difference</div>
+      <div class="h4 mb-0 {{ 'text-success' if difference == 0 else 'text-danger' }}">&#8358;{{ n(difference) }}</div>
+      <div class="small text-muted">{{ 'The ledger agrees with the stock list.' if difference == 0 else 'The ledger and the stock list differ. Look for purchases that are not yet reclassified, or journals posted by hand to this account.' }}</div></div></div></div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header bg-white fw-bold">Stock held ({{ stock|length }})</div>
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light"><tr><th>Request</th><th>Member</th><th>Status</th><th>Where the stock is</th><th class="text-end">Cost</th></tr></thead>
+        <tbody>
+        {% for o in stock %}
+          <tr><td><a href="{{ url_for('asset_schemes.order_detail', order_id=o.id) }}">{{ o.order_number }}</a></td>
+            <td>{{ o.first_name }} {{ o.last_name }}</td>
+            <td>{{ o.status.replace('_', ' ')|title }}</td>
+            <td>{{ 'Bought for the member, awaiting delivery' if o.inventory_status == 'bought' else 'Request cancelled; kept by the cooperative for resale' }}</td>
+            <td class="text-end">{{ n(o.procurement_cost or 0) }}</td></tr>
+        {% else %}<tr><td colspan="5" class="text-center text-muted py-3">No stock is held at the moment.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% if to_reclassify %}
+  <div class="card mb-3 border-warning">
+    <div class="card-header bg-white fw-bold">Earlier purchases to move into Inventory ({{ to_reclassify|length }}, &#8358;{{ n(reclass_total) }})</div>
+    <div class="card-body">
+      <p class="small text-muted">These were paid for before inventory accounting began, so their cost was booked to Operating Expenses. They have not been delivered yet. Moving them posts Dr Inventory / Cr Operating Expenses for each, so that when they are delivered the cost reaches Cost of Asset Sales, not twice. Purchases already delivered are left as they were.</p>
+      <form method="post" action="{{ url_for('asset_schemes.reclassify_inventory') }}" onsubmit="return confirm('Post the reclassification journals for the selected purchases?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead class="table-light"><tr><th></th><th>Request</th><th>Member</th><th>Status</th><th class="text-end">Cost</th></tr></thead>
+            <tbody>
+            {% for o in to_reclassify %}
+              <tr><td><input class="form-check-input" type="checkbox" name="order_ids" value="{{ o.id }}" checked aria-label="Reclassify {{ o.order_number }}"></td>
+                <td>{{ o.order_number }}</td><td>{{ o.first_name }} {{ o.last_name }}</td>
+                <td>{{ o.status.replace('_', ' ')|title }}</td><td class="text-end">{{ n(o.procurement_cost or 0) }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="row g-2 align-items-end">
+          <div class="col-md-3"><label class="form-label small mb-1" for="posting-date">Posting date</label>
+            <input type="date" id="posting-date" name="posting_date" class="form-control" value="{{ today }}" required></div>
+          <div class="col-md-3"><button class="btn btn-warning">Reclassify selected</button></div>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

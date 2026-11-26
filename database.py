@@ -912,6 +912,9 @@ def init_db():
     '''))
     _add_col(db, 'asset_orders', 'delivery_fee_account', 'TEXT')
     _add_col(db, 'asset_orders', 'repayment_schedule_snapshot', 'TEXT')
+    _add_col(db, 'asset_orders', 'quote_valid_until', 'TIMESTAMP')
+    _add_col(db, 'asset_orders', 'procurement_treatment', 'TEXT')   # 'inventory' or 'expensed'
+    _add_col(db, 'asset_orders', 'inventory_status', 'TEXT')        # bought, sold, returned, held
     _add_col(db, 'asset_orders', 'delivery_fee_journal_id', 'INTEGER')
     _add_col(db, 'asset_orders', 'procurement_cost', 'REAL DEFAULT 0')
     _add_col(db, 'asset_orders', 'procurement_account', 'TEXT')
@@ -2261,6 +2264,7 @@ def init_db():
         ('1000', 'Cash & Bank',                'asset',     'debit',  None),
         ('1100', 'Loans Receivable',           'asset',     'debit',  None),
         ('1200', 'Investments',                'asset',     'debit',  None),
+        ('1300', 'Inventory - Asset Scheme',    'asset',     'debit',  None),
         ('2000', 'Member Deposits (Savings)',  'liability', 'credit', None),
         ('2110', 'Insurance Payable',          'liability', 'credit', None),
         ('3000', 'Accumulated Surplus',        'equity',    'credit', None),
@@ -2272,6 +2276,7 @@ def init_db():
         ('4200', 'Investment Income',          'income',    'credit', None),
         ('5000', 'Operating Expenses',         'expense',   'debit',  None),
         ('5100', 'Honorarium',                 'expense',   'debit',  None),
+        ('5200', 'Cost of Asset Sales',         'expense',   'debit',  None),
     ]
     for code, name, atype, normal, parent in default_accounts:
         try:
@@ -2355,6 +2360,11 @@ def init_db():
         ('min_savings', '5000', 'Minimum monthly savings'),
         ('share_capital_pct', '0', 'Percent of each savings contribution allocated to member share capital (0 = off)'),
         ('savings_due_day', '10', 'Savings due day of month'),
+        ('asset_inventory_account', '1300', 'Asset scheme: inventory account (stock bought for members, until delivered)'),
+        ('asset_cogs_account', '5200', 'Asset scheme: cost of sales account (cost of goods when delivered)'),
+        ('asset_sales_account', '4050', 'Asset scheme: sales income account'),
+        ('asset_quote_valid_days', '7', 'Days an asset scheme quote stays open for the member to accept'),
+        ('asset_officer_confirm_days', '3', 'Days after dispatch before an officer may confirm asset delivery for a member'),
         ('loan_repayment_cutoff_day', '15', 'Payroll cut-off day: a loan issued on or before this day of the month starts repaying that month, a later one the next month'),
         ('late_fee_percent', '10', 'Late fee percentage'),
         ('min_deposit_period', '90', 'Minimum deposit period in days'),

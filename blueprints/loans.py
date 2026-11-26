@@ -75,6 +75,32 @@ def payroll_loan_book():
         f'payroll_loan_book_{month}.csv')
 
 
+@loans.route('/loans/payroll-matches', methods=['GET', 'POST'])
+@login_required
+@role_required('admin', 'treasurer')
+def payroll_saved_matches():
+    """The HR-line-to-member matches the adapter has learned, so a wrong one can be removed."""
+    db = get_db()
+    if request.method == 'POST':
+        try:
+            match_id = int(request.form.get('match_id', ''))
+        except ValueError:
+            match_id = 0
+        saved = db.execute('SELECT hr_key, hr_label FROM payroll_identity_map WHERE id=?', (match_id,)).fetchone()
+        if saved:
+            db.execute('DELETE FROM payroll_identity_map WHERE id=?', (match_id,))
+            audit(db, 'REMOVE_PAYROLL_MATCH', 'loans', f"Removed saved payroll match {saved['hr_key']} ({saved['hr_label'] or ''})")
+            db.commit()
+            flash('Saved match removed. That HR line will be matched afresh next time.', 'success')
+        else:
+            flash('That saved match no longer exists.', 'warning')
+        return redirect(url_for('loans.payroll_saved_matches'))
+    matches = db.execute('''SELECT p.id, p.hr_key, p.hr_label, p.updated_at, m.first_name || ' ' || m.last_name AS member_name,
+        m.member_number FROM payroll_identity_map p JOIN members m ON m.id = p.member_id
+        ORDER BY p.updated_at DESC, p.id DESC''').fetchall()
+    return render_template('admin/payroll-saved-matches.html', matches=matches)
+
+
 @loans.route('/loans/payroll-adapter', methods=['GET', 'POST'])
 @login_required
 @role_required('admin', 'treasurer')

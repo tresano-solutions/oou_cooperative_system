@@ -5,10 +5,11 @@ import uuid
 from datetime import datetime
 
 from asset_documents import update_asset_documents
+import asset_accounting
 import repayment_start
 from asset_schemes import delivery_cleared, schedule_snapshot
 from database import last_insert_id
-from ledger import LOANS_RECEIVABLE, post_journal_required
+from ledger import post_journal_required
 
 
 def activate_delivered_asset(db, order, actor_id, actor_name, channel, confirmation_note=''):
@@ -49,12 +50,12 @@ def activate_delivered_asset(db, order, actor_id, actor_name, channel, confirmat
     # Numbered from the loan's own id, so two loans on one day can never collide.
     loan_number = f"LOAN/AS/{now:%Y%m%d}/{loan_id:05d}"
     db.execute('UPDATE loans SET loan_number=? WHERE id=?', (loan_number, loan_id))
-    post_journal_required(db, f"Asset delivered - {order['order_number']}", [
-        {'account': LOANS_RECEIVABLE, 'debit': order['selling_subtotal'], 'memo': loan_number},
-        {'account': '4050', 'credit': order['selling_subtotal'], 'memo': order['order_number']},
-    ], reference=order['order_number'], source_module='asset_scheme', source_id=order['id'],
-       created_by=actor_id)
-    db.execute('UPDATE asset_orders SET linked_loan_id=? WHERE id=?', (loan_id, order['id']))
+    lines = asset_accounting.delivery_lines(db, order, loan_number)
+    post_journal_required(db, f"Asset delivered - {order['order_number']}", lines,
+                          reference=order['order_number'], source_module='asset_scheme', source_id=order['id'],
+                          created_by=actor_id)
+    sold = ", inventory_status='sold'" if asset_accounting.treatment(order) == asset_accounting.INVENTORY else ''
+    db.execute(f'UPDATE asset_orders SET linked_loan_id=?{sold} WHERE id=?', (loan_id, order['id']))
     update_asset_documents(db, order['id'], invoice_status='delivered_loan_active',
                            delivery_status='delivered', confirmed=True, confirmed_by=actor_id)
     comment = f'Loan {loan_number} activated'

@@ -43,8 +43,8 @@ class AssetControlTests(unittest.TestCase):
                            (username, self.member_email if role == 'member' else username,
                             generate_password_hash(PASSWORD), role))
                 self.users[role] = (username, last_insert_id(db))
-            db.execute("""INSERT INTO members (member_number,first_name,last_name,email,status,annual_salary)
-                VALUES (?,?,?,?,'active',3600000)""", (f'AC-{self.tag}', 'Asset', 'Member', self.member_email))
+            db.execute("""INSERT INTO members (member_number,first_name,last_name,email,status,annual_salary,total_savings)
+                VALUES (?,?,?,?,'active',3600000,500000)""", (f'AC-{self.tag}', 'Asset', 'Member', self.member_email))
             self.member_id = last_insert_id(db)
             db.execute("INSERT INTO asset_campaigns (name,status,tenure_months,annual_interest_rate,closes_at,repayment_methods) "
                        "VALUES (?, 'open', 6, 20, ?, 'salary_deduction,cash')",
@@ -333,6 +333,249 @@ class AssetControlTests(unittest.TestCase):
         self.login('member')
         self.assertIn('Changed your mind?', self.client.get(f'/asset-schemes/orders/{submitted}').text)
         self.assertNotIn('Changed your mind?', self.client.get(f'/asset-schemes/orders/{procured}').text)
+
+    # -- the money steps post the right journals ---------------------------------------------------
+    def lines(self, module, order_id):
+        with app.app_context():
+            rows = get_db().execute("""SELECT l.account_code, l.debit, l.credit FROM journal_lines l
+                JOIN journal_entries e ON e.id=l.entry_id WHERE e.source_module=? AND e.source_id=?""",
+                                    (module, order_id)).fetchall()
+        return [(r['account_code'], round(r['debit'] or 0, 2), round(r['credit'] or 0, 2)) for r in rows]
+
+    def stock_order(self, status='procured', **columns):
+        """An order bought under inventory accounting."""
+        return self.make_order(status, procurement_treatment='inventory', inventory_status='bought',
+                               procurement_journal_id=999001, **columns)
+
+    def legacy_order(self, status='procured', **columns):
+        """An order bought (and expensed) before inventory accounting began."""
+        return self.make_order(status, procurement_journal_id=999002, **columns)
+
+    def stock_status(self, order_id):
+        return self.order(order_id)['inventory_status']
+
+    def test_purchase_goes_to_inventory_and_the_fee_to_income(self):
+        procured = self.make_order('approved_for_procurement')
+        self.login('treasurer')
+        self.act(procured, action='procured', procurement_account=self.cash_account, procurement_reference='SUP-J1')
+        self.assertEqual(sorted(self.lines('asset_procurement', procured)),
+                         sorted([('1300', 450000.0, 0.0), (self.cash_account, 0.0, 450000.0)]))
+        order = self.order(procured)
+        self.assertEqual((order['procurement_treatment'], order['inventory_status']), ('inventory', 'bought'))
+        fee = self.make_order('procured', delivery_fee=15000)
+        self.act(fee, action='delivery_fee', delivery_fee_status='paid', delivery_fee_account=self.cash_account,
+                 delivery_fee_reference='FEE-J1')
+        self.assertEqual(sorted(self.lines('asset_delivery_fee', fee)),
+                         sorted([(self.cash_account, 15000.0, 0.0), ('4100', 0.0, 15000.0)]))
+
+    def test_delivery_books_the_sale_and_moves_the_cost_from_inventory_to_cost_of_sales(self):
+        order_id = self.stock_order('ready_for_receipt', dispatched_at=datetime.now() - timedelta(days=9))
+        with patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '0'}):
+            self.confirm_for_member(order_id)
+        self.assertEqual(sorted(self.lines('asset_scheme', order_id)),
+                         sorted([('1100', 500000.0, 0.0), ('4050', 0.0, 500000.0),
+                                 ('5200', 450000.0, 0.0), ('1300', 0.0, 450000.0)]))
+        self.assertEqual(self.stock_status(order_id), 'sold')
+
+    def test_an_order_bought_before_inventory_accounting_adds_no_second_cost_at_delivery(self):
+        order_id = self.legacy_order('ready_for_receipt', dispatched_at=datetime.now() - timedelta(days=9))
+        with patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '0'}):
+            self.confirm_for_member(order_id)
+        self.assertEqual(sorted(self.lines('asset_scheme', order_id)),
+                         sorted([('1100', 500000.0, 0.0), ('4050', 0.0, 500000.0)]))
+
+    def test_returned_stock_leaves_inventory_and_unrecovered_cost_is_written_off(self):
+        full = self.stock_order()
+        partial = self.stock_order()
+        legacy = self.legacy_order()
+        self.login('admin')
+        base = dict(action='cancel_after_purchase', comment='Member left before delivery', purchase_outcome='returned',
+                    refund_account=self.cash_account)
+        self.act(full, refund_amount='450000', refund_reference='R-FULL', **base)
+        self.assertEqual(sorted(self.lines('asset_procurement_refund', full)),
+                         sorted([(self.cash_account, 450000.0, 0.0), ('1300', 0.0, 450000.0)]))
+        self.assertEqual(self.stock_status(full), 'returned')
+        self.act(partial, refund_amount='400000', refund_reference='R-PART', **base)
+        self.assertEqual(sorted(self.lines('asset_procurement_refund', partial)),
+                         sorted([(self.cash_account, 400000.0, 0.0), ('5000', 50000.0, 0.0), ('1300', 0.0, 450000.0)]))
+        self.act(legacy, refund_amount='450000', refund_reference='R-OLD', **base)    # was expensed: credit expenses
+        self.assertEqual(sorted(self.lines('asset_procurement_refund', legacy)),
+                         sorted([(self.cash_account, 450000.0, 0.0), ('5000', 0.0, 450000.0)]))
+
+    def test_stock_the_cooperative_keeps_stays_in_inventory(self):
+        kept = self.stock_order('ready_for_receipt')
+        old = self.legacy_order('ready_for_receipt')
+        self.login('admin')
+        for order_id in (kept, old):
+            self.act(order_id, action='cancel_after_purchase', comment='Member withdrew; cooperative keeps it',
+                     purchase_outcome='retained')
+            self.assertEqual(self.order(order_id)['status'], 'cancelled')
+            self.assertEqual(self.journals('asset_procurement_refund', order_id), 0)
+        self.assertEqual(self.stock_status(kept), 'held')
+        self.assertIsNone(self.stock_status(old))
+
+    # -- the one-off move of earlier purchases into inventory --------------------------------------
+    def test_earlier_purchases_can_be_reclassified_once(self):
+        waiting = self.legacy_order('procured')
+        delivered = self.legacy_order('received')
+        self.login('treasurer')
+        page = self.client.get('/asset-schemes/inventory').text
+        self.assertIn(self.order(waiting)['order_number'], page)
+        self.assertNotIn(self.order(delivered)['order_number'], page)          # already sold: left as it was
+        self.client.post('/asset-schemes/inventory/reclassify',
+                         data={'order_ids': [str(waiting), str(delivered)], 'posting_date': datetime.now().strftime('%Y-%m-%d')})
+        self.assertEqual(sorted(self.lines('asset_inventory_reclass', waiting)),
+                         sorted([('1300', 450000.0, 0.0), ('5000', 0.0, 450000.0)]))
+        self.assertEqual(self.journals('asset_inventory_reclass', delivered), 0)
+        self.assertEqual((self.order(waiting)['procurement_treatment'], self.stock_status(waiting)), ('inventory', 'bought'))
+        self.client.post('/asset-schemes/inventory/reclassify',
+                         data={'order_ids': [str(waiting)], 'posting_date': datetime.now().strftime('%Y-%m-%d')})
+        self.assertEqual(self.journals('asset_inventory_reclass', waiting), 1)   # a second post does nothing
+        # after the move, delivery carries the cost to cost of sales
+        with app.app_context():
+            get_db().execute('UPDATE asset_orders SET status=?,dispatched_at=? WHERE id=?',
+                             ('ready_for_receipt', datetime.now() - timedelta(days=9), waiting))
+            get_db().commit()
+        with patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '0'}):
+            self.confirm_for_member(waiting)
+        self.assertIn(('5200', 450000.0, 0.0), self.lines('asset_scheme', waiting))
+
+    def test_inventory_page_reconciles_stock_to_the_ledger_and_is_for_treasury_only(self):
+        import asset_accounting
+        with app.app_context():
+            db = get_db()
+            before = asset_accounting.ledger_balance(db, '1300') - asset_accounting.stock_on_hand(db)[1]
+        order_id = self.make_order('approved_for_procurement')
+        self.login('treasurer')
+        self.act(order_id, action='procured', procurement_account=self.cash_account, procurement_reference='SUP-INV')
+        with app.app_context():
+            db = get_db()
+            after = asset_accounting.ledger_balance(db, '1300') - asset_accounting.stock_on_hand(db)[1]
+        self.assertAlmostEqual(before, after, places=2)           # a purchase adds the same to stock list and ledger
+        page = self.client.get('/asset-schemes/inventory')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('Ledger balance', page.text)
+        self.login('secretary')
+        self.assertNotEqual(self.client.get('/asset-schemes/inventory').status_code, 200)
+
+    def test_a_wrong_account_mapping_stops_the_purchase_with_a_clear_reason(self):
+        order_id = self.make_order('approved_for_procurement')
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO settings (key,value) VALUES ('asset_inventory_account','9999') "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            db.commit()
+        try:
+            self.login('treasurer')
+            self.act(order_id, action='procured', procurement_account=self.cash_account, procurement_reference='SUP-BAD')
+            self.assertEqual(self.order(order_id)['status'], 'approved_for_procurement')
+            self.assertEqual(self.journals('asset_procurement', order_id), 0)
+        finally:
+            with app.app_context():
+                get_db().execute("UPDATE settings SET value='1300' WHERE key='asset_inventory_account'")
+                get_db().commit()
+
+    # -- affordability is looked at, and again on the real price -----------------------------------
+    def test_eligibility_review_lists_every_point_to_check(self):
+        import asset_eligibility
+        with app.app_context():
+            db = get_db()
+            member = db.execute('SELECT * FROM members WHERE id=?', (self.member_id,)).fetchone()
+            status, reason = asset_eligibility.review(db, member, 20000, 120000)
+            self.assertEqual(status, 'eligible')                    # 500,000 savings x 2 covers 120,000; 20,000 is well within salary
+            db.execute("""INSERT INTO loans (loan_number,member_id,amount,total_repayment,balance,tenure,status,
+                purpose,first_payment_date,disbursement_date) VALUES (?,?,900000,900000,900000,6,'active','Regular',?,?)""",
+                       (f'EL-{self.tag}', self.member_id, datetime.now() - timedelta(days=100),
+                        datetime.now() - timedelta(days=130)))
+            db.commit()
+            member = db.execute('SELECT * FROM members WHERE id=?', (self.member_id,)).fetchone()
+            status, reason = asset_eligibility.review(db, member, 20000, 120000)
+        self.assertEqual(status, 'review')
+        self.assertIn('of monthly salary', reason)                  # 150,000 + 20,000 on 300,000 a month
+        self.assertIn('in arrears', reason)
+        self.assertIn('savings support', reason)
+
+    def test_a_clean_member_is_eligible_with_an_hr_reminder_for_salary_deduction(self):
+        import asset_eligibility
+        with app.app_context():
+            db = get_db()
+            member = db.execute('SELECT * FROM members WHERE id=?', (self.member_id,)).fetchone()
+            status, reason = asset_eligibility.review(db, member, 20000, 120000, 'salary_deduction')
+        self.assertEqual(status, 'eligible')
+        self.assertIn('confirm the deduction with HR', reason)
+
+    def test_the_quote_is_assessed_again_on_the_real_price(self):
+        order_id = self.make_order('sourcing_quote', stage='quote', accepted=False, eligibility_status='eligible',
+                                   eligibility_reason='Looked fine on the budget')
+        with app.app_context():
+            item = get_db().execute('SELECT id FROM asset_order_items WHERE order_id=?', (order_id,)).fetchone()['id']
+        self.login('treasurer')
+        self.act(order_id, action='quote', quoted_supplier_cost='900000', quoted_delivery_fee='0',
+                 **{f'item_unit_price_{item}': '3000000', f'agreed_product_name_{item}': 'Big TV',
+                    f'agreed_brand_{item}': 'LG', f'agreed_specification_{item}': '85 inch'})
+        order = self.order(order_id)
+        self.assertEqual(order['status'], 'awaiting_member_quote')
+        self.assertEqual(order['eligibility_status'], 'review')
+        self.assertIn('of monthly salary', order['eligibility_reason'])
+        self.assertIsNotNone(order['quote_valid_until'])
+
+    # -- quotes expire ------------------------------------------------------------------------------
+    def test_an_expired_quote_cannot_be_accepted_but_a_revision_can_be_asked_for(self):
+        order_id = self.make_order('awaiting_member_quote', stage='quote', accepted=False,
+                                   quote_valid_until=datetime.now() - timedelta(days=1))
+        self.login('member')
+        page = self.client.get(f'/asset-schemes/orders/{order_id}').text
+        self.assertIn('This quote has expired', page)
+        self.assertNotIn('Accept and submit for approval', page)
+        self.client.post(f'/asset-schemes/orders/{order_id}/accept-quote', data={'accept_quote': '1'})
+        self.assertEqual(self.order(order_id)['status'], 'awaiting_member_quote')
+        self.client.post(f'/asset-schemes/orders/{order_id}/request-revision', data={'reason': 'Please refresh the price'})
+        self.assertEqual(self.order(order_id)['status'], 'sourcing_quote')
+
+    def test_a_current_quote_shows_its_expiry_and_the_yearly_rate(self):
+        order_id = self.make_order('awaiting_member_quote', stage='quote', accepted=False,
+                                   quote_valid_until=datetime.now() + timedelta(days=5))
+        self.login('member')
+        page = self.client.get(f'/asset-schemes/orders/{order_id}').text
+        self.assertIn('Quote valid until', page)
+        self.assertIn('Equivalent yearly rate', page)
+        self.assertIn('39.2%', page)
+        self.assertIn('Accept and submit for approval', page)
+
+    def test_effective_yearly_rate_of_a_flat_charge(self):
+        from asset_schemes import effective_annual_rate
+        self.assertEqual(effective_annual_rate(500000, 20, 6), 39.2)
+        self.assertEqual(effective_annual_rate(500000, 20, 12), 41.3)
+
+    def test_invoice_pdf_carries_the_schedule(self):
+        order_id = self.make_order('submitted', stage='secretary')
+        self.login('member')
+        result = self.client.get(f'/asset-schemes/orders/{order_id}/invoice.pdf')
+        self.assertEqual((result.status_code, result.mimetype), (200, 'application/pdf'))
+        self.assertGreater(len(result.data), 2000)
+
+    # -- web and mobile apply by the same rules -------------------------------------------------------
+    def test_apply_needs_a_signature_and_a_sensible_budget_on_the_web_too(self):
+        self.login('member')
+        form = {f'qty_{self.product_id}': '1', 'repayment_method': 'salary_deduction', 'terms_accepted': '1'}
+        url = f'/asset-schemes/apply/{self.campaign_id}'
+        def count():
+            with app.app_context():
+                return get_db().execute('SELECT COUNT(*) FROM asset_orders WHERE member_id=?', (self.member_id,)).fetchone()[0]
+        before = count()
+        self.client.post(url, data={**form, f'budget_{self.product_id}': '500000', 'signature_name': ''})
+        self.client.post(url, data={**form, f'budget_{self.product_id}': '500', 'signature_name': 'Asset Member'})
+        self.assertEqual(count(), before)
+        self.client.post(url, data={**form, f'budget_{self.product_id}': '500000', 'signature_name': 'Asset Member'})
+        self.assertEqual(count(), before + 1)
+
+    # -- housekeeping ---------------------------------------------------------------------------------
+    def test_the_newsletter_task_ignores_a_token_in_the_address(self):
+        with patch.dict(os.environ, {'TASK_RUNNER_TOKEN': 'secret-task-token'}):
+            self.client.get('/logout')
+            self.assertEqual(self.client.post('/tasks/asset-schemes/newsletters?token=secret-task-token').status_code, 403)
+            self.assertEqual(self.client.post('/tasks/asset-schemes/newsletters',
+                                              headers={'X-Task-Token': 'secret-task-token'}).status_code, 200)
 
     # -- requests are numbered safely and submitted once --------------------------------------------
     def test_requests_get_distinct_numbers_and_a_double_click_makes_one(self):

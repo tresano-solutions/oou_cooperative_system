@@ -226,7 +226,46 @@ PERMISSIONS = [
         'endpoints': ('loans.repay_loan', 'loans.bulk_loan_repayments',
                       'loans.export_loans', 'loans.export_loan_statements',
                       'loans.download_repayment_template', 'loans.payroll_loan_book',
-                      'loans.payroll_repayment_adapter'),
+                      'loans.payroll_repayment_adapter', 'loans.payroll_saved_matches'),
+    },
+
+    {
+        'key': 'loans.defer_repayment',
+        'label': 'Defer when a loan starts repaying',
+        'group': 'Loans',
+        'description': ("Move a loan's first repayment to a later payroll month. This is the President's decision "
+                        "alone: the system also checks the office, so granting it to another officer has no effect."),
+        'default_roles': ('admin',),
+        'endpoints': ('loans.defer_repayment_start',),
+    },
+    # ── Asset schemes ────────────────────────────────────────────────────────
+    {
+        'key': 'assets.manage',
+        'label': 'Work the asset scheme queue',
+        'group': 'Asset Schemes',
+        'description': ('Open the asset request queue and act on requests: quote, approve, buy, dispatch, cancel, '
+                        'or confirm delivery for a member. Which step an officer may take still follows the '
+                        'scheme rules (the President and Treasurer record supplier costs and payments; each '
+                        'approval stage belongs to its own office).'),
+        'default_roles': ('admin', 'treasurer', 'secretary'),
+        'endpoints': ('asset_schemes.manage', 'asset_schemes.staff_action', 'asset_schemes.confirm_receipt_officer'),
+    },
+    {
+        'key': 'assets.inventory',
+        'label': 'Review asset scheme inventory',
+        'group': 'Asset Schemes',
+        'description': 'See the stock held for asset requests against the ledger, and reclassify earlier purchases that were expensed to inventory.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('asset_schemes.inventory', 'asset_schemes.reclassify_inventory'),
+    },
+    {
+        'key': 'assets.campaigns',
+        'label': 'Set up asset campaigns and the appliance library',
+        'group': 'Asset Schemes',
+        'description': 'Create and schedule campaigns and newsletters, and maintain the appliance library and campaign products.',
+        'default_roles': ('admin', 'treasurer'),
+        'endpoints': ('asset_schemes.add_from_library', 'asset_schemes.add_product', 'asset_schemes.create_library_item',
+                      'asset_schemes.update_campaign', 'asset_schemes.update_library_item'),
     },
 
     # ── Investments ──────────────────────────────────────────────────────────

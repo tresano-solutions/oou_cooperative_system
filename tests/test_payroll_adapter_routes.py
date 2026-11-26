@@ -387,6 +387,22 @@ class PayrollRoutes(unittest.TestCase):
         self.assertEqual(re.search(r'data-batch="([0-9a-f]{16})"', picked.text).group(1), key)
         self.assertIn(f'data-member="{self.member}"', picked.text)
 
+    def test_saved_matches_can_be_seen_and_removed(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO payroll_identity_map (hr_key,member_id,hr_label) VALUES (?,?,?)",
+                       (f'id:SAVED-{self._testMethodName}', self.member, 'HR LINE LABEL'))
+            db.commit()
+            saved_id = db.execute("SELECT id FROM payroll_identity_map WHERE hr_key=?", (f'id:SAVED-{self._testMethodName}',)).fetchone()['id']
+        page = self.client.get('/loans/payroll-matches')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('HR LINE LABEL', page.text)
+        self.assertIn('Saved member matches', self.client.get('/loans/payroll-adapter').text)
+        self.client.post('/loans/payroll-matches', data={'match_id': str(saved_id)})
+        self.assertNotIn('HR LINE LABEL', self.client.get('/loans/payroll-matches').text)
+        with app.app_context():
+            self.assertIsNone(get_db().execute('SELECT 1 FROM payroll_identity_map WHERE id=?', (saved_id,)).fetchone())
+
     def test_static_files_get_a_version_so_deploys_are_not_hidden_by_the_cache(self):
         page = self.client.get('/loans/payroll-adapter').text
         self.assertRegex(page, r'/static/css/style\.css\?v=\d+')

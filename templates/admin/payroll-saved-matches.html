@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Saved Member Matches{% endblock %}
+{% block content %}
+<div class="container-fluid">
+  <div class="row mb-3">
+    <div class="col-md-8">
+      <h2>Saved Member Matches</h2>
+      <p class="text-muted mb-0">When you pick a member for an HR line and confirm it, the Intelligent Loan Adapter remembers the match and applies it automatically next month. If one is wrong, remove it here and that line will be matched afresh.</p>
+    </div>
+    <div class="col-md-4">
+      <a class="btn btn-outline-secondary" href="{{ url_for('loans.payroll_repayment_adapter') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i> Intelligent Loan Adapter</a>
+    </div>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead class="table-light"><tr><th>HR line</th><th>Matched by</th><th>Member</th><th>Saved</th><th class="text-end">Action</th></tr></thead>
+      <tbody>
+      {% for m in matches %}
+        <tr>
+          <td>{{ m.hr_label or '-' }}</td>
+          <td><code>{{ m.hr_key }}</code></td>
+          <td>{{ m.member_name }} <span class="text-muted small">({{ m.member_number or '-' }})</span></td>
+          <td class="small text-muted">{{ m.updated_at|fmtdt }}</td>
+          <td class="text-end">
+            <form method="post" class="d-inline" onsubmit="return confirm('Remove this saved match?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="match_id" value="{{ m.id }}">
+              <button class="btn btn-outline-danger btn-sm">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">Nothing saved yet. Matches you confirm in the adapter will appear here.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

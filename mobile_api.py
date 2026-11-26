@@ -48,8 +48,9 @@ from utils import (
     clear_account_failures,
     pause_message,
 )
-from asset_schemes import (CANCELLABLE_BEFORE_PURCHASE, finance_terms, member_can_cancel,
-                           schedule_snapshot)
+from asset_requests import AssetRequestError, check_item, check_terms, clean_preferences, create_request
+from asset_schemes import (CANCELLABLE_BEFORE_PURCHASE, finance_terms, member_can_cancel, quote_expired,
+                           quote_expiry, schedule_snapshot)
 from asset_documents import update_asset_documents
 from asset_notifications import notify_asset_member, notify_asset_roles
 from asset_documents import ensure_asset_documents
@@ -922,84 +923,35 @@ def mobile_assets_apply():
         (data.get('campaign_id'), now, now)).fetchone()
     if not campaign:
         return _json_error('This asset campaign is not available.', 404, 'campaign_unavailable')
-    if data.get('terms_accepted') is not True:
-        return _json_error('Accept the scheme terms before submitting.', 400, 'terms_required')
-    repayment_method = str(data.get('repayment_method') or '').strip()
-    allowed = {x.strip() for x in (campaign['repayment_methods'] or '').split(',') if x.strip()}
-    if repayment_method not in allowed:
-        return _json_error('Choose an available repayment method.', 400, 'invalid_repayment_method')
-    requested = data.get('items') if isinstance(data.get('items'), list) else []
-    requested_by_id = {int(item.get('product_id')): item for item in requested if item.get('product_id')}
-    selected = []
-    for product in db.execute("SELECT * FROM asset_products WHERE campaign_id=? AND status='active'", (campaign['id'],)).fetchall():
-        item = requested_by_id.get(product['id'])
-        if not item: continue
-        try:
-            qty = int(item.get('quantity') or 0); expected = finite_float(item.get('preferred_spend') or 0)
-        except (TypeError, ValueError):
-            return _json_error('Enter valid quantities and preferred spend.', 400, 'invalid_items')
-        if qty < 1 or qty > 20 or expected < 1000:
-            return _json_error(f'Check quantity and preferred spend for {product["name"]}.', 400, 'invalid_items')
-        preferences = {}
-        for key, limit in (('requested_brand', 100), ('requested_model', 100),
-                           ('requested_size_spec', 160), ('requested_notes', 500)):
-            value = str(item.get(key) or '').strip()
-            if len(value) > limit:
-                return _json_error('One of the appliance preference fields is too long.', 400, 'invalid_items')
-            preferences[key] = value
-        selected.append((product, qty, expected, preferences))
-    if not selected:
-        return _json_error('Select at least one appliance.', 400, 'items_required')
-    signature = str(data.get('signature_name') or '').strip()
-    if not signature:
-        return _json_error('Type your full name as confirmation.', 400, 'signature_required')
-    subtotal = round(sum(expected * qty for _, qty, expected, preferences in selected), 2)
-    interest, total, monthly = finance_terms(subtotal, campaign['annual_interest_rate'], campaign['tenure_months'])
-    annual_salary = float(g.member['annual_salary'] or 0)
-    eligible = annual_salary <= 0 or monthly <= annual_salary / 12 * 0.4
-    reason = ('Monthly repayment is within 40% of recorded monthly salary.' if annual_salary and eligible
-              else 'Monthly repayment exceeds 40% of recorded monthly salary; committee review required.' if annual_salary
-              else 'No salary recorded; committee affordability review required.')
-    order_number = f'AS/TMP/{uuid.uuid4().hex}'
-    db.execute('''INSERT INTO asset_orders
-        (order_number,campaign_id,member_id,status,approval_stage,expected_spend,quote_status,
-         selling_subtotal,annual_interest_rate,tenure_months,interest_amount,total_repayment,
-         monthly_repayment,delivery_fee,repayment_method,eligibility_status,eligibility_reason,
-         terms_accepted,signature_name,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (order_number, campaign['id'], g.member['id'], 'sourcing_quote', 'quote', subtotal,
-         'not_quoted', subtotal, campaign['annual_interest_rate'], campaign['tenure_months'],
-         interest, total, monthly, 0, repayment_method, 'eligible' if eligible else 'review',
-         reason, 1, signature, g.user_id))
-    order_id = last_insert_id(db)
-    order_number = f"AS/{now:%Y%m%d}/{order_id:05d}"
-    db.execute('UPDATE asset_orders SET order_number=? WHERE id=?', (order_number, order_id))
-    preference_summary = []
-    for product, qty, expected, preferences in selected:
-        db.execute('''INSERT INTO asset_order_items
-            (order_id,product_id,product_name,brand,model,size_spec,quantity,unit_purchase_cost,
-             unit_selling_price,unit_delivery_fee,expected_unit_spend,requested_brand,requested_model,
-             requested_size_spec,requested_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (order_id, product['id'], product['name'], product['brand'], product['model'],
-             product['size_spec'], qty, product['purchase_cost'], 0, 0, expected,
-             preferences['requested_brand'], preferences['requested_model'],
-             preferences['requested_size_spec'], preferences['requested_notes']))
-        details = ', '.join(value for value in (
-            preferences['requested_brand'], preferences['requested_model'],
-            preferences['requested_size_spec']) if value)
-        preference_summary.append(f'{product["name"]}: {details or "open specification"}')
-    db.execute('''INSERT INTO asset_order_events
-        (order_id,stage,action,actor_id,actor_name,comment) VALUES (?, 'quote','sourcing_requested',?,?,?)''',
-        (order_id, g.user_id, g.username,
-         f'Member preferred budget ₦{subtotal:,.2f}. Requested: {"; ".join(preference_summary)}. {reason}'))
-    notification_order = _asset_order_for_notifications(db, order_id)
-    portal_url = request.url_root.rstrip('/')
-    notify_asset_member(db, notification_order, 'Asset request received',
-                        'Your interest has been recorded. The cooperative is sourcing suitable options and will send you a final quote.',
-                        'success', portal_url)
-    notify_asset_roles(db, notification_order, ('admin', 'treasurer'), 'New asset request to source',
-                       f'{g.member["first_name"]} {g.member["last_name"]} submitted an asset request requiring a supplier quote.',
-                       'info', portal_url)
+    try:
+        repayment_method = check_terms(campaign, str(data.get('repayment_method') or ''),
+                                       data.get('terms_accepted') is True)
+        requested_by_id = {}
+        for item in (data.get('items') if isinstance(data.get('items'), list) else []):
+            try:
+                requested_by_id[int(item.get('product_id'))] = item
+            except (TypeError, ValueError, AttributeError):
+                continue
+        selected = []
+        for product in db.execute("SELECT * FROM asset_products WHERE campaign_id=? AND status='active'",
+                                  (campaign['id'],)).fetchall():
+            item = requested_by_id.get(product['id'])
+            if not item:
+                continue
+            try:
+                qty = int(item.get('quantity') or 0)
+                expected = finite_float(item.get('preferred_spend') or 0)
+            except (TypeError, ValueError):
+                raise AssetRequestError('Enter valid quantities and preferred spend.', 'invalid_items')
+            check_item(product, qty, expected)
+            selected.append((product, qty, expected, clean_preferences(item.get)))
+        order_id, order_number = create_request(
+            db, campaign=campaign, member=g.member, selected=selected, repayment_method=repayment_method,
+            signature=str(data.get('signature_name') or ''), user_id=g.user_id, username=g.username,
+            portal_url=request.url_root.rstrip('/'))
+    except AssetRequestError as exc:
+        db.rollback()
+        return _json_error(str(exc), 400, exc.code)
     db.commit()
     return jsonify({'success': True, 'order_id': order_id, 'order_number': order_number,
                     'message': 'Your request was submitted for supplier sourcing.'}), 201
@@ -1057,6 +1009,9 @@ def mobile_assets_accept_quote(order_id):
         return _json_error('There is no final quote awaiting acceptance.', 409, 'quote_unavailable')
     if data.get('accept_quote') is not True:
         return _json_error('Confirm that you accept the final selling price and repayment schedule.', 400, 'acceptance_required')
+    if quote_expired(order):
+        return _json_error(f'This quote expired on {quote_expiry(order):%d %b %Y}. Ask for a revised quote and the '
+                           'cooperative will refresh the price.', 409, 'quote_expired')
     snapshot = json.dumps(schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'],
                                             order['tenure_months']))
     accepted = db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',

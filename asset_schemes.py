@@ -1,5 +1,6 @@
 """Business rules for cooperative-financed asset sales."""
 
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 
@@ -46,6 +47,22 @@ CANCELLABLE_AFTER_PURCHASE = ('procured', 'ready_for_receipt')
 OFFICER_CONFIRM_WAIT_DAYS = 3
 
 
+def quote_expiry(order):
+    """When the quote stops being valid, as a datetime, or None if it has no expiry."""
+    value = order['quote_valid_until'] if 'quote_valid_until' in order.keys() else None
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    from loan_workflow import _as_datetime
+    return _as_datetime(value)
+
+
+def quote_expired(order, now=None):
+    expiry = quote_expiry(order)
+    return bool(expiry and (now or datetime.now()) > expiry)
+
+
 def member_can_cancel(order):
     return order['status'] in CANCELLABLE_BEFORE_PURCHASE and not order['linked_loan_id']
 
@@ -67,3 +84,21 @@ def schedule_snapshot(selling_subtotal, annual_rate, tenure_months, purpose='Ass
         'interest_rate': float(annual_rate), 'interest_method': 'flat',
         'monthly_payment': round(float(monthly), 2), 'total_repayment': total, 'schedule': schedule,
     }
+
+
+def effective_annual_rate(selling_subtotal, annual_rate, tenure_months):
+    """What the flat finance charge costs a member as a yearly rate on the balance they still owe.
+
+    "20% a year" flat looks like 20%, but the member repays the principal month by month, so the
+    charge falls on a shrinking balance and the true yearly cost is higher. Returned as a percentage
+    (one decimal), solved from the equal monthly instalments."""
+    _, total, _ = finance_terms(selling_subtotal, annual_rate, tenure_months)
+    months = int(tenure_months)
+    payment = total / months
+    principal = float(selling_subtotal)
+    low, high = 0.0, 1.0
+    for _ in range(80):
+        mid = (low + high) / 2
+        present = sum(payment / (1 + mid) ** k for k in range(1, months + 1))
+        low, high = (mid, high) if present > principal else (low, mid)
+    return round(((1 + mid) ** 12 - 1) * 100, 1)

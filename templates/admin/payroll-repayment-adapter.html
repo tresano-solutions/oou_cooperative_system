@@ -93,7 +93,10 @@
       <h2>Intelligent Loan Adapter</h2>
       <p>Turn the HR payroll deduction file into ready-to-upload loan repayment and salary savings files. Nothing is posted here.</p>
     </div>
-    <a class="btn btn-outline-secondary" href="{{ url_for('loans.bulk_loan_repayments') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i> Bulk Repayments</a>
+    <span class="d-flex gap-2 flex-wrap">
+      <a class="btn btn-outline-secondary" href="{{ url_for('loans.payroll_saved_matches') }}"><i class="fas fa-link" aria-hidden="true"></i> Saved member matches</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('loans.bulk_loan_repayments') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i> Bulk Repayments</a>
+    </span>
   </div>
 
   <ol class="adp-steps" aria-label="Progress">
