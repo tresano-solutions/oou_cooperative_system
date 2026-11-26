@@ -1,0 +1,58 @@
+{# Agreed schedule vs payments for one loan. Expects `tracking` from loan_tracking.track_loan. #}
+{% macro n(v) -%}{{ '{:,.2f}'.format(v) }}{%- endmacro %}
+<style>
+  .lt-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75rem; margin-bottom:1rem; }
+  .lt-stat { border:1px solid #dfe4ea; border-radius:10px; padding:.6rem .8rem; background:#fff; }
+  .lt-stat span { display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:#5b6575; }
+  .lt-stat strong { display:block; font-size:1.1rem; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; color:#1f2937; }
+  .lt-note { border:1px solid #f0d28a; background:#fff7e0; color:#6b4a00; border-radius:8px; padding:.55rem .8rem; font-size:.85rem; margin-bottom:.75rem; }
+  .lt-behind { color:#a12626 !important; } .lt-ahead { color:#17653a !important; }
+  .lt-table { width:100%; border-collapse:collapse; font-size:.84rem; min-width:0; }
+  .lt-table th { background:#e9eef5; color:#1f2937; font-size:.75rem; text-transform:uppercase; letter-spacing:.03em; padding:.4rem .4rem; text-align:left; white-space:nowrap; }
+  .lt-table th.num, .lt-table td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lt-table td { padding:.4rem .4rem; white-space:nowrap; border-bottom:1px solid #dfe4ea; background:#fff; color:#1f2937; }
+  .lt-pill { display:inline-block; border-radius:999px; padding:.1rem .6rem; font-size:.75rem; font-weight:600; white-space:nowrap; }
+  .lt-Paid, .lt-Completed { background:#e3f4ea; color:#17653a; } .lt-Ahead, .lt-Ontrack { background:#e3f4ea; color:#17653a; }
+  .lt-Paidlate, .lt-Partpaid, .lt-Due { background:#fff2d6; color:#8a5a00; }
+  .lt-Missed, .lt-Behind { background:#fde7e7; color:#a12626; }
+  .lt-Upcoming, .lt-Notstarted, .lt-Noschedule { background:#eef1f5; color:#5b6575; }
+</style>
+<div class="card mb-3" id="loan-tracking">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <h6 class="mb-0">Agreed Schedule vs Payments</h6>
+    <a href="{{ url_for('loans.repayment_tracking') }}" class="btn btn-outline-secondary btn-sm"><i class="fas fa-list" aria-hidden="true"></i> All members</a>
+  </div>
+  <div class="card-body">
+    {% if not tracking.has_schedule %}
+      <div class="alert alert-secondary py-2 mb-0">{{ tracking.source }} Payments received so far: <strong>&#8358;{{ n(tracking.paid_total) }}</strong>. See the loan statement below for each payment.</div>
+    {% else %}
+    <div class="lt-grid">
+      <div class="lt-stat"><span>Status</span><strong><span class="lt-pill lt-{{ tracking.status|replace(' ', '')|replace('-', '') }}">{{ tracking.status }}</span></strong></div>
+      <div class="lt-stat"><span>Agreed total</span><strong>&#8358;{{ n(tracking.agreed_total) }}</strong></div>
+      <div class="lt-stat"><span>Scheduled to date</span><strong>&#8358;{{ n(tracking.scheduled_to_date) }}</strong></div>
+      <div class="lt-stat"><span>Paid to date</span><strong>&#8358;{{ n(tracking.paid_total) }}</strong></div>
+      <div class="lt-stat"><span>{{ 'Arrears' if tracking.gap > 0 else 'Ahead by' }}</span><strong class="{{ 'lt-behind' if tracking.gap > 0 else ('lt-ahead' if tracking.gap < 0 else '') }}">&#8358;{{ n(tracking.gap|abs) }}</strong></div>
+      <div class="lt-stat"><span>Recorded balance</span><strong>&#8358;{{ n(tracking.balance) }}</strong></div>
+    </div>
+    <p class="small text-muted mb-2">{{ tracking.source }}. Instalments due: {{ tracking.due_count }} of {{ tracking.rows|length }}. A payment received by the end of the due month counts as on time.
+      {% if tracking.last_payment %}Last payment: &#8358;{{ n(tracking.last_payment[1]) }} on {{ tracking.last_payment[0].strftime('%d %b %Y') }}.{% else %}No payment recorded yet.{% endif %}</p>
+    {% if tracking.balance_gap is not none %}
+    <div class="lt-note">The recorded balance differs from the agreed total less payments by <strong>&#8358;{{ n(tracking.balance_gap|abs) }}</strong>
+      ({{ 'higher' if tracking.balance_gap > 0 else 'lower' }}). This usually means a correction, an opening balance or a settlement adjustment. Check the statement and journals below.</div>
+    {% endif %}
+    <div class="table-responsive">
+      <table class="lt-table">
+        <thead><tr><th>#</th><th>Due date</th><th class="num">Instalment</th><th class="num">Agreed to date</th><th class="num">Paid in period</th><th class="num">Paid to date</th><th class="num" title="Agreed to date less paid to date, at the end of the due month">Shortfall</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in tracking.rows %}
+          <tr><td>{{ r.month }}</td><td>{{ r.due.strftime('%d %b %y') }}</td><td class="num">{{ n(r.payment) }}</td><td class="num">{{ n(r.cumulative) }}</td>
+            <td class="num">{{ n(r.paid_in_period) }}</td><td class="num">{{ n(r.paid_by_end) }}</td>
+            <td class="num {{ 'lt-behind' if r.gap_at_end > 0 and r.status in ('Missed','Part-paid','Paid late') else '' }}">{{ n(r.gap_at_end) if r.due_passed else '&mdash;'|safe }}</td>
+            <td><span class="lt-pill lt-{{ r.status|replace(' ', '')|replace('-', '') }}">{{ r.status }}</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>

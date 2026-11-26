@@ -755,6 +755,53 @@ def apply_loan():
                            method_labels=METHOD_LABELS)
 
 
+@loans.route('/loans/tracking')
+@login_required
+@role_required('admin', 'treasurer', 'secretary', 'exco')
+def repayment_tracking():
+    import loan_tracking as lt
+    db = get_db()
+    as_of = datetime.now()
+    rows = lt.portfolio(db, as_of)
+    summary = {'loans': len(rows), 'behind': 0, 'arrears': 0, 'scheduled': 0, 'paid': 0, 'no_schedule': 0}
+    for r in rows:
+        summary['paid'] += r['paid_total']
+        if not r['has_schedule']:
+            summary['no_schedule'] += 1
+            continue
+        summary['scheduled'] += r['scheduled_to_date']
+        if r['status'] == 'Behind':
+            summary['behind'] += 1
+            summary['arrears'] += r['gap']
+    status = request.args.get('status', '')
+    q = request.args.get('q', '').strip().lower()
+    wanted = {'behind': ('Behind',), 'ontrack': ('On track', 'Ahead', 'Completed', 'Not started'),
+              'noschedule': ('No schedule',)}.get(status)
+    if wanted:
+        rows = [r for r in rows if r['status'] in wanted]
+    if q:
+        rows = [r for r in rows if q in ' '.join(str(r['loan'].get(k) or '') for k in
+                                                  ('member_name', 'member_number', 'employee_id', 'loan_number')).lower()]
+    rows.sort(key=lambda r: (r['status'] != 'Behind', -float(r['gap']), r['loan']['member_name']))
+    if request.args.get('export'):
+        audit(db, 'EXPORT_REPAYMENT_TRACKING', 'loans', f'Exported repayment tracking for {len(rows)} active loans')
+        db.commit()
+        return _adapter_csv(
+            ['member_number', 'staff_number', 'member_name', 'loan_number', 'status', 'agreed_instalment',
+             'instalments_due', 'instalments_total', 'scheduled_to_date', 'paid_to_date', 'arrears_positive_ahead_negative',
+             'last_payment_date', 'recorded_balance', 'schedule_source'],
+            [[r['loan'].get('member_number'), r['loan'].get('employee_id'), r['loan']['member_name'],
+              r['loan']['loan_number'], r['status'], r['monthly'] if r['has_schedule'] else '',
+              r['due_count'] if r['has_schedule'] else '', len(r['rows']) if r['has_schedule'] else '',
+              r['scheduled_to_date'] if r['has_schedule'] else '', r['paid_total'],
+              r['gap'] if r['has_schedule'] else '',
+              r['last_payment'][0].strftime('%Y-%m-%d') if r['last_payment'] else '',
+              r['balance'], r['source']] for r in rows],
+            f'repayment_tracking_{as_of.strftime("%Y-%m-%d")}.csv')
+    return render_template('admin/repayment-tracking.html', rows=rows, summary=summary, as_of=as_of,
+                           status=status, q=request.args.get('q', ''))
+
+
 @loans.route('/loans/<int:loan_id>')
 @login_required
 @role_required('admin', 'treasurer', 'secretary', 'exco')
@@ -791,7 +838,12 @@ def loan_detail(loan_id):
     # Only the final stage pays money out, so only it needs to choose a bank.
     is_disbursing_stage = lw.NEXT_STAGE.get(stage) == lw.STAGE_APPROVED
 
+    tracking = None
+    if loan['status'] in ('active', 'completed'):
+        import loan_tracking as lt
+        tracking = lt.track_loan(loan, [r for r in repayments if not r['reversed_at']])
     return render_template('admin/loan-detail.html',
+                           tracking=tracking,
                            bank_accounts=get_postable_cash_accounts(db),
                            default_cash_account=get_default_cash_account(db),
                            is_disbursing_stage=is_disbursing_stage,

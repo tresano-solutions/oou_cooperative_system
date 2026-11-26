@@ -859,8 +859,28 @@ tr:hover {
     background: #ecfeff;
     color: #0e7490;
 }
+.metric-card {
+    container-type: inline-size;
+}
+.metric-card > .d-flex > div:last-child {
+    min-width: 0;
+}
 .metric-card .metric-value {
-    font-size: clamp(1.25rem, 2vw, 1.75rem);
+    font-size: clamp(1.1rem, 1.6vw, 1.6rem);
+    font-size: clamp(1.05rem, 7cqw, 1.6rem);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+/* Narrow cards: put the icon above the text so a long figure keeps the full width. */
+@container (max-width: 270px) {
+    .metric-card > .d-flex {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: .5rem !important;
+    }
+    .metric-card .metric-value {
+        font-size: clamp(.95rem, 9cqw, 1.3rem);
+    }
 }
 .section-title {
     display: flex;

@@ -164,9 +164,10 @@ PERMISSIONS = [
         'key': 'loans.view',
         'label': 'View loan requests and the loan book',
         'group': 'Loans',
-        'description': 'Open the loans list, any loan and its application PDF.',
+        'description': 'Open the loans list, any loan (with its agreed schedule against payments) and the repayment tracking list.',
         'default_roles': ('admin', 'treasurer', 'secretary', 'exco'),
-        'endpoints': ('loans.loans_list', 'loans.loan_detail', 'loans.loan_application_pdf'),
+        'endpoints': ('loans.loans_list', 'loans.loan_detail', 'loans.loan_application_pdf',
+                      'loans.repayment_tracking'),
     },
     {
         'key': 'loans.apply',

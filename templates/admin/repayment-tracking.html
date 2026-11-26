@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Repayment Tracking{% endblock %}
+{% macro n(v) -%}{{ '{:,.2f}'.format(v) }}{%- endmacro %}
+{% block content %}
+<style>
+  .rt { min-width:0; max-width:100%; color:#1f2937; }
+  .rt h2 { font-size:1.4rem; margin:0; color:#1f2937; }
+  .rt-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.75rem; margin:1rem 0; }
+  .rt-stat { background:#fff; border:1px solid #dfe4ea; border-radius:10px; padding:.7rem .9rem; }
+  .rt-stat span { display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:#5b6575; }
+  .rt-stat strong { display:block; font-size:1.25rem; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .rt-wrap { overflow-x:auto; border:1px solid #dfe4ea; border-radius:10px; background:#fff; }
+  .rt-table { width:100%; border-collapse:collapse; min-width:1000px; font-size:.9rem; }
+  .rt-table th { background:#e9eef5; color:#1f2937; font-size:.75rem; text-transform:uppercase; letter-spacing:.03em; padding:.55rem .65rem; text-align:left; white-space:nowrap; }
+  .rt-table th.num, .rt-table td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .rt-table td { padding:.55rem .65rem; border-bottom:1px solid #dfe4ea; background:#fff; color:#1f2937; vertical-align:top; }
+  .rt-sub { display:block; color:#5b6575; font-size:.78rem; }
+  .rt-bad { color:#a12626; font-weight:600; } .rt-good { color:#17653a; font-weight:600; }
+  .rt-pill { display:inline-block; border-radius:999px; padding:.1rem .6rem; font-size:.75rem; font-weight:600; white-space:nowrap; }
+  .rt-Behind { background:#fde7e7; color:#a12626; } .rt-Ontrack, .rt-Ahead, .rt-Completed { background:#e3f4ea; color:#17653a; }
+  .rt-Notstarted, .rt-Noschedule { background:#eef1f5; color:#5b6575; }
+</style>
+<div class="rt">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+    <div>
+      <h2>Repayment Tracking</h2>
+      <p class="text-muted mb-0">Agreed repayment schedule against what each member has actually paid, as at {{ as_of.strftime('%d %b %Y') }}. Payments received by the end of the due month count as on time.</p>
+    </div>
+    <a class="btn btn-outline-primary" href="{{ url_for('loans.repayment_tracking', status=status, q=q, export=1) }}"><i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV</a>
+  </div>
+
+  <div class="rt-stats">
+    <div class="rt-stat"><span>Active loans</span><strong>{{ summary.loans }}</strong></div>
+    <div class="rt-stat"><span>Behind schedule</span><strong class="{{ 'rt-bad' if summary.behind else '' }}">{{ summary.behind }}</strong></div>
+    <div class="rt-stat"><span>Total arrears</span><strong class="{{ 'rt-bad' if summary.arrears else '' }}">&#8358;{{ n(summary.arrears) }}</strong></div>
+    <div class="rt-stat"><span>Scheduled to date</span><strong>&#8358;{{ n(summary.scheduled) }}</strong></div>
+    <div class="rt-stat"><span>Paid to date</span><strong>&#8358;{{ n(summary.paid) }}</strong></div>
+    <div class="rt-stat"><span>No agreed schedule</span><strong>{{ summary.no_schedule }}</strong></div>
+  </div>
+
+  <form method="get" class="d-flex flex-wrap gap-2 align-items-end mb-3">
+    <div><label class="form-label mb-1" for="rt-status">Show</label>
+      <select id="rt-status" name="status" class="form-select">
+        {% for value, label in [('', 'All active loans'), ('behind', 'Behind schedule'), ('ontrack', 'On track or ahead'), ('noschedule', 'No agreed schedule')] %}<option value="{{ value }}" {% if status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></div>
+    <div><label class="form-label mb-1" for="rt-q">Search</label><input id="rt-q" name="q" value="{{ q }}" class="form-control" placeholder="Name, member or loan number"></div>
+    <button class="btn btn-primary">Apply</button>
+  </form>
+
+  <div class="rt-wrap">
+    <table class="rt-table">
+      <thead><tr><th>Member</th><th>Loan</th><th class="num">Agreed instalment</th><th class="num">Due so far</th><th class="num">Scheduled to date</th><th class="num">Paid to date</th><th class="num">Arrears / ahead</th><th>Last payment</th><th class="num">Balance</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td><strong>{{ r.loan.member_name }}</strong><span class="rt-sub">Member {{ r.loan.member_number or '-' }}{% if r.loan.employee_id %} &middot; Staff {{ r.loan.employee_id }}{% endif %}</span></td>
+          <td><a href="{{ url_for('loans.loan_detail', loan_id=r.loan.id) }}#loan-tracking">{{ r.loan.loan_number }}</a><span class="rt-sub">{{ r.loan.purpose or '' }}</span></td>
+          {% if r.has_schedule %}
+          <td class="num">{{ n(r.monthly) }}</td>
+          <td class="num">{{ r.due_count }} of {{ r.rows|length }}</td>
+          <td class="num">{{ n(r.scheduled_to_date) }}</td>
+          <td class="num">{{ n(r.paid_total) }}</td>
+          <td class="num {{ 'rt-bad' if r.gap > 0 else ('rt-good' if r.gap < 0 else '') }}">{% if r.gap > 0 %}Behind {{ n(r.gap) }}{% elif r.gap < 0 %}Ahead {{ n(r.gap|abs) }}{% else %}0.00{% endif %}</td>
+          {% else %}
+          <td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">{{ n(r.paid_total) }}</td><td class="num"><span class="rt-sub">{{ r.source }}</span></td>
+          {% endif %}
+          <td>{% if r.last_payment %}{{ r.last_payment[0].strftime('%d %b %Y') }}<span class="rt-sub">&#8358;{{ n(r.last_payment[1]) }}</span>{% else %}<span class="rt-sub">None yet</span>{% endif %}</td>
+          <td class="num">{{ n(r.balance) }}</td>
+          <td><span class="rt-pill rt-{{ r.status|replace(' ', '')|replace('-', '') }}">{{ r.status }}</span></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="10" class="text-center text-muted py-4">No loans match.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="text-muted small mt-2">Open a loan to see every instalment against every payment. Migrated loans have no agreed schedule on record, so only payments are shown for them.</p>
+</div>
+{% endblock %}
