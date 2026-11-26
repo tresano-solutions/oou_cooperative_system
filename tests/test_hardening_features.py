@@ -1316,6 +1316,59 @@ class HardeningFeatureTests(unittest.TestCase):
             db.execute('DELETE FROM members WHERE id = ?', (member_id,))
             db.commit()
 
+    def test_officer_who_did_due_diligence_can_still_give_their_own_approval(self):
+        """Running the due-diligence checks is not an approval, so even with separation of
+        duties enforced the officer who completed them can still sign their own stage."""
+        guard = patch.dict(os.environ, {'ENFORCE_SEGREGATION_OF_DUTIES': '1'})
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.login_admin()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("""
+                INSERT INTO members
+                    (member_number, employee_id, first_name, last_name, email,
+                     phone, status, monthly_savings, total_savings, date_joined)
+                VALUES ('OOU/TEST/DUE2', 'EMP-DUE2', 'Dele', 'Diligence',
+                        'dele.diligence@example.com', '08000000022', 'active',
+                        15000, 100000, '2024-01-01')
+            """)
+            member_id = db.execute("SELECT id FROM members WHERE member_number = 'OOU/TEST/DUE2'").fetchone()['id']
+            db.execute("""
+                INSERT INTO loans
+                    (loan_number, member_id, amount, purpose, tenure, interest_rate,
+                     interest_method, total_repayment, balance, status, approval_stage,
+                     loan_applicant_type, hr_affordability_consent, hr_affordability_status,
+                     payment_collateral_type, payment_collateral_status, date_applied)
+                VALUES ('LOAN/DUE/0002', ?, 50000, 'Regular', 6, 11,
+                        'reducing_annual', 52000, 52000, 'pending', 'president',
+                        'staff', 1, 'pending', 'standing_order', 'pending', '2026-07-20')
+            """, (member_id,))
+            db.commit()
+            loan_id = db.execute("SELECT id FROM loans WHERE loan_number = 'LOAN/DUE/0002'").fetchone()['id']
+
+        self.client.post(f'/loans/{loan_id}/due-diligence', data={
+            'hr_affordability_confirmed': '1', 'payment_collateral_verified': '1',
+            'comment': 'Checks done by the same officer who will approve.'})
+        self.client.post(f'/loans/{loan_id}/act', data={'action': 'approve'})
+
+        with self.app.app_context():
+            db = get_db()
+            loan = db.execute('SELECT * FROM loans WHERE id = ?', (loan_id,)).fetchone()
+            self.assertEqual((loan['status'], loan['approval_stage']), ('active', 'approved'))
+            blocked = db.execute("SELECT 1 FROM audit_log WHERE action = 'LOAN_SOD_BLOCKED' AND description LIKE ?",
+                                 ('%LOAN/DUE/0002%',)).fetchone()
+            self.assertIsNone(blocked)
+            journal = db.execute("SELECT id FROM journal_entries WHERE reference = 'LOAN/DUE/0002'").fetchone()
+            if journal:
+                db.execute('DELETE FROM journal_lines WHERE entry_id = ?', (journal['id'],))
+                db.execute('DELETE FROM journal_entries WHERE id = ?', (journal['id'],))
+            db.execute("DELETE FROM revenue WHERE source = 'Loan LOAN/DUE/0002'")
+            db.execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan_id,))
+            db.execute('DELETE FROM loans WHERE id = ?', (loan_id,))
+            db.execute('DELETE FROM members WHERE id = ?', (member_id,))
+            db.commit()
+
     def test_loan_insurance_posts_to_payable_not_income(self):
         """The 1% loan insurance is money held for the insurer — a pass-through
         liability, not income. On disbursement it must credit Insurance Payable

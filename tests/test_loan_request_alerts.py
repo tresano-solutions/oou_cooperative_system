@@ -794,24 +794,15 @@ class SodCutoverTests(unittest.TestCase):
             self.assertEqual(
                 lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT), '')
 
-    def test_due_diligence_with_no_timestamp_still_blocks(self):
-        # The two columns are written together, so a date-less check is an
-        # oddity, not an old record. Grandfather only what can be dated.
-        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
-        with self.app.app_context():
-            get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
-            get_db().commit()
-        loan = self._with_due_diligence(loan, None)
-        with self.app.app_context():
-            self.assertIn('due-diligence',
-                          lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT))
-
-    def test_due_diligence_done_after_the_cutover_still_blocks(self):
-        loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
-        with self.app.app_context():
-            get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
-            get_db().commit()
-        loan = self._with_due_diligence(loan, self.CUTOVER + timedelta(days=2))
-        with self.app.app_context():
-            self.assertIn('due-diligence',
-                          lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT))
+    def test_due_diligence_never_blocks_the_officer_who_did_it(self):
+        # Running the checks is not an approval. Whether it was dated before the
+        # cutover, after it, or not at all, the officer can still sign their stage.
+        for when in (self.CUTOVER - timedelta(days=2), self.CUTOVER + timedelta(days=2), None):
+            loan = self._loan_awaiting_president(self.CUTOVER - timedelta(days=2))
+            with self.app.app_context():
+                get_db().execute('DELETE FROM loan_approvals WHERE loan_id = ?', (loan['id'],))
+                get_db().commit()
+            loan = self._with_due_diligence(loan, when)
+            with self.app.app_context():
+                self.assertEqual(
+                    lw.sod_conflict(get_db(), loan, self.officer, lw.STAGE_PRESIDENT), '', str(when))

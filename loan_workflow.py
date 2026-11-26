@@ -137,10 +137,12 @@ def grandfathered_prior(db, loan, user_id):
 def sod_conflict(db, loan, user_id, stage):
     """Why `user_id` may not act at `stage` of this loan, or '' if they may.
 
-    Segregation of duties: nobody approves two stages of the same loan, and the
-    officer who completed the due-diligence checks cannot give the final approval
-    that releases the money. Both tests ignore anything that happened before
-    sod_cutover() — see there for why.
+    Segregation of duties: nobody approves two stages of the same loan. The test
+    ignores anything that happened before sod_cutover() — see there for why.
+
+    Running the due-diligence checks is not an approval, so it never counts here:
+    the Secretary, Treasurer or President who completes them can still sign their
+    own stage. Final approval is simply held until the checks are complete.
     """
     if not segregation_enforced(db):
         return ''
@@ -157,16 +159,6 @@ def sod_conflict(db, loan, user_id, stage):
         return (f"You already approved this loan at the {STAGE_ACTOR_LABEL.get(prior['stage'], prior['stage'])} "
                 f"stage. A different officer must approve each stage.")
 
-    if (stage == STAGE_PRESIDENT and 'due_diligence_updated_by' in loan.keys()
-            and loan['due_diligence_updated_by'] == user_id):
-        checked_at = _as_datetime(loan['due_diligence_updated_at']
-                                  if 'due_diligence_updated_at' in loan.keys() else None)
-        # Grandfather only what we can date to before the cutover. The two
-        # columns are always written together, so a missing timestamp is an
-        # oddity rather than an old record — stay strict on it.
-        if cutover is None or checked_at is None or checked_at >= cutover:
-            return ('You completed the due-diligence checks on this loan, so a different officer '
-                    'must give the final approval.')
     return ''
 
 

@@ -80,7 +80,7 @@ class SoD(unittest.TestCase):
         self._act('admin', H.ADMIN_PW, lid)
         self.assertEqual(self._state(lid), ('active', 'approved'))
 
-    def test_strict_mode_due_diligence_officer_cannot_give_final_approval(self):
+    def test_strict_mode_due_diligence_officer_can_still_give_final_approval(self):
         from database import get_db
         self._officers(4)
         lid = self._loan('Bob', 'president')
@@ -89,7 +89,8 @@ class SoD(unittest.TestCase):
             aid = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
             db.execute('UPDATE loans SET due_diligence_updated_by=? WHERE id=?', (aid, lid)); db.commit()
         self._act('admin', H.ADMIN_PW, lid)
-        self.assertEqual(self._state(lid), ('pending', 'president'))
+        # Doing the checks is not an approval: it must not stop the same officer signing their own stage.
+        self.assertNotIn('LOAN_SOD_BLOCKED', self._audit_actions())
 
     def test_inactive_officers_do_not_count(self):
         from database import get_db
