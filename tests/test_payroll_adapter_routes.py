@@ -282,6 +282,19 @@ class PayrollRoutes(unittest.TestCase):
         self.assertIn('Remembered from a previous month', auto.text)
         self.assertNotIn('No unique member match', auto.text)
 
+    def test_progress_key_is_stable_when_a_member_is_picked(self):
+        nl = chr(10)
+        raw = nl.join(['Employee Number,Full name,COOPERATIVE LOAN', f'ZZ-{self._testMethodName},Someone Else,91666.67', '']).encode()
+        first = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(raw), 'hr.csv')})
+        key = re.search(r'data-batch="([0-9a-f]{16})"', first.text).group(1)
+        token = re.search(r'name="review_token" value="([^"]+)"', first.text).group(1)
+        picked = self.client.post('/loans/payroll-adapter', data={
+            'action': 'rematch', 'review_token': token, 'member_2': f'Payroll Member . x . #{self.member}'})
+        self.assertEqual(re.search(r'data-batch="([0-9a-f]{16})"', picked.text).group(1), key)
+        self.assertIn(f'data-member="{self.member}"', picked.text)
+
     def test_screen_shows_numbers_and_shortfall(self):
         response = self.client.post('/loans/payroll-adapter', data={
             'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',

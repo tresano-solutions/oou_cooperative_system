@@ -213,6 +213,10 @@ def payroll_repayment_adapter():
                 totals[key] += adapter.money(item[key])
             except ValueError:
                 pass
+    import hashlib
+    # Identifies this HR file (not the member picks) so the browser can keep progress across reloads.
+    batch_key = hashlib.sha1(json.dumps([[r.get('row'), r.get('employee_id'), r.get('member_number'), r.get('name'), r.get('amount'),
+                                          r.get('savings_amount')] for r in source_rows] + [month], sort_keys=True).encode()).hexdigest()[:16] if items else ''
     summary = {'rows': len(items), 'ready': 0, 'check': 0, 'attention': 0, 'short': 0, 'over': 0}
     for item in items:
         summary[item.get('state', 'attention')] += 1
@@ -221,7 +225,7 @@ def payroll_repayment_adapter():
     return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token, members=members,
                            month=month, payment_date=payment_date, account=account,
                            totals=totals, combined=combined, summary=summary, control=control,
-                           columns=columns, mapping_info=mapping_info, field_labels=adapter.FIELD_LABELS,
+                           columns=columns, mapping_info=mapping_info, batch_key=batch_key, field_labels=adapter.FIELD_LABELS,
                            accounts=get_loan_repayment_counter_accounts(db))
 
 
