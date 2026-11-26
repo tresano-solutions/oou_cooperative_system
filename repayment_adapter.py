@@ -129,9 +129,15 @@ def has_month_payment(db, member_id, month):
         AND SUBSTR(CAST(r.date AS TEXT),1,7)=?''', (member_id, month)).fetchone() is not None
 
 
-def has_month_savings(db, member_id, month):
-    return db.execute('''SELECT id FROM savings WHERE member_id=? AND reversed_at IS NULL
-        AND (amount>0 OR COALESCE(share_capital,0)>0) AND month=?''', (member_id, month)).fetchone() is not None
+def month_savings(db, member_id, month):
+    """What the member already has in this month. Several deposits a month are normal
+    (salary deduction plus voluntary savings), so this informs the review, never blocks it."""
+    rows = db.execute('''SELECT amount, COALESCE(share_capital,0) AS share_capital, payment_type, receipt_number
+        FROM savings WHERE member_id=? AND reversed_at IS NULL
+        AND (amount>0 OR COALESCE(share_capital,0)>0) AND month=?''', (member_id, month)).fetchall()
+    salary = [r for r in rows if str(r['payment_type'] or '').lower() == 'salary']
+    total = lambda found: sum((money(r['amount']) + money(r['share_capital']) for r in found), Decimal(0))
+    return {'count': len(rows), 'total': total(rows), 'salary_count': len(salary), 'salary_total': total(salary)}
 
 
 ALIASES = {
@@ -433,7 +439,7 @@ def match_payroll(rows, members, book, remembered=None):
                 'savings_amount': row.get('savings_amount', '0'),
                 'subscription_amount': row.get('subscription_amount', '0'),
                 'member_id': None, 'member_number': '', 'employee_id': '',
-                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'match': '',
+                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'savings_note': '', 'match': '',
                 'merged_rows': [], 'suggestions': [], 'loan_expected': '', 'loan_variance': '',
                 'loan_flag': '', 'allocation_note': '', 'merge_note': '', 'state': 'attention',
                 'source_key': hr_key(row), 'manual': bool(row.get('selected_member_id')), 'remembered': False,
@@ -545,11 +551,18 @@ def prepare_review(db, rows, month):
         if item['member_id']:
             if money(item['amount']) > 0 and has_month_payment(db, item['member_id'], month):
                 item['loan_error'] = 'Repayment already exists in this month; exclude loan deduction and review history.'
-            if money(item['savings_amount']) > 0 and has_month_savings(db, item['member_id'], month):
-                item['savings_error'] = 'Savings already exist in this month; exclude savings deduction and review history.'
+            if money(item['savings_amount']) > 0:
+                existing = month_savings(db, item['member_id'], month)
+                if existing['salary_count']:
+                    item['savings_note'] = (f"A salary deduction of {existing['salary_total']:,.2f} is already recorded for {month}. "
+                                            'Confirm this payroll has not been posted before adding another.')
+                elif existing['count']:
+                    item['savings_note'] = (f"Member already has {existing['count']} saving(s) totalling {existing['total']:,.2f} in {month}. "
+                                            'This payroll deduction will be added as a further deposit.')
         if item['error'] or item['loan_error'] or item['savings_error']:
             item['state'] = 'attention'
-        elif item.get('loan_flag') in ('short', 'over', 'unknown') or item['merged_rows'] or item['id_warning']:
+        elif (item.get('loan_flag') in ('short', 'over', 'unknown') or item['merged_rows'] or item['id_warning']
+              or item['savings_note']):
             item['state'] = 'check'
         else:
             item['state'] = 'ready'
@@ -598,8 +611,8 @@ def prepare_exports(db, items, choices, month, payment_date, account, username):
                               receipt, f'Payroll {month}; approved by {username}'])
                 loan_exported += amount
         if include_savings:
-            if item['savings_error'] or has_month_savings(db, item['member_id'], month):
-                raise ValueError(f'Row {row}: savings already posted or member identifier requires review.')
+            if item['savings_error']:
+                raise ValueError(f'Row {row}: {item["savings_error"]}')
             number, staff = identifier(member['member_number']), identifier(member['employee_id'])
             if not number and not staff:
                 raise ValueError(f'Row {row}: add a member or staff number before savings export.')

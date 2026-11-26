@@ -215,15 +215,39 @@ class PayrollRoutes(unittest.TestCase):
             self.assertIsNotNone(saving)
             self.assertAlmostEqual(saving['amount'] + (saving['share_capital'] or 0), 10000)
 
-    def test_savings_posted_after_preview_blocks_export(self):
+    def test_existing_savings_in_month_warn_but_do_not_block(self):
+        import zipfile
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO savings (member_id,amount,month,date,payment_type) VALUES (?,5000,'2026-10','2026-10-05','voluntary')", (self.member,))
+            db.commit()
+        response = self.combined_preview()
+        self.assertIn('already has 1 saving(s) totalling 5,000.00', response.text)
+        result = self.export_combined(response)
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            savings = list(csv.DictReader(io.StringIO(archive.read('salary_savings_2026-10.csv').decode())))
+        self.assertEqual(savings[0]['amount'], '10000.00')
+
+    def test_earlier_salary_deduction_in_month_gets_a_stronger_warning(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO savings (member_id,amount,month,date,payment_type) VALUES (?,10000,'2026-10','2026-10-05','salary')", (self.member,))
+            db.commit()
+        response = self.combined_preview()
+        self.assertIn('A salary deduction of 10,000.00 is already recorded', response.text)
+        self.assertEqual(self.export_combined(response).mimetype, 'application/zip')
+
+    def test_same_payroll_savings_receipt_already_posted_blocks_export(self):
         response = self.combined_preview()
         with app.app_context():
             db = get_db()
-            db.execute("INSERT INTO savings (member_id,amount,month,date) VALUES (?,10000,'2026-10','2026-10-27')", (self.member,))
+            db.execute("INSERT INTO savings (member_id,amount,month,date,receipt_number) VALUES (?,10000,'2026-10','2026-10-27',?)",
+                       (self.member, f'PAYROLL-SAV/2026-10/{self.member}'))
             db.commit()
         result = self.export_combined(response)
         self.assertNotEqual(result.mimetype, 'application/zip')
-        self.assertIn(b'savings already posted', result.data)
+        self.assertIn(b'payroll savings receipt already posted', result.data)
 
     def test_combined_requires_savings_permission(self):
         from unittest.mock import patch

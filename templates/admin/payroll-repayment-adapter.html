@@ -213,6 +213,7 @@
             {% if item.loan_error %}<p class="adp-msg bad" role="alert">{{ item.loan_error }}</p>{% endif %}
             {% if item.allocation_note and not item.loan_error %}<p class="adp-msg {{ 'warn' if item.loan_flag in ('short','over','unknown') else '' }}">{{ item.allocation_note }}</p>{% endif %}
             {% if item.savings_error %}<p class="adp-msg bad" role="alert">{{ item.savings_error }}</p>{% endif %}
+            {% if item.savings_note %}<p class="adp-msg warn"><i class="fas fa-piggy-bank" aria-hidden="true"></i> {{ item.savings_note }}</p>{% endif %}
             {% if item.loans %}
             <table class="adp-alloc"><thead><tr><th>Loan</th><th>Type</th><th class="num">Outstanding</th><th class="num">Expected this month</th><th>Schedule basis</th><th class="num">Allocate</th></tr></thead>
               <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="num">{{ naira(loan.balance) }}</td><td class="num">{{ naira(loan.expected) if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td class="num"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
