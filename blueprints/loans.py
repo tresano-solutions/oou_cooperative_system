@@ -29,6 +29,7 @@ from ledger import (post_journal, post_journal_required, get_default_cash_accoun
                     LOANS_RECEIVABLE, ACCUM_SURPLUS, FEE_INCOME,
                     LOAN_INTEREST_INCOME, INSURANCE_PAYABLE)
 import loan_workflow as lw
+import repayment_start
 import loan_alerts as la
 import permissions as la_permissions
 from loan_pdf import build_loan_application_pdf
@@ -324,7 +325,7 @@ def _loan_fees(db, amount):
     return insurance, application_fee
 
 
-def _disburse_loan(db, loan, cash_account, posting_date=None):
+def _disburse_loan(db, loan, cash_account, posting_date=None, repayment_start_month=None):
     """Final approval: book fees, disburse, post the GL entry, notify the member.
 
     `cash_account` is the account the money actually leaves — the approver picks
@@ -336,6 +337,11 @@ def _disburse_loan(db, loan, cash_account, posting_date=None):
     insurance, application_fee = _loan_fees(db, loan['amount'])
     disbursed = round(loan['amount'] - insurance - application_fee, 2)
     posting_date = posting_date or datetime.now()
+    # Repayment is tied to the monthly payroll run: issued by the cut-off day it starts this month, later
+    # it starts next month. Only the President may start it later still (chosen at final approval).
+    first_payment = repayment_start.first_repayment_date(posting_date, repayment_start.cutoff_day(db))
+    if repayment_start_month:
+        first_payment = repayment_start.deferred_start(first_payment, repayment_start_month)
     # The balance is created here, not at application. Until this moment the
     # member has asked for a loan, not taken one, and a request must not read as
     # something owed on their account.
@@ -346,7 +352,7 @@ def _disburse_loan(db, loan, cash_account, posting_date=None):
             balance = ?
         WHERE id = ?
     ''', (datetime.now(), current_user.id, insurance, application_fee, disbursed,
-          posting_date, posting_date + timedelta(days=30),
+          posting_date, first_payment,
           loan['total_repayment'] or loan['amount'], loan['id']))
     # The application fee is the cooperative's income. The 1% insurance is withheld
     # on behalf of the insurer — a pass-through liability, not income — so it posts
@@ -849,7 +855,16 @@ def loan_detail(loan_id):
     if loan['status'] in ('active', 'completed'):
         import loan_tracking as lt
         tracking = lt.track_loan(loan, [r for r in repayments if not r['reversed_at']])
+    first_payment = repayment_start.parse_dt(loan['first_payment_date'])
+    has_repayment = any(not r['reversed_at'] for r in repayments)
+    can_defer_repayment = (current_user.role == 'admin' and loan['status'] == 'active' and not has_repayment
+                           and not _acting_on_own_loan(db, loan))
+    next_month = repayment_start.add_months(first_payment, 1) if first_payment else None
     return render_template('admin/loan-detail.html',
+                           first_payment=first_payment, can_defer_repayment=can_defer_repayment,
+                           defer_min_month=f'{next_month:%Y-%m}' if next_month else '',
+                           default_start_label=f'{repayment_start.first_repayment_date(datetime.now(), repayment_start.cutoff_day(db)):%B %Y}',
+                           payroll_cutoff_day=repayment_start.cutoff_day(db),
                            tracking=tracking,
                            bank_accounts=get_postable_cash_accounts(db),
                            default_cash_account=get_default_cash_account(db),
@@ -863,6 +878,48 @@ def loan_detail(loan_id):
                            due_diligence_checks=due_diligence_checks,
                            stage_actor=lw.STAGE_ACTOR_LABEL.get(stage, ''),
                            stage_labels=lw.STAGE_LABELS)
+
+
+@loans.route('/loans/<int:loan_id>/defer-repayment', methods=['POST'])
+@login_required
+@role_required('admin')
+def defer_repayment_start(loan_id):
+    """Move a loan's first repayment to a later payroll month. President only, and only before the
+    member has made a repayment, because after that it would be rescheduling a running loan."""
+    db = get_db()
+    loan = db.execute(for_update('SELECT * FROM loans WHERE id = ?'), (loan_id,)).fetchone()
+    try:
+        if not loan or loan['status'] != 'active':
+            raise ValueError('Only an active loan can have its repayment start moved.')
+        if current_user.role != 'admin':
+            raise ValueError('Only the President can defer the start of repayment.')
+        if _acting_on_own_loan(db, loan):
+            raise ValueError('You cannot change the repayment start of your own loan. A different officer must handle it.')
+        if db.execute('SELECT 1 FROM repayments WHERE loan_id = ? AND reversed_at IS NULL', (loan_id,)).fetchone():
+            raise ValueError('This loan has already received a repayment, so its start can no longer be deferred.')
+        reason = request.form.get('reason', '').strip()
+        if len(reason) < 5:
+            raise ValueError('Give the reason for deferring repayment, so it is on the loan record.')
+        current_first = (repayment_start.parse_dt(loan['first_payment_date'])
+                         or repayment_start.first_repayment_date(loan['disbursement_date'] or loan['date_applied'],
+                                                                 repayment_start.cutoff_day(db)))
+        new_first = repayment_start.deferred_start(current_first, request.form.get('start_month', ''))
+        db.execute('UPDATE loans SET first_payment_date = ? WHERE id = ?', (new_first, loan_id))
+        lw.record_action(db, loan_id, 'repayment_start', 'deferred', current_user.id, current_user.username,
+                         f'{current_first:%B %Y} to {new_first:%B %Y}: {reason}')
+        audit(db, 'LOAN_REPAYMENT_START_DEFERRED', 'loans',
+              f"Loan {loan['loan_number']}: repayment start {current_first:%Y-%m} -> {new_first:%Y-%m}. {reason}")
+        member = db.execute('SELECT email FROM members WHERE id = ?', (loan['member_id'],)).fetchone()
+        if member and member['email']:
+            notify_member(db, member['email'], 'Loan repayment start moved',
+                          f"The President has moved the start of repayment on loan {loan['loan_number']} to "
+                          f"{new_first:%B %Y}.", 'info', '/my-loans')
+        db.commit()
+        flash(f'Repayment will now start in {new_first:%B %Y}.', 'success')
+    except Exception as exc:
+        db.rollback()
+        flash(str(exc), 'danger')
+    return redirect(url_for('loans.loan_detail', loan_id=loan_id))
 
 
 @loans.route('/loans/<int:loan_id>/due-diligence', methods=['POST'])
@@ -1083,7 +1140,13 @@ def loan_act(loan_id):
                 return redirect(url_for('loans.loan_detail', loan_id=loan_id))
         lw.record_action(db, loan_id, stage, 'approved', current_user.id, current_user.username, comment)
         if nxt == lw.STAGE_APPROVED:
-            _disburse_loan(db, loan, disbursing_account)
+            defer_to = request.form.get('defer_repayment_to', '').strip()
+            if defer_to and current_user.role != 'admin':
+                raise ValueError('Only the President can start repayment later than the payroll cut-off rule allows.')
+            _disburse_loan(db, loan, disbursing_account, repayment_start_month=defer_to or None)
+            if defer_to:
+                audit(db, 'LOAN_REPAYMENT_START_DEFERRED', 'loans',
+                      f"Loan {loan['loan_number']}: President set repayment to start in {defer_to} at approval")
             la.log_event(db, loan_id, 'decided', stage, 'workflow',
                          {'user_id': current_user.id, 'name': current_user.username,
                           'role': current_user.role},

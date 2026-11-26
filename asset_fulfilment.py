@@ -1,10 +1,12 @@
 """Controlled conversion of a delivered asset order into an active member loan."""
 
-import random
+import json
+import uuid
 from datetime import datetime
 
 from asset_documents import update_asset_documents
-from asset_schemes import delivery_cleared
+import repayment_start
+from asset_schemes import delivery_cleared, schedule_snapshot
 from database import last_insert_id
 from ledger import LOANS_RECEIVABLE, post_journal_required
 
@@ -16,27 +18,43 @@ def activate_delivered_asset(db, order, actor_id, actor_name, channel, confirmat
         raise ValueError('The delivery fee has not been cleared.')
     if order['linked_loan_id']:
         raise ValueError('Receipt was already confirmed.')
-    loan_number = f"LOAN/AS/{datetime.now():%Y%m%d}/{random.randint(1000,9999)}"
+    now = datetime.now()
+    # Claim the order first. Two clicks, or two officers, can reach this point together; only the
+    # one whose update changes the row may go on to create the loan and post the receivable.
+    claimed = db.execute('''UPDATE asset_orders SET status='received',received_at=?
+        WHERE id=? AND status='ready_for_receipt' AND linked_loan_id IS NULL''',
+                         (now, order['id'])).rowcount
+    if claimed != 1:
+        raise ValueError('Receipt was already confirmed.')
+
+    # The schedule the member accepted when they took the quote. Orders accepted before schedules
+    # were saved get theirs built now from the same agreed terms.
+    snapshot = order['repayment_schedule_snapshot'] if 'repayment_schedule_snapshot' in order.keys() else None
+    if not snapshot:
+        snapshot = json.dumps(schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'],
+                                                order['tenure_months']))
     db.execute('''INSERT INTO loans
         (loan_number,member_id,amount,purpose,description,tenure,interest_rate,interest_method,
          total_repayment,balance,status,approval_stage,disbursed_amount,disbursement_date,
+         first_payment_date,repayment_schedule_snapshot,repayment_schedule_accepted,
          approved_at,terms_accepted,signature_name,date_applied,submission_channel)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (loan_number, order['member_id'], order['selling_subtotal'], 'Asset Purchase',
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (f'LOAN/AS/TMP/{uuid.uuid4().hex}', order['member_id'], order['selling_subtotal'], 'Asset Purchase',
          f"Asset scheme order {order['order_number']}", order['tenure_months'],
          order['annual_interest_rate'], 'flat', order['total_repayment'], order['total_repayment'],
-         'active', 'approved', order['selling_subtotal'], datetime.now(), order['approved_at'], 1,
-         order['signature_name'], order['submitted_at'], channel))
+         'active', 'approved', order['selling_subtotal'], now,
+         repayment_start.first_repayment_date(now, repayment_start.cutoff_day(db)), snapshot, 1,
+         order['approved_at'], 1, order['signature_name'], order['submitted_at'], channel))
     loan_id = last_insert_id(db)
+    # Numbered from the loan's own id, so two loans on one day can never collide.
+    loan_number = f"LOAN/AS/{now:%Y%m%d}/{loan_id:05d}"
+    db.execute('UPDATE loans SET loan_number=? WHERE id=?', (loan_number, loan_id))
     post_journal_required(db, f"Asset delivered - {order['order_number']}", [
         {'account': LOANS_RECEIVABLE, 'debit': order['selling_subtotal'], 'memo': loan_number},
         {'account': '4050', 'credit': order['selling_subtotal'], 'memo': order['order_number']},
     ], reference=order['order_number'], source_module='asset_scheme', source_id=order['id'],
        created_by=actor_id)
-    changed = db.execute('''UPDATE asset_orders SET status='received',received_at=?,linked_loan_id=?
-        WHERE id=? AND linked_loan_id IS NULL''', (datetime.now(), loan_id, order['id'])).rowcount
-    if changed != 1:
-        raise ValueError('Receipt was already confirmed.')
+    db.execute('UPDATE asset_orders SET linked_loan_id=? WHERE id=?', (loan_id, order['id']))
     update_asset_documents(db, order['id'], invoice_status='delivered_loan_active',
                            delivery_status='delivered', confirmed=True, confirmed_by=actor_id)
     comment = f'Loan {loan_number} activated'

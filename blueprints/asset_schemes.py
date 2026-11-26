@@ -1,22 +1,25 @@
 import hmac
+import json
 import os
-import random
+import uuid
 from datetime import datetime, timedelta
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 
-from asset_schemes import delivery_cleared, delivery_dispatch_allowed, finance_terms
+from asset_schemes import (CANCELLABLE_AFTER_PURCHASE, CANCELLABLE_BEFORE_PURCHASE, OFFICER_CONFIRM_WAIT_DAYS,
+                           delivery_cleared, delivery_dispatch_allowed, finance_terms, member_can_cancel,
+                           schedule_snapshot)
 from asset_notifications import notify_asset_member, notify_asset_roles
 from asset_documents import (document_rows, ensure_asset_documents, render_asset_pdf,
                              update_asset_documents)
 from asset_fulfilment import activate_delivered_asset
-from database import get_db, last_insert_id
+from database import for_update, get_db, last_insert_id
 from email_service import run_in_background
 from ledger import (FEE_INCOME, OPERATING_EXPENSES,
                     get_postable_cash_accounts, post_journal_required)
 import loan_workflow as lw
-from utils import (audit, finite_float, member_for_user,
+from utils import (audit, claim_submission, finite_float, member_for_user,
                    product_image_data_uri, role_required, validate_image)
 
 
@@ -115,11 +118,57 @@ def _event(db, order_id, stage, action, comment=''):
         (order_id, stage, action, current_user.id, current_user.username, comment or ''))
 
 
-def _order(db, order_id):
-    return db.execute('''SELECT o.*, c.name AS campaign_name,
+def _order(db, order_id, lock=False):
+    """The order with its member and campaign. `lock=True` holds the order row until the
+    transaction ends (PostgreSQL), so two officers acting at once are handled one after another."""
+    sql = '''SELECT o.*, c.name AS campaign_name,
         m.first_name, m.last_name, m.member_number, m.email
         FROM asset_orders o JOIN asset_campaigns c ON c.id=o.campaign_id
-        JOIN members m ON m.id=o.member_id WHERE o.id=?''', (order_id,)).fetchone()
+        JOIN members m ON m.id=o.member_id WHERE o.id=?'''
+    return db.execute(for_update(sql, 'o') if lock else sql, (order_id,)).fetchone()
+
+
+def _acting_on_own_order(db, order):
+    """True if the current user is the member who placed this request. An officer who is also a
+    member must never quote, approve, buy, deliver or cancel their own order (same rule as loans)."""
+    me = member_for_user(db)
+    return bool(me and order and me['id'] == order['member_id'])
+
+
+def _close_order(db, order_id, quote_status):
+    """Mark a request cancelled and cancel its invoice and delivery order with it."""
+    db.execute("UPDATE asset_orders SET status='cancelled',approval_stage='closed',quote_status=? WHERE id=?",
+               (quote_status, order_id))
+    update_asset_documents(db, order_id, invoice_status='cancelled', delivery_status='cancelled')
+
+
+def _setting_days(db, key, default):
+    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    try:
+        return max(0, int(float(row['value']))) if row and row['value'] not in (None, '') else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _officer_confirm_rules(db, order):
+    """(available_from, reason) for confirming delivery on a member's behalf; reason is '' if allowed.
+
+    Confirming creates the member's debt, so the officer route is a last resort: the items must have
+    been out for a few days, and the officer who bought or dispatched them cannot be the one who
+    confirms receipt for the member (when separation of duties is in force)."""
+    dispatched = lw._as_datetime(order['dispatched_at'])
+    wait = _setting_days(db, 'asset_officer_confirm_days', OFFICER_CONFIRM_WAIT_DAYS)
+    available = dispatched + timedelta(days=wait) if dispatched else None
+    if available and datetime.now() < available:
+        return available, (f'The member has not had long enough to confirm for themselves. An officer can confirm '
+                           f'on their behalf from {available:%d %b %Y}.')
+    if lw.segregation_enforced(db):
+        involved = db.execute("""SELECT 1 FROM asset_order_events WHERE order_id=? AND actor_id=?
+            AND action IN ('procured','dispatched')""", (order['id'], current_user.id)).fetchone()
+        if involved:
+            return available, ('A different officer must confirm delivery for the member than the one who '
+                               'purchased or dispatched the items.')
+    return available, ''
 
 
 def _portal_url():
@@ -220,7 +269,11 @@ def apply(campaign_id):
     reason = ('Monthly repayment is within 40% of recorded monthly salary.' if annual_salary and eligible
               else 'Monthly repayment exceeds 40% of recorded monthly salary; committee review required.' if annual_salary
               else 'No salary recorded; committee affordability review required.')
-    order_number = f"AS/{datetime.now():%Y%m%d}/{random.randint(1000, 9999)}"
+    if not claim_submission(db, request.form.get('submission_token')):
+        db.rollback()
+        flash('That request was already submitted. Check "My requests" below.', 'info')
+        return redirect(url_for('asset_schemes.catalogue'))
+    order_number = f'AS/TMP/{uuid.uuid4().hex}'
     db.execute('''INSERT INTO asset_orders
         (order_number,campaign_id,member_id,status,approval_stage,expected_spend,quote_status,
          selling_subtotal,annual_interest_rate,tenure_months,
@@ -233,6 +286,9 @@ def apply(campaign_id):
          'eligible' if eligible else 'review', reason, 1,
          request.form.get('signature_name', '').strip(), current_user.id))
     order_id = last_insert_id(db)
+    # Numbered from the order's own id, so two requests on one day can never collide.
+    order_number = f"AS/{datetime.now():%Y%m%d}/{order_id:05d}"
+    db.execute('UPDATE asset_orders SET order_number=? WHERE id=?', (order_number, order_id))
     preference_summary = []
     for product, qty, expected, preferences in selected:
         db.execute('''INSERT INTO asset_order_items
@@ -278,8 +334,19 @@ def order_detail(order_id):
     cash_accounts = get_postable_cash_accounts(db) if staff else []
     invoice, delivery_order = document_rows(db, order_id)
     template_staff = staff and (order['status'] != 'sourcing_quote' or can_manage_supplier_cost)
+    own_order = staff and _acting_on_own_order(db, order)
+    officer_confirm_from, officer_confirm_block = ((None, '') if order['status'] != 'ready_for_receipt'
+                                                   else _officer_confirm_rules(db, order))
     return render_template('asset_schemes/order.html', order=order, items=items, events=events,
-                           staff=template_staff, can_manage_supplier_cost=can_manage_supplier_cost,
+                           staff=template_staff and not own_order, own_order=own_order,
+                           can_cancel_staff=(not own_order and current_user.role in {'admin', 'treasurer'}
+                                             and order['status'] in CANCELLABLE_BEFORE_PURCHASE),
+                           can_cancel_after_purchase=(not own_order and current_user.role == 'admin'
+                                                      and order['status'] in CANCELLABLE_AFTER_PURCHASE),
+                           member_can_cancel=bool(member and order['member_id'] == member['id']
+                                                  and member_can_cancel(order)),
+                           officer_confirm_from=officer_confirm_from, officer_confirm_block=officer_confirm_block,
+                           can_manage_supplier_cost=can_manage_supplier_cost,
                            delivery_cleared=delivery_cleared(order), cash_accounts=cash_accounts,
                            invoice=invoice, delivery_order=delivery_order)
 
@@ -596,11 +663,15 @@ def add_product(campaign_id):
 @login_required
 @role_required('admin', 'treasurer', 'secretary')
 def staff_action(order_id):
-    db = get_db(); order = _order(db, order_id)
+    db = get_db(); order = _order(db, order_id, lock=True)
     action = request.form.get('action'); comment = request.form.get('comment','').strip()
     if not order:
         flash('Asset request not found.', 'danger'); return redirect(url_for('asset_schemes.manage'))
     try:
+        if _acting_on_own_order(db, order):
+            raise ValueError('You cannot act on your own asset request. A different officer must handle it.')
+        if action in {'procured', 'delivery_fee'} and current_user.role not in {'admin', 'treasurer'}:
+            raise ValueError('Only the President/Admin or Treasurer may record supplier payments and delivery-fee receipts.')
         if action == 'quote':
             if current_user.role not in {'admin', 'treasurer'}:
                 raise ValueError('Only the President/Admin or Treasurer may record supplier costs and issue a quote.')
@@ -648,11 +719,13 @@ def staff_action(order_id):
                     agreed_model=?,agreed_specification=?,agreed_warranty=?,unit_selling_price=?
                     WHERE id=?''', values)
             interest, total, monthly = finance_terms(selling, order['annual_interest_rate'], order['tenure_months'])
-            db.execute('''UPDATE asset_orders SET status='awaiting_member_quote',quote_status='quoted',
+            moved = db.execute('''UPDATE asset_orders SET status='awaiting_member_quote',quote_status='quoted',
                 selling_subtotal=?,interest_amount=?,total_repayment=?,monthly_repayment=?,
-                delivery_fee=?,procurement_cost=?,quote_note=?,quoted_at=? WHERE id=?''',
+                delivery_fee=?,procurement_cost=?,quote_note=?,quoted_at=? WHERE id=? AND status=?''',
                 (selling, interest, total, monthly, delivery, supplier_cost,
-                 request.form.get('quote_note','').strip(), datetime.now(), order_id))
+                 request.form.get('quote_note','').strip(), datetime.now(), order_id, 'sourcing_quote')).rowcount
+            if moved != 1:
+                raise ValueError('This request is no longer awaiting a quote.')
             _event(db, order_id, 'quote', 'quoted',
                    f'Final selling price ₦{selling:,.2f}; delivery ₦{delivery:,.2f}')
         elif action in {'approve', 'reject'}:
@@ -665,14 +738,20 @@ def staff_action(order_id):
                 raise ValueError('A different officer must approve each stage.')
             if action == 'reject':
                 if not comment: raise ValueError('A rejection reason is required.')
-                db.execute("UPDATE asset_orders SET status='rejected',approval_stage='rejected' WHERE id=?", (order_id,))
+                moved = db.execute("UPDATE asset_orders SET status='rejected',approval_stage='rejected' "
+                                   "WHERE id=? AND approval_stage=?", (order_id, stage)).rowcount
+                if moved != 1:
+                    raise ValueError('This request has already moved on.')
                 update_asset_documents(db, order_id, invoice_status='rejected', delivery_status='cancelled')
                 _event(db, order_id, stage, 'rejected', comment)
             else:
                 nxt = NEXT[stage]
                 status = 'approved_for_procurement' if nxt == 'approved' else 'submitted'
-                db.execute('UPDATE asset_orders SET approval_stage=?,status=?,approved_at=CASE WHEN ?=\'approved\' THEN ? ELSE approved_at END WHERE id=?',
-                           (nxt, status, nxt, datetime.now(), order_id))
+                moved = db.execute('UPDATE asset_orders SET approval_stage=?,status=?,approved_at=CASE WHEN ?=\'approved\' THEN ? ELSE approved_at END '
+                                   'WHERE id=? AND approval_stage=?',
+                                   (nxt, status, nxt, datetime.now(), order_id, stage)).rowcount
+                if moved != 1:
+                    raise ValueError('This request has already moved on.')
                 _event(db, order_id, stage, 'approved', comment)
         elif action == 'procured':
             if order['status'] != 'approved_for_procurement': raise ValueError('Final approval is required first.')
@@ -684,20 +763,27 @@ def staff_action(order_id):
             if cost <= 0: raise ValueError('Add supplier purchase costs to the catalogue before recording procurement.')
             if account not in valid: raise ValueError('Select the bank or cash account used to purchase the items.')
             if not reference: raise ValueError('Enter the supplier invoice or payment reference.')
+            claimed = db.execute('''UPDATE asset_orders SET status='procured',procured_at=?,procurement_cost=?,
+                procurement_account=?,procurement_reference=? WHERE id=? AND status='approved_for_procurement'
+                AND procurement_journal_id IS NULL''',
+                (datetime.now(), cost, account, reference, order_id)).rowcount
+            if claimed != 1:
+                raise ValueError('Procurement was already posted for this request.')
             journal_id = post_journal_required(db, f"Asset procurement - {order['order_number']}", [
                 {'account': OPERATING_EXPENSES, 'debit': cost, 'memo': order['order_number']},
                 {'account': account, 'credit': cost, 'memo': reference},
             ], reference=reference, source_module='asset_procurement', source_id=order_id,
                created_by=current_user.id)
-            db.execute('''UPDATE asset_orders SET status='procured',procured_at=?,procurement_cost=?,
-                procurement_account=?,procurement_reference=?,procurement_journal_id=? WHERE id=?''',
-                (datetime.now(), cost, account, reference, journal_id, order_id))
+            db.execute('UPDATE asset_orders SET procurement_journal_id=? WHERE id=?', (journal_id, order_id))
             update_asset_documents(db, order_id, delivery_status='procured')
             _event(db, order_id, 'procurement', 'procured', comment)
         elif action == 'dispatch':
             if order['status'] != 'procured': raise ValueError('Record procurement first.')
             if not delivery_dispatch_allowed(order): raise ValueError('Delivery fee must be paid, waived, or marked pay-on-delivery.')
-            db.execute("UPDATE asset_orders SET status='ready_for_receipt',dispatched_at=? WHERE id=?", (datetime.now(), order_id))
+            moved = db.execute("UPDATE asset_orders SET status='ready_for_receipt',dispatched_at=? "
+                               "WHERE id=? AND status='procured'", (datetime.now(), order_id)).rowcount
+            if moved != 1:
+                raise ValueError('This request has already been dispatched.')
             update_asset_documents(db, order_id, delivery_status='ready_for_delivery', ready=True)
             _event(db, order_id, 'delivery', 'dispatched', comment)
         elif action == 'delivery_fee':
@@ -709,6 +795,12 @@ def staff_action(order_id):
             journal_id = order['delivery_fee_journal_id']
             if fee_status == 'paid' and float(order['delivery_fee'] or 0) > 0:
                 if journal_id: raise ValueError('This delivery fee has already been posted.')
+                # Claim the fee before posting, so a second click cannot record the same money twice.
+                claimed = db.execute("UPDATE asset_orders SET delivery_fee_status='paid' WHERE id=? "
+                                     "AND delivery_fee_journal_id IS NULL AND delivery_fee_status <> 'paid'",
+                                     (order_id,)).rowcount
+                if claimed != 1:
+                    raise ValueError('This delivery fee has already been recorded.')
                 valid = {r['code'] for r in get_postable_cash_accounts(db)}
                 if account not in valid: raise ValueError('Select the bank or cash account that received the delivery fee.')
                 if not reference: raise ValueError('Enter the delivery fee payment reference.')
@@ -721,6 +813,54 @@ def staff_action(order_id):
                 delivery_fee_account=?,delivery_fee_journal_id=? WHERE id=?''',
                        (fee_status, reference, account or None, journal_id, order_id))
             _event(db, order_id, 'delivery_fee', fee_status, comment)
+        elif action == 'cancel':
+            if current_user.role not in {'admin', 'treasurer'}:
+                raise ValueError('Only the President/Admin or Treasurer may cancel a request.')
+            if order['status'] not in CANCELLABLE_BEFORE_PURCHASE:
+                raise ValueError('The supplier has already been paid for this request, so it needs the '
+                                 '"cancel after purchase" step, which records what happens to the items.')
+            if len(comment) < 5:
+                raise ValueError('Give the reason for cancelling, so the member can be told.')
+            _close_order(db, order_id, 'cancelled_by_cooperative')
+            _event(db, order_id, 'cancellation', 'cancelled_by_cooperative', comment)
+        elif action == 'cancel_after_purchase':
+            if current_user.role != 'admin':
+                raise ValueError('Only the President/Admin may cancel a request after the supplier has been paid.')
+            if order['status'] not in CANCELLABLE_AFTER_PURCHASE:
+                raise ValueError('This request has not reached purchase, or is already complete.')
+            if len(comment) < 10:
+                raise ValueError('Explain why the request is being cancelled after purchase.')
+            outcome = request.form.get('purchase_outcome')
+            if outcome not in {'returned', 'retained'}:
+                raise ValueError('Say whether the items were returned to the supplier or kept by the cooperative.')
+            claimed = db.execute("UPDATE asset_orders SET status='cancelled',approval_stage='closed',"
+                                 "quote_status='cancelled_by_cooperative' WHERE id=? AND status IN ('procured','ready_for_receipt')",
+                                 (order_id,)).rowcount
+            if claimed != 1:
+                raise ValueError('This request has already been cancelled or completed.')
+            update_asset_documents(db, order_id, invoice_status='cancelled', delivery_status='cancelled')
+            detail = comment
+            if outcome == 'returned':
+                refund = finite_float(request.form.get('refund_amount'))
+                refund_account = request.form.get('refund_account', '').strip()
+                refund_reference = request.form.get('refund_reference', '').strip()
+                cost = round(float(order['procurement_cost'] or 0), 2)
+                if refund <= 0 or refund > cost:
+                    raise ValueError(f'The refund must be more than zero and no more than the purchase cost (₦{cost:,.2f}).')
+                if refund_account not in {r['code'] for r in get_postable_cash_accounts(db)}:
+                    raise ValueError('Select the bank or cash account that received the supplier refund.')
+                if not refund_reference:
+                    raise ValueError('Enter the supplier refund reference.')
+                refund = round(refund, 2)
+                post_journal_required(db, f"Asset purchase refunded - {order['order_number']}", [
+                    {'account': refund_account, 'debit': refund, 'memo': refund_reference},
+                    {'account': OPERATING_EXPENSES, 'credit': refund, 'memo': order['order_number']},
+                ], reference=refund_reference, source_module='asset_procurement_refund', source_id=order_id,
+                   created_by=current_user.id)
+                detail = f'{comment} | Returned to supplier; refund ₦{refund:,.2f} ({refund_reference}).'
+            else:
+                detail = f'{comment} | Items kept by the cooperative; purchase cost stays as an expense.'
+            _event(db, order_id, 'cancellation', f'cancelled_after_purchase_{outcome}', detail)
         else:
             raise ValueError('Unknown action.')
         updated = _order(db, order_id)
@@ -743,6 +883,12 @@ def staff_action(order_id):
                                 'success', _portal_url())
             notify_asset_roles(db, updated, next_roles, 'Asset request requires your action',
                                f'{updated["order_number"]} is awaiting {next_label}.', 'action', _portal_url())
+        elif action in {'cancel', 'cancel_after_purchase'}:
+            notify_asset_member(db, updated, 'Your asset request was cancelled',
+                                f'The cooperative has cancelled this request. Reason: {comment}. '
+                                'No loan was created and you owe nothing for it.', 'warning', _portal_url())
+            audit(db, 'ASSET_REQUEST_CANCELLED_BY_COOPERATIVE', 'asset_schemes',
+                  f'{order["order_number"]} ({action}): {comment}')
         elif action == 'procured':
             notify_asset_member(db, updated, 'Your appliances have been procured',
                                 'The cooperative has purchased your approved items and is preparing them for delivery.',
@@ -764,34 +910,34 @@ def staff_action(order_id):
 @asset_schemes.route('/asset-schemes/orders/<int:order_id>/cancel', methods=['POST'])
 @login_required
 def cancel_request(order_id):
-    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    db = get_db(); order = _order(db, order_id, lock=True); member = member_for_user(db)
     try:
         if not order or not member or order['member_id'] != member['id']:
             raise ValueError('You cannot cancel this request.')
-        if order['status'] not in {'sourcing_quote', 'awaiting_member_quote'} or order['quote_status'] == 'accepted':
-            raise ValueError('This request can no longer be cancelled because invoicing or approval has begun.')
-        if db.execute('SELECT 1 FROM asset_invoices WHERE order_id=?', (order_id,)).fetchone():
-            raise ValueError('This request has already been invoiced and cannot be cancelled here.')
+        if not member_can_cancel(order):
+            raise ValueError('The cooperative has already bought these items, so this request can no longer be '
+                             'cancelled online. Please contact the cooperative office.')
         reason = request.form.get('reason', '').strip()
         if len(reason) < 5:
             raise ValueError('Tell the cooperative why you are cancelling this request.')
-        changed = db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
-            quote_status='cancelled_by_member' WHERE id=?
-            AND status IN ('sourcing_quote','awaiting_member_quote')
-            AND quote_status <> 'accepted'""", (order_id,)).rowcount
+        placeholders = ','.join('?' for _ in CANCELLABLE_BEFORE_PURCHASE)
+        changed = db.execute(f"""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+            quote_status='cancelled_by_member' WHERE id=? AND status IN ({placeholders})""",
+                             (order_id, *CANCELLABLE_BEFORE_PURCHASE)).rowcount
         if changed != 1:
             raise ValueError('This request can no longer be cancelled.')
+        update_asset_documents(db, order_id, invoice_status='cancelled', delivery_status='cancelled')
         _event(db, order_id, 'member', 'cancelled', reason)
         updated = _order(db, order_id)
         notify_asset_member(db, updated, 'Asset request cancelled',
-                            'Your request has been closed. No invoice, loan, or accounting entry was created.',
+                            'Your request has been closed. No loan was created and nothing is owed for it.',
                             'info', _portal_url())
-        notify_asset_roles(db, updated, ('admin', 'treasurer'), 'Member cancelled asset request',
-                           f'{updated["order_number"]} was cancelled before invoicing. Reason: {reason}',
+        notify_asset_roles(db, updated, ('admin', 'treasurer', 'secretary'), 'Member cancelled asset request',
+                           f'{updated["order_number"]} was cancelled by the member before purchase. Reason: {reason}',
                            'info', _portal_url())
         db.commit(); audit(db, 'ASSET_REQUEST_CANCELLED_BY_MEMBER', 'asset_schemes',
                            f'{order["order_number"]}: {reason}')
-        flash('Asset request cancelled. No invoice or loan was created.', 'success')
+        flash('Asset request cancelled. No loan was created.', 'success')
     except Exception as exc:
         db.rollback(); flash(str(exc), 'danger')
     return redirect(url_for('asset_schemes.order_detail', order_id=order_id))
@@ -800,7 +946,7 @@ def cancel_request(order_id):
 @asset_schemes.route('/asset-schemes/orders/<int:order_id>/accept-quote', methods=['POST'])
 @login_required
 def accept_quote(order_id):
-    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    db = get_db(); order = _order(db, order_id, lock=True); member = member_for_user(db)
     try:
         if not order or not member or order['member_id'] != member['id']:
             raise ValueError('You cannot accept this quote.')
@@ -808,8 +954,13 @@ def accept_quote(order_id):
             raise ValueError('There is no final quote awaiting acceptance.')
         if request.form.get('accept_quote') != '1':
             raise ValueError('Confirm that you accept the final quote and repayment schedule.')
-        db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
-            quote_status='accepted',quote_accepted_at=? WHERE id=?""", (datetime.now(), order_id))
+        snapshot = json.dumps(schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'],
+                                                order['tenure_months']))
+        accepted = db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
+            quote_status='accepted',quote_accepted_at=?,repayment_schedule_snapshot=?
+            WHERE id=? AND status='awaiting_member_quote'""", (datetime.now(), snapshot, order_id)).rowcount
+        if accepted != 1:
+            raise ValueError('This quote is no longer awaiting acceptance.')
         invoice, delivery_order = ensure_asset_documents(db, order_id)
         _event(db, order_id, 'quote', 'accepted', 'Member accepted final selling price and repayment schedule')
         _event(db, order_id, 'documents', 'invoice_generated', invoice['invoice_number'])
@@ -905,7 +1056,7 @@ def asset_document_pdf(order_id, document_type):
 @asset_schemes.route('/asset-schemes/orders/<int:order_id>/confirm-receipt', methods=['POST'])
 @login_required
 def confirm_receipt(order_id):
-    db = get_db(); order = _order(db, order_id); member = member_for_user(db)
+    db = get_db(); order = _order(db, order_id, lock=True); member = member_for_user(db)
     try:
         if not order or not member or order['member_id'] != member['id']:
             raise ValueError('You cannot confirm this order.')
@@ -930,13 +1081,19 @@ def confirm_receipt(order_id):
 @login_required
 @role_required('admin', 'treasurer', 'secretary')
 def confirm_receipt_officer(order_id):
-    db = get_db(); order = _order(db, order_id)
+    db = get_db(); order = _order(db, order_id, lock=True)
     try:
         if not order:
             raise ValueError('Asset request not found.')
+        if _acting_on_own_order(db, order):
+            raise ValueError('You cannot confirm delivery of your own asset request.')
+        _, blocked = _officer_confirm_rules(db, order)
+        if blocked:
+            raise ValueError(blocked)
         note = request.form.get('confirmation_note', '').strip()
-        if len(note) < 5:
-            raise ValueError('Enter a delivery note or evidence reference before confirming for the member.')
+        if len(note) < 10:
+            raise ValueError('Enter a delivery note or evidence reference (at least 10 characters) before '
+                             'confirming for the member.')
         loan_id, loan_number = activate_delivered_asset(
             db, order, current_user.id, current_user.username, 'asset_scheme_officer',
             f'Officer confirmed on behalf of member: {note}')

@@ -472,6 +472,13 @@
                                 </div>
                                 
                                 <div class="mb-3">
+                                    <label class="form-label">Payroll Cut-off Day for New Loans</label>
+                                    <input type="number" class="form-control" name="loan_repayment_cutoff_day"
+                                           value="{{ settings.loan_repayment_cutoff_day|default(15) }}" min="1" max="28">
+                                    <small class="text-muted">A loan issued on or before this day of the month is deducted in that month's payroll. A loan issued after it starts the next month. Only the President can defer a start further.</small>
+                                </div>
+
+                                <div class="mb-3">
                                     <label class="form-label">Number of Guarantors Required</label>
                                     <input type="number" class="form-control" name="guarantors_required" 
                                            value="{{ settings.guarantors_required|default(2) }}" min="1" max="5">

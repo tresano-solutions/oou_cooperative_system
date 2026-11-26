@@ -104,11 +104,12 @@ def test_request_quote_acceptance_gate():
     mobile_headers = {'Authorization': f"Bearer {mobile_login['token']}"}
     mobile_dashboard = client.get('/api/mobile/v1/dashboard', headers=mobile_headers).get_json()
     assert mobile_dashboard['asset_campaign']['id'] == campaign_id
-    assert mobile_dashboard['asset_campaign']['flyer_url'].endswith('asset-scheme-campaign-v1.png')
+    # Static URLs carry a ?v=<file time> stamp so a changed image is never served from the browser cache.
+    assert mobile_dashboard['asset_campaign']['flyer_url'].split('?')[0].endswith('asset-scheme-campaign-v1.png')
     mobile_catalogue = client.get('/api/mobile/v1/assets', headers=mobile_headers)
     assert mobile_catalogue.status_code == 200
     mobile_payload = mobile_catalogue.get_json()
-    assert mobile_payload['products'][0]['image_url'].endswith('asset-categories/television.jpg')
+    assert mobile_payload['products'][0]['image_url'].split('?')[0].endswith('asset-categories/television.jpg')
     assert 'estimated_price_min' not in mobile_payload['products'][0]
     assert 'purchase_cost' not in mobile_payload['products'][0]
     mobile_apply = client.post('/api/mobile/v1/assets/apply', headers=mobile_headers, json={
@@ -313,11 +314,18 @@ def test_request_quote_acceptance_gate():
                                 (member_user['id'],)).fetchone()[0] >= 3
         assert get_db().execute('SELECT COUNT(*) FROM notifications WHERE user_id=?',
                                 (admin_user['id'],)).fetchone()[0] >= 1
+    # Cancelling stays open after the quote is accepted, until the cooperative has paid the supplier.
+    # Once the items are bought the member can no longer cancel online.
+    with app.app_context():
+        get_db().execute("UPDATE asset_orders SET status='procured' WHERE id=?", (order_id,))
+        get_db().commit()
     blocked_cancel = client.post(f'/asset-schemes/orders/{order_id}/cancel',
-                                 data={'reason': 'Trying to cancel after invoice.'})
+                                 data={'reason': 'Trying to cancel after purchase.'})
     assert blocked_cancel.status_code in (302, 303)
     with app.app_context():
-        assert get_db().execute('SELECT status FROM asset_orders WHERE id=?', (order_id,)).fetchone()['status'] == 'submitted'
+        assert get_db().execute('SELECT status FROM asset_orders WHERE id=?', (order_id,)).fetchone()['status'] == 'procured'
+        get_db().execute("UPDATE asset_orders SET status='submitted' WHERE id=?", (order_id,))
+        get_db().commit()
     invoice_pdf = client.get(f'/asset-schemes/orders/{order_id}/invoice.pdf')
     delivery_pdf = client.get(f'/asset-schemes/orders/{order_id}/delivery-order.pdf')
     assert invoice_pdf.status_code == 200 and invoice_pdf.mimetype == 'application/pdf'

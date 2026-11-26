@@ -845,6 +845,7 @@ REVERSAL_GUIDANCE = {
     'member_receipt':    'Reverse it from the member receipt screen.',
     'asset_procurement': 'Correct it from the asset scheme order so the procurement record and journal remain aligned.',
     'asset_delivery_fee': 'Correct it from the asset scheme order so the delivery record and journal remain aligned.',
+    'asset_procurement_refund': 'A supplier refund belongs to a cancelled asset order; correct it from that order so the cancellation record and journal remain aligned.',
     'asset_scheme':      'Correct the activated asset loan from its asset scheme order; do not reverse only the journal.',
     'revenue':           'Delete or correct the revenue record itself.',
     'expenses':          'Delete or correct the expense record itself.',

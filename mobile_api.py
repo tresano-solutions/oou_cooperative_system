@@ -11,6 +11,7 @@ import os
 import loan_limits
 import random
 import secrets
+import uuid
 import re
 from datetime import datetime, timedelta, UTC
 from functools import wraps
@@ -47,7 +48,9 @@ from utils import (
     clear_account_failures,
     pause_message,
 )
-from asset_schemes import finance_terms
+from asset_schemes import (CANCELLABLE_BEFORE_PURCHASE, finance_terms, member_can_cancel,
+                           schedule_snapshot)
+from asset_documents import update_asset_documents
 from asset_notifications import notify_asset_member, notify_asset_roles
 from asset_documents import ensure_asset_documents
 from asset_fulfilment import activate_delivered_asset
@@ -957,7 +960,7 @@ def mobile_assets_apply():
     reason = ('Monthly repayment is within 40% of recorded monthly salary.' if annual_salary and eligible
               else 'Monthly repayment exceeds 40% of recorded monthly salary; committee review required.' if annual_salary
               else 'No salary recorded; committee affordability review required.')
-    order_number = f"AS/{now:%Y%m%d}/{random.randint(1000, 9999)}"
+    order_number = f'AS/TMP/{uuid.uuid4().hex}'
     db.execute('''INSERT INTO asset_orders
         (order_number,campaign_id,member_id,status,approval_stage,expected_spend,quote_status,
          selling_subtotal,annual_interest_rate,tenure_months,interest_amount,total_repayment,
@@ -969,6 +972,8 @@ def mobile_assets_apply():
          interest, total, monthly, 0, repayment_method, 'eligible' if eligible else 'review',
          reason, 1, signature, g.user_id))
     order_id = last_insert_id(db)
+    order_number = f"AS/{now:%Y%m%d}/{order_id:05d}"
+    db.execute('UPDATE asset_orders SET order_number=? WHERE id=?', (order_number, order_id))
     preference_summary = []
     for product, qty, expected, preferences in selected:
         db.execute('''INSERT INTO asset_order_items
@@ -1008,38 +1013,37 @@ def mobile_assets_cancel(order_id):
                        (order_id, g.member['id'])).fetchone()
     if not order:
         return _json_error('Asset request not found.', 404, 'request_not_found')
-    if order['status'] not in {'sourcing_quote', 'awaiting_member_quote'} or order['quote_status'] == 'accepted':
-        return _json_error('This request can no longer be cancelled because invoicing or approval has begun.',
-                           409, 'cancellation_unavailable')
-    if db.execute('SELECT 1 FROM asset_invoices WHERE order_id=?', (order_id,)).fetchone():
-        return _json_error('This request has already been invoiced and cannot be cancelled here.',
+    if not member_can_cancel(order):
+        return _json_error('The cooperative has already bought these items, so this request can no longer be '
+                           'cancelled in the app. Please contact the cooperative office.',
                            409, 'cancellation_unavailable')
     reason = str((request.get_json(silent=True) or {}).get('reason') or '').strip()
     if len(reason) < 5:
         return _json_error('Tell the cooperative why you are cancelling this request.', 400, 'reason_required')
-    changed = db.execute("""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
-        quote_status='cancelled_by_member' WHERE id=?
-        AND status IN ('sourcing_quote','awaiting_member_quote')
-        AND quote_status <> 'accepted'""", (order_id,)).rowcount
+    placeholders = ','.join('?' for _ in CANCELLABLE_BEFORE_PURCHASE)
+    changed = db.execute(f"""UPDATE asset_orders SET status='cancelled',approval_stage='closed',
+        quote_status='cancelled_by_member' WHERE id=? AND status IN ({placeholders})""",
+                         (order_id, *CANCELLABLE_BEFORE_PURCHASE)).rowcount
     if changed != 1:
         db.rollback()
         return _json_error('This request can no longer be cancelled.', 409, 'cancellation_unavailable')
+    update_asset_documents(db, order_id, invoice_status='cancelled', delivery_status='cancelled')
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment)
         VALUES (?,'member','cancelled',?,?,?)''', (order_id, g.user_id, g.username, reason))
     notification_order = _asset_order_for_notifications(db, order_id)
     portal_url = request.url_root.rstrip('/')
     notify_asset_member(db, notification_order, 'Asset request cancelled',
-                        'Your request has been closed. No invoice, loan, or accounting entry was created.',
+                        'Your request has been closed. No loan was created and nothing is owed for it.',
                         'info', portal_url)
-    notify_asset_roles(db, notification_order, ('admin', 'treasurer'),
+    notify_asset_roles(db, notification_order, ('admin', 'treasurer', 'secretary'),
                        'Member cancelled asset request',
-                       f'{notification_order["order_number"]} was cancelled before invoicing. Reason: {reason}',
+                       f'{notification_order["order_number"]} was cancelled by the member before purchase. Reason: {reason}',
                        'info', portal_url)
     db.commit()
     audit(db, 'ASSET_REQUEST_CANCELLED_BY_MEMBER', 'asset_schemes',
           f'{order["order_number"]}: {reason}')
-    return jsonify({'success': True, 'message': 'Asset request cancelled. No invoice or loan was created.'})
+    return jsonify({'success': True, 'message': 'Asset request cancelled. No loan was created.'})
 
 
 @mobile_api.route('/api/mobile/v1/assets/orders/<int:order_id>/accept-quote', methods=['POST'])
@@ -1053,8 +1057,14 @@ def mobile_assets_accept_quote(order_id):
         return _json_error('There is no final quote awaiting acceptance.', 409, 'quote_unavailable')
     if data.get('accept_quote') is not True:
         return _json_error('Confirm that you accept the final selling price and repayment schedule.', 400, 'acceptance_required')
-    db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
-        quote_status='accepted',quote_accepted_at=? WHERE id=?""", (datetime.now(), order_id))
+    snapshot = json.dumps(schedule_snapshot(order['selling_subtotal'], order['annual_interest_rate'],
+                                            order['tenure_months']))
+    accepted = db.execute("""UPDATE asset_orders SET status='submitted',approval_stage='secretary',
+        quote_status='accepted',quote_accepted_at=?,repayment_schedule_snapshot=?
+        WHERE id=? AND status='awaiting_member_quote'""", (datetime.now(), snapshot, order_id)).rowcount
+    if accepted != 1:
+        db.rollback()
+        return _json_error('There is no final quote awaiting acceptance.', 409, 'quote_unavailable')
     invoice, delivery_order = ensure_asset_documents(db, order_id)
     db.execute('''INSERT INTO asset_order_events
         (order_id,stage,action,actor_id,actor_name,comment)

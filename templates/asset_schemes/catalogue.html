@@ -17,6 +17,7 @@
 {% if not campaigns %}<div class="alert alert-info">There is no open asset campaign at the moment.</div>{% endif %}
 {% for campaign in campaigns %}
 <form method="post" action="{{ url_for('asset_schemes.apply', campaign_id=campaign.id) }}" class="card shadow-sm mb-4 appliance-catalogue" {% if loop.first %}id="appliance-catalogue"{% endif %}>
+  <input type="hidden" name="submission_token" value="{{ new_submission_token() }}">
   <div class="card-header bg-white">
     <div class="small fw-bold text-primary">{{ campaign.name }}</div>
     <h3 class="mb-1">What would you like us to source?</h3>

@@ -78,6 +78,7 @@ _DEFAULT_SETTINGS = {
     'max_interest_rate': '11',
     'insurance_rate': '1',
     'guarantors_required': '2',
+    'loan_repayment_cutoff_day': '15',
     'default_penalty_rate': '20',
     'interest_regular': '11',
     'interest_housing': '9',

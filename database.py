@@ -911,6 +911,7 @@ def init_db():
         )
     '''))
     _add_col(db, 'asset_orders', 'delivery_fee_account', 'TEXT')
+    _add_col(db, 'asset_orders', 'repayment_schedule_snapshot', 'TEXT')
     _add_col(db, 'asset_orders', 'delivery_fee_journal_id', 'INTEGER')
     _add_col(db, 'asset_orders', 'procurement_cost', 'REAL DEFAULT 0')
     _add_col(db, 'asset_orders', 'procurement_account', 'TEXT')
@@ -2354,6 +2355,7 @@ def init_db():
         ('min_savings', '5000', 'Minimum monthly savings'),
         ('share_capital_pct', '0', 'Percent of each savings contribution allocated to member share capital (0 = off)'),
         ('savings_due_day', '10', 'Savings due day of month'),
+        ('loan_repayment_cutoff_day', '15', 'Payroll cut-off day: a loan issued on or before this day of the month starts repaying that month, a later one the next month'),
         ('late_fee_percent', '10', 'Late fee percentage'),
         ('min_deposit_period', '90', 'Minimum deposit period in days'),
         ('member_deposit_rate', '9', 'Member deposit interest rate'),

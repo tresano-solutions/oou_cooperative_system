@@ -48,6 +48,7 @@
                         <tr><td>Interest rate</td><td class="text-end">{{ loan.interest_rate }}%</td></tr>
                         <tr><td>Total repayable</td><td class="text-end">₦{{ "{:,.2f}".format(loan.total_repayment or 0) }}</td></tr>
                         <tr><td>Applied</td><td class="text-end">{{ loan.date_applied|string|truncate(19, True, '') }}</td></tr>
+                        {% if first_payment %}<tr><td>Repayment starts <span class="text-muted small">(payroll month)</span></td><td class="text-end fw-semibold">{{ first_payment.strftime('%B %Y') }}</td></tr>{% endif %}
                         {% if loan.status == 'withdrawn' %}
                         <tr><td>Withdrawn</td><td class="text-end">{{ loan.withdrawn_at|string|truncate(19, True, '') }}</td></tr>
                         <tr><td>Withdrawal reason</td><td class="text-end">{{ loan.withdrawal_reason or 'Not provided' }}</td></tr>
@@ -252,7 +253,26 @@
             </div>
             {% endif %}
 
-            {% if tracking %}{% include 'admin/_loan_tracking.html' %}{% endif %}
+{% if can_defer_repayment %}
+            <div class="card mb-3">
+                <div class="card-header"><h6 class="mb-0">Defer Repayment Start <span class="badge bg-secondary ms-1">President only</span></h6></div>
+                <div class="card-body">
+                    <p class="small text-muted mb-2">Repayment currently starts in <strong>{{ first_payment.strftime('%B %Y') if first_payment else 'the first payroll month' }}</strong>.
+                        You can move it to a later month (up to 12 months) while no repayment has been made. The member is told and the change is recorded.</p>
+                    <form method="post" action="{{ url_for('loans.defer_repayment_start', loan_id=loan.id) }}"
+                          onsubmit="return confirm('Move the start of repayment on this loan?');">
+                        <div class="row g-2">
+                            <div class="col-md-4"><label class="form-label small mb-1" for="defer-start-month">New start month</label>
+                                <input type="month" id="defer-start-month" name="start_month" class="form-control form-control-sm" min="{{ defer_min_month }}" required></div>
+                            <div class="col-md-8"><label class="form-label small mb-1" for="defer-reason">Reason</label>
+                                <input type="text" id="defer-reason" name="reason" class="form-control form-control-sm" minlength="5" required placeholder="Why repayment should start later"></div>
+                        </div>
+                        <button class="btn btn-outline-primary btn-sm mt-2">Defer repayment start</button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+                        {% if tracking %}{% include 'admin/_loan_tracking.html' %}{% endif %}
             <div class="card mb-3">
                 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
                     <h6 class="mb-0">Loan Statement &amp; Corrections</h6>
@@ -374,7 +394,18 @@
                             </div>
                         </div>
                         {% endif %}
-                        <button type="submit" name="action" value="approve" class="btn btn-success"
+                        {% if is_disbursing_stage %}
+                        <div class="mb-2">
+                            <label class="form-label small mb-1" for="defer-repayment-to">Start repayment later (optional)</label>
+                            <input type="month" id="defer-repayment-to" name="defer_repayment_to" class="form-control form-control-sm">
+                            <div class="form-text small">
+                                Approved today, repayment starts with the {{ default_start_label }} payroll
+                                (loans issued after the {{ payroll_cutoff_day }}th start the following month).
+                                Only the President can choose a later month.
+                            </div>
+                        </div>
+                        {% endif %}
+                        <button type="submit" name="action" value="approve" class="btn btn-success
                                 {% if stage == 'president' and not due_diligence_complete %}disabled{% endif %}
                                 onclick="return confirm('Approve this loan at the {{ stage_actor }} stage?');">
                             <i class="fas fa-check"></i> Approve

@@ -4,6 +4,8 @@ import random
 import loan_limits
 import secrets
 from datetime import datetime, timedelta
+
+import repayment_start
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -520,7 +522,9 @@ def my_loans():
         # Next expected payment date
         if d['disbursement_date']:
             paid = d['payments_made']
-            d['next_payment_date'] = d['disbursement_date'] + timedelta(days=30 * (paid + 1))
+            first_due = _parse_dt(d.get('first_payment_date')) if d.get('first_payment_date') else None
+            d['next_payment_date'] = (repayment_start.add_months(first_due, paid) if first_due
+                                      else d['disbursement_date'] + timedelta(days=30 * (paid + 1)))
             overdue_days = (today - d['next_payment_date']).days
             d['is_overdue']   = overdue_days > 0 and loan['status'] == 'active'
             d['days_overdue'] = max(0, overdue_days) if d['is_overdue'] else 0
@@ -610,9 +614,11 @@ def loan_detail(loan_id):
     today      = datetime.now()
     paid_count = len(repayments_raw) if is_disbursed else 0
 
+    first_due = _parse_dt(d.get('first_payment_date')) if d.get('first_payment_date') else None
     for row in raw_schedule:
         i   = row['month']
-        due = start_date + timedelta(days=30 * i)
+        due = (repayment_start.add_months(first_due, i - 1) if first_due
+               else start_date + timedelta(days=30 * i))
         is_paid    = is_disbursed and i <= paid_count
         is_overdue = is_disbursed and not is_paid and due < today
         schedule.append(SimpleNamespace(
