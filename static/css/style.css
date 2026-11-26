@@ -1024,3 +1024,126 @@ button:focus-visible,
 ::-webkit-scrollbar-thumb:hover {
     background: var(--primary-dark);
 }
+
+/* =====================================================================
+   Buttons and page headers: one consistent look on every page.
+   ===================================================================== */
+
+/* A blanket `border: none` on .btn removed the border Bootstrap draws on outline buttons,
+   so "outline" actions looked like loose text. Give every button a border again. */
+.btn {
+    border: 1px solid transparent;
+}
+.btn-outline-secondary {
+    background: #fff;
+    color: #344054;
+    border-color: #98a2b3;
+}
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus {
+    background: #f2f4f7;
+    color: #101828;
+    border-color: #667085;
+}
+.btn-outline-primary {
+    background: #fff;
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus {
+    background: var(--primary-color);
+    color: #fff;
+    border-color: var(--primary-color);
+}
+.btn-secondary {
+    background: #667085;
+    color: #fff;
+}
+.btn-secondary:hover {
+    background: #475467;
+    color: #fff;
+}
+
+/* Page header = title block on the left, action bar on the right.
+   Pages build this as <div class="row"><div class="col-*"><h2>..</h2></div><div class="col-*"> buttons </div></div>
+   with different column widths and wrappers, so it is normalised here rather than page by page. */
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    row-gap: .75rem;
+}
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:first-child {
+    flex: 1 1 320px;
+    width: auto;
+    max-width: none;
+}
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:not(:first-child) {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .5rem;
+}
+/* Buttons that sit in an inner wrapper join the same bar. */
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:not(:first-child) > .d-flex {
+    display: contents !important;
+}
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:not(:first-child) form {
+    margin: 0;
+}
+/* Same size for every action, whatever size class the page asked for. */
+.main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:not(:first-child) .btn {
+    min-height: 40px;
+    padding: .45rem .9rem;
+    font-size: .875rem;
+    white-space: nowrap;
+}
+/* Order by importance, left to right: quiet actions, coloured actions, the main action last. */
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-outline-info,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-outline-warning,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-outline-danger,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-outline-success,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-warning,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-danger,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-info {
+    order: 1;
+}
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-outline-primary {
+    order: 2;
+}
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-primary,
+.main-content .row:has(> [class*="col-"] > h2) > [class*="col-"]:not(:first-child) .btn-success {
+    order: 3;
+}
+@media (max-width: 767.98px) {
+    .main-content .row:has(> [class*="col-"] > h2):has(> [class*="col-"]:not(:first-child) .btn) > [class*="col-"]:not(:first-child) {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+    }
+}
+
+/* Figures on summary cards (any card holding a .metric-value): the text column may shrink, and a
+   long amount shrinks to the card and then wraps inside it instead of running out of the box. */
+.card:has(.metric-value) {
+    container-type: inline-size;
+}
+.card-body.d-flex > div:last-child,
+.card-body.d-flex > div:not(:first-child) {
+    min-width: 0;
+}
+.card:has(.metric-value) .metric-value {
+    font-size: clamp(1.05rem, 7cqw, 1.5rem);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+@container (max-width: 270px) {
+    .card:has(.metric-value) .metric-value {
+        font-size: clamp(.95rem, 9cqw, 1.3rem);
+    }
+}
