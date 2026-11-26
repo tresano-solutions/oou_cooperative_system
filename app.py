@@ -193,6 +193,21 @@ csrf.exempt(app.view_functions['ctas.ctas_charge_due'])
 
 # ── Context processor ─────────────────────────────────────────────────────────
 
+@app.url_defaults
+def _version_static_urls(endpoint, values):
+    """Append the file's modification time to every static URL.
+
+    Without this a browser keeps serving yesterday's style.css or script after a deploy
+    (the file name never changes), so fixes appear not to have shipped until the cache is
+    cleared by hand. A changed file now gets a new URL, so it is fetched straight away."""
+    if endpoint != 'static' or 'v' in values or not values.get('filename'):
+        return
+    try:
+        values['v'] = int(os.path.getmtime(os.path.join(app.static_folder, values['filename'])))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 @app.template_filter('fmtdt')
 def _fmt_datetime(value, fmt='%d/%m/%Y %H:%M'):
     """Safely format a date/datetime for display in templates.

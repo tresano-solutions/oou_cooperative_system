@@ -387,6 +387,11 @@ class PayrollRoutes(unittest.TestCase):
         self.assertEqual(re.search(r'data-batch="([0-9a-f]{16})"', picked.text).group(1), key)
         self.assertIn(f'data-member="{self.member}"', picked.text)
 
+    def test_static_files_get_a_version_so_deploys_are_not_hidden_by_the_cache(self):
+        page = self.client.get('/loans/payroll-adapter').text
+        self.assertRegex(page, r'/static/css/style\.css\?v=\d+')
+        self.assertRegex(page, r'/static/css/workspace\.css\?v=\d+')
+
     def test_screen_shows_numbers_and_shortfall(self):
         response = self.client.post('/loans/payroll-adapter', data={
             'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
