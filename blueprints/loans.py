@@ -93,7 +93,7 @@ def payroll_repayment_adapter():
     account = request.form.get('counter_account', '1400')
     items, members, token, combined, control = [], [], '', False, False
     source_rows = []
-    columns, mapping_info, staging_id = {}, None, ''
+    columns, mapping_info, staging_id, control_warnings = {}, None, '', []
     try:
         action = request.form.get('action')
         if request.method == 'POST' and action in ('export', 'rematch'):
@@ -105,6 +105,7 @@ def payroll_repayment_adapter():
             source_rows, combined = payload['source_rows'], payload['combined']
             control = payload.get('control', False)
             columns = payload.get('columns') or {}
+            control_warnings = payload.get('control_warnings') or []
             resolve_loan_repayment_counter_account(db, account, '')
         if request.method == 'POST' and action == 'export':
             if combined and not la_permissions.can('savings.manage'):
@@ -183,6 +184,7 @@ def payroll_repayment_adapter():
                 combined = any('savings_amount' in r or 'subscription_amount' in r for r in source_rows)
                 control = bool(getattr(source_rows, 'control_verified', False))
                 columns = dict(getattr(source_rows, 'columns', None) or {})
+                control_warnings = list(getattr(source_rows, 'control_warnings', None) or [])
         if request.method == 'POST' and not mapping_info:
             if combined and not la_permissions.can('savings.manage'):
                 return 'Savings management permission is required for combined payroll.', 403
@@ -198,7 +200,8 @@ def payroll_repayment_adapter():
             items, members = adapter.prepare_review(db, source_rows, month)
             token = serializer.dumps({'user': current_user.id, 'host': request.host, 'month': month, 'date': payment_date,
                                       'account': account, 'items': items, 'source_rows': list(source_rows), 'combined': combined,
-                                      'control': control, 'columns': columns})
+                                      'control': control, 'columns': columns,
+                                      'control_warnings': control_warnings})
     except (ValueError, BadData, UnknownCashAccountError) as exc:
         flash(str(exc), 'danger')
     except (UnicodeError, csv.Error, OSError, zipfile.BadZipFile, KeyError) as exc:
@@ -225,7 +228,7 @@ def payroll_repayment_adapter():
     return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token, members=members,
                            month=month, payment_date=payment_date, account=account,
                            totals=totals, combined=combined, summary=summary, control=control,
-                           columns=columns, mapping_info=mapping_info, batch_key=batch_key, field_labels=adapter.FIELD_LABELS,
+                           columns=columns, control_warnings=control_warnings, mapping_info=mapping_info, batch_key=batch_key, field_labels=adapter.FIELD_LABELS,
                            accounts=get_loan_repayment_counter_accounts(db))
 
 

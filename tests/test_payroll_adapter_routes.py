@@ -45,7 +45,8 @@ class PayrollRoutes(unittest.TestCase):
             db.execute('UPDATE loans SET balance=? WHERE id=?', (91666.669999, self.loan))
             db.commit()
         response = self.preview()
-        self.assertIn(f'max="91666.67" step="0.01" name="amount_2_{self.loan}" value="91666.67"', response.text)
+        self.assertIn(f'step="0.01" name="amount_2_{self.loan}" value="91666.67"', response.text)
+        self.assertNotIn('max="', response.text.split('adp-alloc')[-1])
         token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
         data = dict(action='export', review_token=token, confirm_2='on')
         data[f'amount_2_{self.loan}'] = '91666.67'
@@ -67,7 +68,9 @@ class PayrollRoutes(unittest.TestCase):
         with app.app_context():
             self.assertEqual(get_db().execute('SELECT COUNT(*) FROM repayments WHERE loan_id=?', (self.loan,)).fetchone()[0], 0)
         data[f'amount_2_{self.loan}'] = '100000'
-        self.assertIn(b'Allocated amounts must equal', self.client.post('/loans/payroll-adapter', data=data).data)
+        other = self.client.post('/loans/payroll-adapter', data=data)
+        self.assertIn('attachment', other.headers.get('Content-Disposition', ''))
+        self.assertEqual(list(csv.DictReader(io.StringIO(other.text)))[0]['amount'], '100000.00')
 
     def test_book_and_bad_token(self):
         self.assertEqual(self.client.get('/loans/payroll-book?month=bad').status_code, 400)
@@ -79,12 +82,43 @@ class PayrollRoutes(unittest.TestCase):
         self.client.get('/logout')
         self.assertEqual(self.client.get('/loans/payroll-book').status_code, 302)
 
-    def test_existing_month_blocks(self):
+    def test_existing_repayment_in_month_warns_but_does_not_block(self):
         with app.app_context():
             db = get_db()
-            db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date) VALUES (?,'prior',1,'2026-10-05')", (self.loan,))
+            db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date) VALUES (?,'prior-plain',1000,'2026-10-05')", (self.loan,))
             db.commit()
-        self.assertIn(b'Repayment already exists', self.preview().data)
+        response = self.preview()
+        self.assertIn(b'already has 1 repayment(s) totalling 1,000.00', response.data)
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        data = dict(action='export', review_token=token, confirm_2='on')
+        data[f'amount_2_{self.loan}'] = '91666.67'
+        self.assertIn('attachment', self.client.post('/loans/payroll-adapter', data=data).headers.get('Content-Disposition', ''))
+
+    def test_earlier_payroll_repayment_gets_a_stronger_warning(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date,payment_method) VALUES (?,'prior-payroll',5000,'2026-10-05','salary_deduction')", (self.loan,))
+            db.commit()
+        self.assertIn(b'salary-deduction repayment of 5,000.00 is already recorded', self.preview().data)
+
+    def test_deduction_a_few_kobo_above_balance_settles_at_balance(self):
+        with app.app_context():
+            db = get_db()
+            db.execute('UPDATE loans SET balance=? WHERE id=?', (181249.80, self.loan))
+            db.commit()
+        response = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(chr(10).join(['member_number,amount', f'{self._testMethodName},181250.00', '']).encode()), 'pay.csv')})
+        self.assertIn('settled at its balance', response.text)
+        self.assertIn(f'name="amount_2_{self.loan}"', response.text)
+        self.assertIn('value="181249.80"', response.text)
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        data = dict(action='export', review_token=token, confirm_2='on')
+        data[f'amount_2_{self.loan}'] = '181249.80'
+        self.assertIn('attachment', self.client.post('/loans/payroll-adapter', data=data).headers.get('Content-Disposition', ''))
+        data[f'amount_2_{self.loan}'] = '181000.00'
+        typed = self.client.post('/loans/payroll-adapter', data=data)
+        self.assertEqual(list(csv.DictReader(io.StringIO(typed.text)))[0]['amount'], '181000.00')
 
     def test_historical_suggestions_exclude_reversed_current_and_settlement(self):
         import repayment_adapter as adapter
@@ -107,7 +141,7 @@ class PayrollRoutes(unittest.TestCase):
             self.assertIn('Consistent across 2', loan['basis'])
             self.assertNotIn('2026-10:', loan['basis'])
 
-    def test_changed_balance_blocks_export(self):
+    def test_changed_balance_does_not_stop_the_file(self):
         response = self.preview()
         token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
         with app.app_context():
@@ -117,8 +151,8 @@ class PayrollRoutes(unittest.TestCase):
         data = dict(action='export', review_token=token, confirm_2='on')
         data[f'amount_2_{self.loan}'] = '91666.67'
         response = self.client.post('/loans/payroll-adapter', data=data)
-        self.assertIn(b'Loan balance or status changed', response.data)
-        self.assertNotIn('attachment', response.headers.get('Content-Disposition', ''))
+        self.assertIn('attachment', response.headers.get('Content-Disposition', ''))
+        self.assertEqual(list(csv.DictReader(io.StringIO(response.text)))[0]['amount'], '91666.67')
 
     def test_member_denied(self):
         from unittest.mock import patch
@@ -165,15 +199,13 @@ class PayrollRoutes(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM savings WHERE member_id=?', (self.member,)).fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM repayments WHERE loan_id=?', (self.loan,)).fetchone()[0], 0)
 
-    def test_loan_duplicate_does_not_block_savings_when_explicitly_excluded(self):
+    def test_loan_can_still_be_excluded_while_savings_export(self):
         import zipfile
         with app.app_context():
             db = get_db()
             db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date) VALUES (?,'existing-combined',1,'2026-10-01')", (self.loan,))
             db.commit()
         response = self.combined_preview()
-        blocked = self.export_combined(response)
-        self.assertNotEqual(blocked.mimetype, 'application/zip')
         result = self.export_combined(response, exclude_loan_2='on')
         self.assertEqual(result.mimetype, 'application/zip')
         with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
@@ -238,16 +270,50 @@ class PayrollRoutes(unittest.TestCase):
         self.assertIn('A salary deduction of 10,000.00 is already recorded', response.text)
         self.assertEqual(self.export_combined(response).mimetype, 'application/zip')
 
-    def test_same_payroll_savings_receipt_already_posted_blocks_export(self):
+    def test_rows_already_posted_are_still_written_and_the_importer_skips_them(self):
+        import zipfile
+        from unittest.mock import patch
         response = self.combined_preview()
         with app.app_context():
             db = get_db()
             db.execute("INSERT INTO savings (member_id,amount,month,date,receipt_number) VALUES (?,10000,'2026-10','2026-10-27',?)",
                        (self.member, f'PAYROLL-SAV/2026-10/{self.member}'))
+            db.execute("INSERT INTO repayments (loan_id,repayment_number,amount,date,receipt_number) VALUES (?,'posted-before',91666.67,'2026-10-27',?)",
+                       (self.loan, f'PAYROLL-LOAN/2026-10/{self.member}/{self.loan}'))
             db.commit()
         result = self.export_combined(response)
-        self.assertNotEqual(result.mimetype, 'application/zip')
-        self.assertIn(b'payroll savings receipt already posted', result.data)
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            loan_csv = archive.read('loan_repayments_2026-10.csv')
+            savings_csv = archive.read('salary_savings_2026-10.csv')
+        self.assertEqual(len(list(csv.DictReader(io.StringIO(loan_csv.decode())))), 1)
+        self.assertEqual(len(list(csv.DictReader(io.StringIO(savings_csv.decode())))), 1)
+        with patch('blueprints.loans.send_loan_repayment_email'), patch('blueprints.loans.notify_member'), patch('blueprints.savings.notify_member'):
+            self.client.post('/loans/bulk-repayments', data={'counter_account': '1400', 'file': (io.BytesIO(loan_csv), 'loans.csv')})
+            self.client.post('/savings/salary-upload', data={'counter_account': '1400', 'month': '2026-10', 'batch_ref': 'DUP-TEST',
+                                                             'file': (io.BytesIO(savings_csv), 'savings.csv')})
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM savings WHERE member_id=?', (self.member,)).fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM repayments WHERE loan_id=?', (self.loan,)).fetchone()[0], 1)
+
+    def test_unconfirmed_and_unmatched_rows_are_left_out_not_refused(self):
+        import zipfile
+        nl = chr(10)
+        raw = nl.join(['Employee Number,Full name,COOPERATIVE LOAN,COOPERATIVE SAVINGS',
+                       f'{self._testMethodName},Payroll Member,91666.67,10000', '']).encode()
+        response = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(raw), 'hr.csv')})
+        token = re.search(r'name="review_token" value="([^"]+)"', response.text).group(1)
+        result = self.client.post('/loans/payroll-adapter', data={'action': 'export', 'review_token': token})
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            review = list(csv.DictReader(io.StringIO(archive.read('payroll_reconciliation_2026-10.csv').decode())))
+            loans = list(csv.DictReader(io.StringIO(archive.read('loan_repayments_2026-10.csv').decode())))
+        self.assertEqual(loans, [])
+        self.assertEqual(review[0]['loan_status'], 'Not confirmed - NOT exported')
+        self.assertEqual(review[0]['loan_gap'], '91666.67')
 
     def test_combined_requires_savings_permission(self):
         from unittest.mock import patch

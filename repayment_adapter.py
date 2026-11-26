@@ -123,10 +123,16 @@ def loan_book(db, month):
     return result
 
 
-def has_month_payment(db, member_id, month):
-    return db.execute('''SELECT r.id FROM repayments r JOIN loans l ON l.id=r.loan_id
-        WHERE l.member_id=? AND r.reversed_at IS NULL
-        AND SUBSTR(CAST(r.date AS TEXT),1,7)=?''', (member_id, month)).fetchone() is not None
+def month_repayments(db, member_id, month):
+    """Repayments already recorded for the member this month. A member can legitimately pay more
+    than once a month, so this informs the review; duplicates are stopped by receipt instead."""
+    rows = db.execute('''SELECT r.amount, r.payment_method, r.receipt_number FROM repayments r
+        JOIN loans l ON l.id=r.loan_id WHERE l.member_id=? AND r.reversed_at IS NULL
+        AND SUBSTR(CAST(r.date AS TEXT),1,7)=?''', (member_id, month)).fetchall()
+    payroll = [r for r in rows if str(r['payment_method'] or '').lower() == 'salary_deduction'
+               or str(r['receipt_number'] or '').startswith('PAYROLL-LOAN')]
+    total = lambda found: sum((money(r['amount']) for r in found), Decimal(0))
+    return {'count': len(rows), 'total': total(rows), 'payroll_count': len(payroll), 'payroll_total': total(payroll)}
 
 
 def month_savings(db, member_id, month):
@@ -150,9 +156,14 @@ ALIASES = {
 }
 
 
+# HR rounds deductions; a loan settled at its balance may be this much below the deduction.
+ROUNDING_TOLERANCE = Decimal('1.00')
+
+
 class PayrollRows(list):
     """Parsed HR rows; `control_verified` is True when a TOTAL line was reconciled."""
     control_verified = False
+    control_warnings = ()
     columns = None  # {field: header text actually used}
 
 
@@ -272,15 +283,19 @@ def read_payroll(raw, filename, mapping=None):
         row = {key: identifier(values[i]) if i < len(values) else '' for key, i in columns.items()}
         row['row'] = number
         rows.append(row)
-    details = remove_verified_totals(rows)
+    details, warnings, verified = remove_verified_totals(rows)
     result = PayrollRows(details)
-    result.control_verified = len(details) != len(rows)
+    result.control_verified = bool(verified)
+    result.control_warnings = warnings
     result.columns = {key: (shown[i] or f'Column {i + 1}') for key, i in columns.items()}
     return result
 
 
 def remove_verified_totals(rows):
-    """Recognize only trailing reconciled HR control totals, never member rows."""
+    """Split off a trailing HR TOTAL line. Returns (member rows, warnings, verified).
+
+    A total that disagrees with the member rows is reported, never refused. A trailing line
+    that has no identity and is not labelled as a total stays a row, so it cannot vanish."""
     details = list(rows)
     footers = []
     while details:
@@ -290,26 +305,35 @@ def remove_verified_totals(rows):
                 or (label and label not in TOTAL_LABELS)):
             break
         footers.insert(0, details.pop())
-    if not footers:
-        return rows
-    if len(details) < 2:
-        return rows
-    try:
-        totals = {k: sum((money(r.get(k) or '0') for r in details), Decimal(0))
-                  for k in ('amount', 'savings_amount', 'subscription_amount')}
-    except ValueError:
-        # A bad cell is reported on its own row later; do not hide it behind a total error.
-        return details if all(str(f.get('name', '')).strip().upper() in TOTAL_LABELS for f in footers) else rows
+    if not footers or len(details) < 2:
+        return list(rows), [], False
+    keys = ('amount', 'savings_amount', 'subscription_amount')
+    totals = {k: sum((_amount(r.get(k)) for r in details), Decimal(0)) for k in keys}
+    kept, warnings, verified = [], [], True
     for row in footers:
-        label_keys = [k for k in totals if str(row.get(k, '')).strip().upper() in ('TOTAL', 'GRAND TOTAL')]
-        if label_keys:
-            numbers = [money(row[k]) for k in totals if row.get(k) and k not in label_keys]
-            if len(numbers) != 1 or numbers[0] != sum(totals.values()):
-                raise ValueError(f'Row {row["row"]}: HR grand total does not reconcile to employee deductions.')
+        labelled = str(row.get('name', '')).strip().upper() in TOTAL_LABELS
+        label_keys = [k for k in keys if str(row.get(k, '')).strip().upper() in TOTAL_LABELS]
+        if label_keys:   # "TOTAL" sits in a deduction column with the grand total beside it
+            numbers = [_amount(row[k]) for k in keys if row.get(k) and k not in label_keys]
+            grand = sum(totals.values())
+            if len(numbers) != 1 or numbers[0] != grand:
+                verified = False
+                warnings.append(f'Row {row["row"]}: the HR grand total'
+                                f'{f" ({numbers[0]:,.2f})" if len(numbers) == 1 else ""} differs from the member rows ({grand:,.2f}).')
+        elif any(row.get(k) for k in keys) and all(_amount(row.get(k)) == totals[k] for k in keys):
+            continue     # a verified control total
+        elif labelled:
+            verified = False
+            theirs = {k: _amount(row.get(k)) for k in keys if row.get(k)}
+            diffs = [f'{k.replace("_", " ")}: HR {v:,.2f} vs rows {totals[k]:,.2f}' for k, v in theirs.items() if v != totals[k]]
+            warnings.append(f'Row {row["row"]}: the HR TOTAL line differs from the member rows ({"; ".join(diffs)}).')
         else:
-            if not any(row.get(k) for k in totals) or any(money(row.get(k) or '0') != totals[k] for k in totals):
-                raise ValueError(f'Row {row["row"]}: missing employee identity or incorrect HR total.')
-    return details
+            kept.append(row)   # no identity, not a total: keep it so it is visible as an unmatched row
+            verified = False
+            warnings.append(f'Row {row["row"]} has amounts but no staff number or name, and is not a matching total. '
+                            'It is kept as an unmatched row so nothing disappears.')
+    dropped = len(footers) - len(kept)
+    return details + kept, warnings, verified and dropped > 0
 
 
 def suggest_members(name, members, limit=3):
@@ -351,9 +375,10 @@ def _allocate(item, book):
     balances = sum((money(l['balance']) for l in loans), Decimal(0))
     known = all(l['expected'] != '' for l in loans)
     expected = sum((money(l['expected']) for l in loans), Decimal(0)) if known else None
+    rounding = Decimal(0) < amount - balances <= ROUNDING_TOLERANCE
     if len(loans) == 1 and amount <= money(loans[0]['balance']):
         loans[0]['allocation'] = str(amount)
-    elif balances == amount:
+    elif balances == amount or rounding:
         for loan in loans:
             loan['allocation'] = loan['balance']
     elif known and expected == amount:
@@ -367,7 +392,11 @@ def _allocate(item, book):
         item['loan_variance'] = str(variance)
         item['loan_flag'] = 'match' if abs(variance) < Decimal('0.01') else ('short' if variance < 0 else 'over')
     prefilled = all(l['allocation'] != '' for l in loans)
-    if amount > balances:
+    if rounding:
+        item['loan_flag'] = 'match'
+        note = (f'HR deducted {amount:,.2f}, which is {amount - balances:,.2f} more than the outstanding balance of '
+                f'{balances:,.2f}. The loan is settled at its balance and the difference appears as a rounding gap.')
+    elif amount > balances:
         item['loan_flag'] = 'over'
         note = 'HR deducted more than the total outstanding. Verify the excess with HR.'
     elif item['loan_flag'] == 'short':
@@ -382,7 +411,7 @@ def _allocate(item, book):
         note = 'At least one expected payment is unknown. Verify the split with HR.'
     else:
         note = 'Enter how the HR deduction splits across the loans.'
-    if item['loan_flag'] in ('short', 'over') and prefilled:
+    if item['loan_flag'] in ('short', 'over') and prefilled and not rounding:
         note += ' Allocations are pre-filled from the HR amount; review before confirming.'
     item['allocation_note'] = note
     item['loans'] = loans
@@ -439,7 +468,7 @@ def match_payroll(rows, members, book, remembered=None):
                 'savings_amount': row.get('savings_amount', '0'),
                 'subscription_amount': row.get('subscription_amount', '0'),
                 'member_id': None, 'member_number': '', 'employee_id': '',
-                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'savings_note': '', 'match': '',
+                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'savings_note': '', 'loan_note': '', 'match': '',
                 'merged_rows': [], 'suggestions': [], 'loan_expected': '', 'loan_variance': '',
                 'loan_flag': '', 'allocation_note': '', 'merge_note': '', 'state': 'attention',
                 'source_key': hr_key(row), 'manual': bool(row.get('selected_member_id')), 'remembered': False,
@@ -518,28 +547,30 @@ def match_payroll(rows, members, book, remembered=None):
     return result
 
 
-def validate_allocations(item, amounts, current_loans):
-    if item['error'] or item.get('loan_error') or not item['member_id']:
-        raise ValueError('Unresolved member row cannot be exported.')
-    result = []
+def _amount(value):
+    """A non-negative amount, or zero when the text is not a usable number."""
+    try:
+        return money(value if value not in (None, '') else '0')
+    except ValueError:
+        return Decimal('0.00')
+
+
+def allocation_lines(item, amounts):
+    """(loan, amount) for every loan the user gave a positive allocation. No judgement here:
+    the Bulk Repayments importer decides what to do with balances, status and duplicates."""
+    lines = []
     for loan in item['loans']:
-        amount = money(amounts.get(str(loan['id']), '') or '0')
-        if amount == 0:
-            continue
-        current = current_loans.get(loan['id'])
-        if not current or current['member_id'] != item['member_id'] or amount > money(current['balance']):
-            raise ValueError('Loan balance or status changed; preview the payroll again.')
-        result.append((current, amount))
-    if sum((amount for _, amount in result), Decimal(0)) != money(item['amount']):
-        raise ValueError('Allocated amounts must equal the member deduction.')
-    return result
+        amount = _amount(amounts.get(str(loan['id']), ''))
+        if amount > 0:
+            lines.append((loan, amount))
+    return lines
 
 
 LOAN_HEADERS = ['loan_number', 'amount', 'payment_date', 'payment_method', 'counter_account', 'receipt_number', 'notes']
 SAVINGS_HEADERS = ['member_number', 'employee_id', 'amount', 'month', 'date', 'counter_account', 'receipt_number', 'notes']
 REVIEW_HEADERS = ['source_row', 'hr_name', 'hr_staff_number', 'matched_member_number', 'loan_deduction',
                   'savings_deduction', 'subscription_deduction', 'loan_exported', 'savings_exported',
-                  'loan_status', 'savings_status', 'subscription_status', 'loan_gap', 'savings_gap']
+                  'loan_status', 'savings_status', 'subscription_status', 'loan_gap', 'savings_gap', 'warnings']
 
 
 def prepare_review(db, rows, month):
@@ -549,8 +580,14 @@ def prepare_review(db, rows, month):
         item['state'] = 'attention'
         item['loans'] = [{k: loan[k] for k in ('id', 'loan_number', 'purpose', 'balance', 'expected', 'basis', 'allocation')} for loan in item['loans']]
         if item['member_id']:
-            if money(item['amount']) > 0 and has_month_payment(db, item['member_id'], month):
-                item['loan_error'] = 'Repayment already exists in this month; exclude loan deduction and review history.'
+            if money(item['amount']) > 0:
+                existing = month_repayments(db, item['member_id'], month)
+                if existing['payroll_count']:
+                    item['loan_note'] = (f"A salary-deduction repayment of {existing['payroll_total']:,.2f} is already recorded for {month}. "
+                                         'Confirm this payroll has not been posted before adding another.')
+                elif existing['count']:
+                    item['loan_note'] = (f"Member already has {existing['count']} repayment(s) totalling {existing['total']:,.2f} in {month}. "
+                                         'This payroll deduction will be added as a further repayment.')
             if money(item['savings_amount']) > 0:
                 existing = month_savings(db, item['member_id'], month)
                 if existing['salary_count']:
@@ -562,7 +599,7 @@ def prepare_review(db, rows, month):
         if item['error'] or item['loan_error'] or item['savings_error']:
             item['state'] = 'attention'
         elif (item.get('loan_flag') in ('short', 'over', 'unknown') or item['merged_rows'] or item['id_warning']
-              or item['savings_note']):
+              or item['savings_note'] or item['loan_note']):
             item['state'] = 'check'
         else:
             item['state'] = 'ready'
@@ -571,78 +608,66 @@ def prepare_review(db, rows, month):
 
 def _gap(deducted, exported):
     """HR deduction minus what the files carry; unreadable amounts count as zero."""
-    try:
-        return money(deducted or '0') - exported
-    except ValueError:
-        return Decimal('0.00') - exported
+    return _amount(deducted) - exported
+
+
+def _warnings(item):
+    """Everything the review flagged for this row, kept with the reconciliation for the record."""
+    parts = [item.get(k) for k in ('error', 'loan_error', 'savings_error', 'id_warning', 'merge_note',
+                                   'loan_note', 'savings_note', 'allocation_note')]
+    return ' | '.join(str(p) for p in parts if p)
 
 
 def prepare_exports(db, items, choices, month, payment_date, account, username):
-    current = {loan['id']: loan for loan in loan_book(db, month)}
+    """Turn the confirmed review into upload files. This never refuses a row: duplicates, balances,
+    loan status and identifiers are the importers' job. Rows that cannot be turned into a line
+    (no member, not confirmed, excluded) are left out and reported in the reconciliation."""
     loans, savings, review = [], [], []
     for item in items:
         row = item['row']
         exclude_all = choices.get(f'exclude_{row}')
         exclude_loan = exclude_all or choices.get(f'exclude_loan_{row}')
         exclude_savings = exclude_all or choices.get(f'exclude_savings_{row}')
-        loan_total, savings_total = Decimal(0), Decimal(0)
-        if not exclude_all:
-            loan_total, savings_total = money(item['amount']), money(item['savings_amount'])
-        include_loan = loan_total > 0 and not exclude_loan
-        include_savings = savings_total > 0 and not exclude_savings
-        # An unmatched row can never be confirmed: skip it, and say so in the reconciliation file.
-        unresolved = bool(item['error'] or not item['member_id'])
-        if unresolved:
-            include_loan = include_savings = False
-        skipped = 'Unmatched - NOT exported' if unresolved and not exclude_all else 'Excluded / zero deduction'
-        member = None
-        if include_loan or include_savings:
-            if not choices.get(f'confirm_{row}'):
-                raise ValueError(f'Row {row}: confirm the member and allocation or exclude the deduction.')
-            if item['error'] or not item['member_id']:
-                raise ValueError(f'Row {row}: resolve the member match first.')
-            member = db.execute('SELECT id,member_number,employee_id FROM members WHERE id=?', (item['member_id'],)).fetchone()
-            if not member:
-                raise ValueError(f'Row {row}: member no longer exists; review again.')
+        hr_loan, hr_savings = _amount(item['amount']), _amount(item['savings_amount'])
+        loan_status = savings_status = 'Excluded / zero deduction'
         loan_exported, savings_exported = Decimal(0), Decimal(0)
-        if include_loan:
-            if has_month_payment(db, item['member_id'], month):
-                raise ValueError(f'Row {row}: repayment already exists in this month; review history.')
+        member = None
+        if not exclude_all and (hr_loan > 0 or hr_savings > 0):
+            if item.get('error') or not item.get('member_id'):
+                loan_status = savings_status = 'Unmatched - NOT exported'
+            elif not choices.get(f'confirm_{row}'):
+                loan_status = savings_status = 'Not confirmed - NOT exported'
+            else:
+                member = db.execute('SELECT id,member_number,employee_id FROM members WHERE id=?',
+                                    (item['member_id'],)).fetchone()
+                if not member:
+                    loan_status = savings_status = 'Member no longer exists - NOT exported'
+        if member and hr_loan > 0 and not exclude_loan:
             amounts = {str(l['id']): choices.get(f'amount_{row}_{l["id"]}', '') for l in item['loans']}
             for loan in item['loans']:
                 loan['allocation'] = amounts[str(loan['id'])]
-            for loan, amount in validate_allocations(item, amounts, current):
+            for loan, amount in allocation_lines(item, amounts):
                 receipt = f'PAYROLL-LOAN/{month}/{item["member_id"]}/{loan["id"]}'
-                if db.execute('SELECT id FROM repayments WHERE receipt_number=? AND reversed_at IS NULL', (receipt,)).fetchone():
-                    raise ValueError(f'Row {row}: payroll loan receipt already posted.')
                 loans.append([loan['loan_number'], str(amount), payment_date, 'salary_deduction', account,
                               receipt, f'Payroll {month}; approved by {username}'])
                 loan_exported += amount
-        if include_savings:
-            if item['savings_error']:
-                raise ValueError(f'Row {row}: {item["savings_error"]}')
+            loan_status = 'Exported' if loan_exported else 'No loan allocation - NOT exported'
+        elif member and hr_loan > 0:
+            loan_status = 'Excluded / zero deduction'
+        if member and hr_savings > 0 and not exclude_savings:
             number, staff = identifier(member['member_number']), identifier(member['employee_id'])
-            if not number and not staff:
-                raise ValueError(f'Row {row}: add a member or staff number before savings export.')
-            # Ensure the importer will resolve exactly this member, not a duplicate ID.
-            field, key = ('member_number', number) if number else ('employee_id', staff)
-            matches = db.execute(f'SELECT id FROM members WHERE {field}=?', (key,)).fetchall()
-            if len(matches) != 1 or matches[0]['id'] != member['id']:
-                raise ValueError(f'Row {row}: savings import identifier is not unique.')
             receipt = f'PAYROLL-SAV/{month}/{member["id"]}'
-            if db.execute('SELECT id FROM savings WHERE receipt_number=? AND reversed_at IS NULL', (receipt,)).fetchone():
-                raise ValueError(f'Row {row}: payroll savings receipt already posted.')
-            savings.append([number, staff, str(savings_total), month, payment_date, account,
+            savings.append([number, staff, str(hr_savings), month, payment_date, account,
                             receipt, f'Payroll {month}; approved by {username}'])
-            savings_exported = savings_total
+            savings_exported = hr_savings
+            savings_status = 'Exported'
+        elif member and hr_savings > 0:
+            savings_status = 'Excluded / zero deduction'
         review.append([row, item['source_name'], item['source_staff'],
-                       identifier(member['member_number']) if member else item['member_number'],
+                       identifier(member['member_number']) if member else item.get('member_number', ''),
                        item['amount'], item['savings_amount'], item['subscription_amount'],
-                       str(loan_exported), str(savings_exported),
-                       'Exported' if include_loan else skipped,
-                       'Exported' if include_savings else skipped,
+                       str(loan_exported), str(savings_exported), loan_status, savings_status,
                        'Separate fee - NOT included in loan/savings imports',
-                       str(_gap(item['amount'], loan_exported)), str(_gap(item['savings_amount'], savings_exported))])
-    if not loans and not savings:
-        raise ValueError('No approved loan or savings deductions to export.')
+                       str(_gap(item['amount'], loan_exported)), str(_gap(item['savings_amount'], savings_exported)),
+                       _warnings(item)])
     return loans, savings, review

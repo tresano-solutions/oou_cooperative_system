@@ -148,7 +148,7 @@
   {% if items %}
   <h3 class="h6 text-uppercase text-muted mb-2" style="letter-spacing:.04em">2. Review &amp; confirm &mdash; {{ month }} &middot; GL {{ account }}</h3>
   <div class="adp-stats">
-    <div class="adp-stat"><span>Payroll rows</span><strong>{{ summary.rows }}</strong><small>{% if control %}<i class="fas fa-check-circle" aria-hidden="true"></i> HR total verified{% else %}No HR total row found{% endif %}</small></div>
+    <div class="adp-stat"><span>Payroll rows</span><strong>{{ summary.rows }}</strong><small>{% if control_warnings %}<i class="fas fa-exclamation-triangle" aria-hidden="true"></i> HR total differs{% elif control %}<i class="fas fa-check-circle" aria-hidden="true"></i> HR total verified{% else %}No HR total row found{% endif %}</small></div>
     <div class="adp-stat"><span>Ready</span><strong>{{ summary.ready }}</strong><small>matched, nothing unusual</small></div>
     <div class="adp-stat"><span>Needs a check</span><strong>{{ summary.check }}</strong><small>{{ summary.short }} short &middot; {{ summary.over }} over</small></div>
     <div class="adp-stat"><span>Needs action</span><strong>{{ summary.attention }}</strong><small>unmatched or blocked</small></div>
@@ -159,6 +159,7 @@
     <div class="adp-stat is-money"><span>Subscriptions</span><strong>&#8358;{{ naira(totals.subscription_amount) }}</strong><small>separate fee, not exported</small></div>{% endif %}
   </div>
   {% if columns %}<p class="adp-hint mb-1"><strong>Columns read:</strong> {% for field, header in columns.items() %}{{ field_labels[field] }} &larr; &ldquo;{{ header }}&rdquo;{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>{% endif %}
+  {% for note in control_warnings %}<div class="alert alert-warning py-2" role="status">{{ note }} Check the HR file before relying on these figures.</div>{% endfor %}
   <p class="text-success mb-2"><i class="fas fa-shield-alt" aria-hidden="true"></i> No repayments posted &mdash; you upload the generated files yourself in the next step.</p>
   {% if totals.subscription_amount %}<div class="alert alert-warning py-2" role="status">Subscription deductions are retained in the reconciliation report, not added to savings or loan repayments.</div>{% endif %}
 
@@ -192,7 +193,7 @@
         {% for item in items %}
         {% set cols = 8 + (2 if combined else 0) %}
         <tbody class="adp-row" data-state="{{ item.state }}" data-unresolved="{{ 1 if item.error else 0 }}" data-row="{{ item.row }}" data-member="{{ item.member_id or '' }}" data-loan="{{ item.amount if not (item.error or item.loan_error) else 0 }}" data-savings="{{ item.savings_amount if not item.error else 0 }}"
-               data-hr-loan="{{ item.amount if item.amount|float > 0 else 0 }}" data-hr-sav="{{ item.savings_amount if item.savings_amount|float > 0 else 0 }}" data-name="{{ item.source_name }}"
+               data-balances="{% set ns = namespace(b=0) %}{% for loan in item.loans %}{% set ns.b = ns.b + loan.balance|float %}{% endfor %}{{ '%.2f'|format(ns.b) }}" data-hr-loan="{{ item.amount if item.amount|float > 0 else 0 }}" data-hr-sav="{{ item.savings_amount if item.savings_amount|float > 0 else 0 }}" data-name="{{ item.source_name }}"
                data-loan-block="{{ item.error or item.loan_error }}" data-sav-block="{{ item.error or item.savings_error }}" data-unmatched="{{ 1 if item.error else 0 }}"
                data-search="{{ (item.source_name ~ ' ' ~ item.name ~ ' ' ~ item.source_staff ~ ' ' ~ item.member_number ~ ' ' ~ item.employee_id)|lower }}">
           <tr class="adp-main">
@@ -232,10 +233,11 @@
             {% if item.loan_error %}<p class="adp-msg bad" role="alert">{{ item.loan_error }}</p>{% endif %}
             {% if item.allocation_note and not item.loan_error %}<p class="adp-msg {{ 'warn' if item.loan_flag in ('short','over','unknown') else '' }}">{{ item.allocation_note }}</p>{% endif %}
             {% if item.savings_error %}<p class="adp-msg bad" role="alert">{{ item.savings_error }}</p>{% endif %}
+            {% if item.loan_note %}<p class="adp-msg warn"><i class="fas fa-history" aria-hidden="true"></i> {{ item.loan_note }}</p>{% endif %}
             {% if item.savings_note %}<p class="adp-msg warn"><i class="fas fa-piggy-bank" aria-hidden="true"></i> {{ item.savings_note }}</p>{% endif %}
             {% if item.loans %}
             <table class="adp-alloc"><thead><tr><th>Loan</th><th>Type</th><th class="num">Outstanding</th><th class="num">Expected this month</th><th>Schedule basis</th><th class="num">Allocate</th></tr></thead>
-              <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="num">{{ naira(loan.balance) }}</td><td class="num">{{ naira(loan.expected) if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td class="num"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
+              <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="num">{{ naira(loan.balance) }}</td><td class="num">{{ naira(loan.expected) if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td class="num"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
             </table>
             {% if item.amount|float > 0 %}<label class="mt-2 small"><input class="form-check-input adp-ex-loan" type="checkbox" name="exclude_loan_{{ item.row }}"> Exclude loan deduction for this member</label>{% endif %}
             {% endif %}
@@ -283,9 +285,10 @@
       const esc = text => String(text).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
       const CATEGORY = {
         unmatched: 'Member not matched (resolve it, or it will not be exported)',
-        blocked: 'Blocked by a check (see the row for the reason)',
+        blocked: 'No active loan to put it against (cannot be placed in the loan file)',
         excluded: 'Excluded by you',
-        allocation: 'Allocation does not equal the HR deduction',
+        allocation: 'Allocation differs from the HR deduction (the file carries what you allocated)',
+        rounding: 'Allocated at the outstanding balance (HR deducted a little more)',
         unconfirmed: 'Not confirmed yet',
       };
       function totals() {
@@ -311,15 +314,20 @@
               let allocated = 0;
               r.querySelectorAll('input[name^="amount_"]').forEach(i => { allocated += num(i.value); });
               allocated = Math.round(allocated * 100) / 100;
-              if (Math.abs(loanHr - allocated) > 0.005) {
-                addGap('allocation', r, 'Loan', loanHr - allocated, 'Allocated ' + fmt(allocated) + ' of ' + fmt(loanHr));
-              } else loanIn = loanHr;
+              const short = Math.round((loanHr - allocated) * 100) / 100;
+              const balances = num(r.dataset.balances);
+              loanIn = allocated;   // what the file would carry for this row
+              if (Math.abs(short) <= 0.005) { /* matches */ }
+              else if (short > 0 && short <= 1 && Math.abs(allocated - balances) <= 0.005) {
+                addGap('rounding', r, 'Loan', short, 'Loan settled at its balance of ' + fmt(balances) + '; HR deducted ' + fmt(loanHr));
+              } else {
+                addGap('allocation', r, 'Loan', short, 'Allocated ' + fmt(allocated) + ' of ' + fmt(loanHr));
+              }
             }
           }
           if (savHr > 0) {
             if (r.dataset.unmatched === '1') addGap('unmatched', r, 'Savings', savHr, 'No member matched');
             else if (ex || (exSav && exSav.checked)) addGap('excluded', r, 'Savings', savHr, ex ? 'Whole row excluded' : 'Savings deduction excluded');
-            else if (r.dataset.savBlock) addGap('blocked', r, 'Savings', savHr, r.dataset.savBlock);
             else if (!ok) addGap('unconfirmed', r, 'Savings', savHr, 'Row not confirmed');
             else savIn = savHr;
           }
@@ -355,7 +363,7 @@
         // Reasons, grouped; each row is a link that jumps to it.
         const box = document.getElementById('adp-gaps');
         let html = '';
-        ['unmatched', 'blocked', 'allocation', 'excluded', 'unconfirmed'].filter(k => gaps[k]).forEach(k => {
+        ['unmatched', 'blocked', 'allocation', 'rounding', 'excluded', 'unconfirmed'].filter(k => gaps[k]).forEach(k => {
           const list = gaps[k], sum = list.reduce((acc, g) => acc + g.amount, 0);
           html += '<details class="adp-gapgroup"' + (k === 'unconfirmed' ? '' : ' open') + '><summary>' + esc(CATEGORY[k]) + ' &mdash; ' + list.length + ' item(s), &#8358;' + fmt(sum) + '</summary><ul>';
           list.forEach(g => {
@@ -412,7 +420,11 @@
       document.getElementById('adp-form').addEventListener('submit', e => {
         if (!e.submitter || e.submitter.value !== 'export') return;
         const skipped = rows.filter(r => r.dataset.unresolved === '1' && !r.querySelector('.adp-ex').checked).map(r => r.dataset.row);
-        if (skipped.length && !confirm(skipped.length + ' unmatched row(s) will NOT be exported (HR row ' + skipped.join(', ') + '). They will be listed in the reconciliation file. Download anyway?')) e.preventDefault();
+        const unconfirmed = rows.filter(r => { const c = r.querySelector('.adp-confirm'); return c && !c.checked && !r.querySelector('.adp-ex').checked && (num(r.dataset.hrLoan) > 0 || num(r.dataset.hrSav) > 0); }).map(r => r.dataset.row);
+        const notes = [];
+        if (skipped.length) notes.push(skipped.length + ' unmatched row(s) (HR row ' + skipped.join(', ') + ')');
+        if (unconfirmed.length) notes.push(unconfirmed.length + ' row(s) you have not confirmed (HR row ' + unconfirmed.slice(0, 12).join(', ') + (unconfirmed.length > 12 ? ', ...' : '') + ')');
+        if (notes.length && !confirm('These will be left out of the files: ' + notes.join('; ') + '. They are listed in the reconciliation file. Download anyway?')) e.preventDefault();
       });
       document.querySelectorAll('[data-member-field]').forEach(button => {
         button.addEventListener('click', () => {

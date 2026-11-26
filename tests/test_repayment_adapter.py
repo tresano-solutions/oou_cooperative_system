@@ -87,11 +87,11 @@ class AdapterTests(unittest.TestCase):
         loans = [{**self.loan(), 'expected': '100.00'}, {**self.loan(), 'id': 2, 'expected': '50.00'}]
         item = adapter.match_payroll([dict(row=2, member_number='001', amount='150')], members, loans)[0]
         self.assertEqual([l['allocation'] for l in item['loans']], ['100.00', '50.00'])
-        self.assertEqual(len(adapter.validate_allocations(item, {'1': '100', '2': '50'}, {l['id']:l for l in loans})), 2)
-        with self.assertRaises(ValueError):
-            adapter.validate_allocations(item, {'1': '150', '2': '50'}, {l['id']:l for l in loans})
-        with self.assertRaises(ValueError):
-            adapter.validate_allocations(item, {'1': '100', '2': '50'}, {})
+        self.assertEqual([(l['id'], str(a)) for l, a in adapter.allocation_lines(item, {'1': '100', '2': '50'})],
+                         [(1, '100.00'), (2, '50.00')])
+        # The adapter transcribes what it is told; the importer judges amounts and balances.
+        self.assertEqual([str(a) for _, a in adapter.allocation_lines(item, {'1': '150', '2': '0', '3': 'junk'})], ['150.00'])
+        self.assertEqual(adapter.allocation_lines(item, {}), [])
         loans[0]['expected'] = ''
         item = adapter.match_payroll([dict(row=2, member_number='001', amount='150')], members, loans)[0]
         self.assertEqual([l['allocation'] for l in item['loans']], ['', ''])
@@ -117,8 +117,10 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(result[1]['error'])
         self.assertFalse(result[1]['loan_error'])
         self.assertEqual(result[1]['savings_amount'], '500.00')
-        with self.assertRaises(ValueError):
-            adapter.read_payroll(raw.replace(b',,150,1500,20', b',,150,1600,20'), 'hr.csv')
+        wrong = adapter.read_payroll(raw.replace(b',,150,1500,20', b',,150,1600,20'), 'hr.csv')
+        self.assertEqual(len(wrong), 3)            # still read; a total-looking line that does not add up stays visible
+        self.assertFalse(wrong.control_verified)
+        self.assertTrue(wrong.control_warnings)
 
     def test_manual_match_conflicts_and_duplicate_members(self):
         members = [dict(id=1, member_number='001', employee_id='', member_name='Jane Doe')]
@@ -171,8 +173,16 @@ class AdapterTests(unittest.TestCase):
         rows = adapter.read_payroll(raw, 'hr.csv')
         self.assertEqual([r['employee_id'] for r in rows], ['1001', '1002'])
         self.assertTrue(rows.control_verified)
-        with self.assertRaises(ValueError):
-            adapter.read_payroll(raw.replace(b',,TOTAL,100.1,30', b',,TOTAL,100.1,31'), 'hr.csv')
+        wrong = adapter.read_payroll(raw.replace(b',,TOTAL,100.1,30', b',,TOTAL,100.1,31'), 'hr.csv')
+        self.assertEqual([r['employee_id'] for r in wrong], ['1001', '1002'])
+        self.assertFalse(wrong.control_verified)
+        self.assertIn('differs', wrong.control_warnings[0])
+
+    def test_unlabelled_trailing_line_without_identity_stays_visible(self):
+        raw = chr(10).join(['Employee Number,Full name,COOPERATIVE LOAN', '1001,ADE ONE,100', '1002,ADE TWO,50', ',,75', '']).encode()
+        rows = adapter.read_payroll(raw, 'hr.csv')
+        self.assertEqual(len(rows), 3)             # not a total, so it is kept and shows up as unmatched
+        self.assertTrue(rows.control_warnings)
 
     def test_unknown_headings_need_mapping_then_work(self):
         nl = chr(10)
