@@ -6,6 +6,8 @@ import re
 import unicodedata
 import zipfile
 from datetime import datetime
+from collections import Counter
+from difflib import SequenceMatcher
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
@@ -142,7 +144,52 @@ ALIASES = {
 }
 
 
-def read_payroll(raw, filename):
+class PayrollRows(list):
+    """Parsed HR rows; `control_verified` is True when a TOTAL line was reconciled."""
+    control_verified = False
+    columns = None  # {field: header text actually used}
+
+
+class NeedsMapping(ValueError):
+    """The headings were not recognised; carries what the user needs to map them."""
+
+    def __init__(self, message, headers, guesses, sample):
+        super().__init__(message)
+        self.headers, self.guesses, self.sample = headers, guesses, sample
+
+
+TOTAL_LABELS = ('TOTAL', 'GRAND TOTAL', 'SUB TOTAL', 'SUBTOTAL')
+FIELD_LABELS = {
+    'employee_id': 'Staff / Employee number', 'member_number': 'Member number', 'name': 'Full name',
+    'amount': 'Loan deduction', 'savings_amount': 'Savings deduction', 'subscription_amount': 'Subscription (optional)',
+}
+_GUESS_PATTERNS = (
+    ('name', r'name'),
+    ('employee_id', r'staff|employee|emp_?(no|num|id)|payroll|ippis|file_?no'),
+    ('member_number', r'member|membership|coop_?no'),
+    ('amount', r'loan|repay'),
+    ('savings_amount', r'sav'),
+    ('subscription_amount', r'subscri|dues|levy'),
+)
+
+
+def guess_columns(headers):
+    """Best-guess field -> column index from free-text headings (user confirms it)."""
+    taken, guesses = set(), {}
+    for field, pattern in _GUESS_PATTERNS:
+        for i, header in enumerate(headers):
+            key = re.sub(r'[^a-z0-9]+', '_', str(header or '').strip().lower()).strip('_')
+            if i in taken or not key or not re.search(pattern, key):
+                continue
+            if field in ('employee_id', 'member_number') and 'name' in key:
+                continue
+            guesses[field] = i
+            taken.add(i)
+            break
+    return guesses
+
+
+def _load_matrix(raw, filename):
     if len(raw) > 5 * 1024 * 1024:
         raise ValueError('Maximum file size is 5 MB.')
     if filename.lower().endswith('.xlsx'):
@@ -162,7 +209,10 @@ def read_payroll(raw, filename):
         finally:
             book.close()
     elif filename.lower().endswith('.csv'):
-        text = raw.decode('utf-8-sig')
+        try:
+            text = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            text = raw.decode('cp1252', errors='replace')  # Excel "CSV" on Windows
         try:
             dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t')
         except csv.Error:
@@ -177,16 +227,38 @@ def read_payroll(raw, filename):
     )
     if header_index is None or len(matrix) - header_index > 2001:
         raise ValueError('Upload between 1 and 2,000 payroll rows.')
-    headers = [re.sub(r'[^a-z0-9]+', '_', str(v or '').strip().lower()).strip('_') for v in matrix[header_index]]
+    return matrix, header_index
+
+
+def read_payroll(raw, filename, mapping=None):
+    """Parse the HR file. `mapping` ({field: column index}) overrides heading detection."""
+    matrix, header_index = _load_matrix(raw, filename)
+    shown = [str(v).strip() if v is not None else '' for v in matrix[header_index]]
+    headers = [re.sub(r'[^a-z0-9]+', '_', h.lower()).strip('_') for h in shown]
     columns = {}
-    for key, aliases in ALIASES.items():
-        indices = [i for i, h in enumerate(headers) if h in aliases]
-        if len(indices) > 1:
-            raise ValueError('Duplicate column for ' + key)
-        if indices:
-            columns[key] = indices[0]
-    if not set(columns).intersection(('amount', 'savings_amount')) or not set(columns).intersection(('member_number', 'employee_id', 'name')):
-        raise ValueError('Include loan/savings deductions and member_number, Employee Number or Full name columns.')
+    if mapping:
+        for key, index in mapping.items():
+            if key not in FIELD_LABELS or index in (None, ''):
+                continue
+            index = int(index)
+            if not 0 <= index < len(headers):
+                raise ValueError('Choose a column from the list.')
+            columns[key] = index
+        if len(set(columns.values())) != len(columns):
+            raise ValueError('Each column can be used for only one field.')
+    else:
+        for key, aliases in ALIASES.items():
+            indices = [i for i, h in enumerate(headers) if h in aliases]
+            if len(indices) > 1:
+                raise ValueError('Duplicate column for ' + key)
+            if indices:
+                columns[key] = indices[0]
+    if (not set(columns).intersection(('amount', 'savings_amount'))
+            or not set(columns).intersection(('member_number', 'employee_id', 'name'))):
+        sample = [[str(v if v is not None else '')[:40] for v in row[:len(headers)]]
+                  for row in matrix[header_index + 1:header_index + 4]]
+        raise NeedsMapping('Some columns were not recognised. Tell us which column is which.',
+                           shown, {**guess_columns(shown), **columns}, sample)
     rows = []
     for number, values in enumerate(matrix[header_index + 1:], header_index + 2):
         if not any(v not in (None, '') for v in values):
@@ -194,7 +266,11 @@ def read_payroll(raw, filename):
         row = {key: identifier(values[i]) if i < len(values) else '' for key, i in columns.items()}
         row['row'] = number
         rows.append(row)
-    return remove_verified_totals(rows)
+    details = remove_verified_totals(rows)
+    result = PayrollRows(details)
+    result.control_verified = len(details) != len(rows)
+    result.columns = {key: (shown[i] or f'Column {i + 1}') for key, i in columns.items()}
+    return result
 
 
 def remove_verified_totals(rows):
@@ -203,15 +279,21 @@ def remove_verified_totals(rows):
     footers = []
     while details:
         row = details[-1]
-        if any(row.get(k) for k in ('member_number', 'employee_id', 'name')):
+        label = str(row.get('name', '')).strip().upper()
+        if (row.get('member_number') or row.get('employee_id')
+                or (label and label not in TOTAL_LABELS)):
             break
         footers.insert(0, details.pop())
     if not footers:
         return rows
     if len(details) < 2:
         return rows
-    totals = {k: sum((money(r.get(k) or '0') for r in details), Decimal(0))
-              for k in ('amount', 'savings_amount', 'subscription_amount')}
+    try:
+        totals = {k: sum((money(r.get(k) or '0') for r in details), Decimal(0))
+                  for k in ('amount', 'savings_amount', 'subscription_amount')}
+    except ValueError:
+        # A bad cell is reported on its own row later; do not hide it behind a total error.
+        return details if all(str(f.get('name', '')).strip().upper() in TOTAL_LABELS for f in footers) else rows
     for row in footers:
         label_keys = [k for k in totals if str(row.get(k, '')).strip().upper() in ('TOTAL', 'GRAND TOTAL')]
         if label_keys:
@@ -224,15 +306,141 @@ def remove_verified_totals(rows):
     return details
 
 
-def match_payroll(rows, members, book):
-    result, seen = [], set()
+def suggest_members(name, members, limit=3):
+    """Ranked look-alike members for an unmatched HR name (never auto-applied)."""
+    key = name_key(name)
+    if not key:
+        return []
+    tokens = set(key.split())
+    scored = []
+    for m in members:
+        other = name_key(m['member_name'])
+        if not other:
+            continue
+        other_tokens = set(other.split())
+        shared = len(tokens & other_tokens)
+        if not shared:
+            continue
+        overlap = shared / min(len(tokens), len(other_tokens))
+        ratio = SequenceMatcher(None, key, other).ratio()
+        score = max(ratio, overlap * 0.85 if shared >= 2 else 0)
+        if score >= 0.6:
+            scored.append((score, m))
+    scored.sort(key=lambda pair: -pair[0])
+    return [{'id': m['id'], 'member_name': m['member_name'], 'member_number': m.get('member_number'),
+             'employee_id': m.get('employee_id'), 'score': round(score * 100)}
+            for score, m in scored[:limit]]
+
+
+def _allocate(item, book):
+    """Suggest a loan split and compare the HR deduction with what was expected."""
+    amount = money(item['amount'])
+    loans = [dict(l) for l in book if l['member_id'] == item['member_id']]
+    if not loans:
+        item['loan_error'] = 'No active loan with an outstanding balance.'
+        return
+    for loan in loans:
+        loan['balance'] = str(money(loan['balance']))
+        loan['allocation'] = ''
+    balances = sum((money(l['balance']) for l in loans), Decimal(0))
+    known = all(l['expected'] != '' for l in loans)
+    expected = sum((money(l['expected']) for l in loans), Decimal(0)) if known else None
+    if len(loans) == 1 and amount <= money(loans[0]['balance']):
+        loans[0]['allocation'] = str(amount)
+    elif balances == amount:
+        for loan in loans:
+            loan['allocation'] = loan['balance']
+    elif known and expected == amount:
+        for loan in loans:
+            loan['allocation'] = loan['expected']
+    item['loan_expected'] = str(expected) if expected is not None else ''
+    if expected is None:
+        item['loan_flag'], item['loan_variance'] = 'unknown', ''
+    else:
+        variance = amount - expected
+        item['loan_variance'] = str(variance)
+        item['loan_flag'] = 'match' if abs(variance) < Decimal('0.01') else ('short' if variance < 0 else 'over')
+    prefilled = all(l['allocation'] != '' for l in loans)
+    if amount > balances:
+        item['loan_flag'] = 'over'
+        note = 'HR deducted more than the total outstanding. Verify the excess with HR.'
+    elif item['loan_flag'] == 'short':
+        note = (f'HR deducted {amount:,.2f}, which is {abs(Decimal(item["loan_variance"])):,.2f} '
+                f'below the expected {expected:,.2f}. The shortfall stays as arrears.')
+    elif item['loan_flag'] == 'over':
+        note = (f'HR deducted {amount:,.2f}, which is {Decimal(item["loan_variance"]):,.2f} '
+                f'above the expected {expected:,.2f}. Verify with HR.')
+    elif prefilled:
+        note = 'Suggested allocations match the HR deduction. Review before confirming.'
+    elif not known:
+        note = 'At least one expected payment is unknown. Verify the split with HR.'
+    else:
+        note = 'Enter how the HR deduction splits across the loans.'
+    if item['loan_flag'] in ('short', 'over') and prefilled:
+        note += ' Allocations are pre-filled from the HR amount; review before confirming.'
+    item['allocation_note'] = note
+    item['loans'] = loans
+
+
+def hr_key(row):
+    """Stable identity of an HR line: its staff/member number, else its normalised name."""
+    number = identifier(row.get('employee_id')) or identifier(row.get('member_number'))
+    if number:
+        return 'id:' + number
+    key = name_key(row.get('name'))
+    return 'name:' + key if key else ''
+
+
+def odd_staff_numbers(rows):
+    """Rows whose staff number length differs from the clear majority (typos, truncation)."""
+    ids = [(r['row'], identifier(r.get('employee_id'))) for r in rows if identifier(r.get('employee_id'))]
+    if len(ids) < 5:
+        return {}, 0
+    length, count = Counter(len(i) for _, i in ids).most_common(1)[0]
+    if count / len(ids) < 0.8:
+        return {}, 0
+    return {n: i for n, i in ids if len(i) != length}, length
+
+
+def load_remembered(db):
+    return {r['hr_key']: r['member_id'] for r in
+            db.execute('SELECT hr_key, member_id FROM payroll_identity_map').fetchall()}
+
+
+def remember_matches(db, items, choices, user_id):
+    """Save corrections the user made and then confirmed, so next month needs none."""
+    saved = 0
+    for item in items:
+        row = item['row']
+        if (not item.get('manual') or not item.get('member_id') or not item.get('source_key')
+                or not choices.get(f'confirm_{row}') or choices.get(f'exclude_{row}')):
+            continue
+        db.execute('''INSERT INTO payroll_identity_map (hr_key, member_id, hr_label, created_by)
+            VALUES (?,?,?,?) ON CONFLICT(hr_key) DO UPDATE SET member_id=excluded.member_id,
+            hr_label=excluded.hr_label, updated_at=CURRENT_TIMESTAMP''',
+                   (item['source_key'], item['member_id'], str(item['source_name'])[:120], user_id))
+        saved += 1
+    return saved
+
+
+def match_payroll(rows, members, book, remembered=None):
+    result, by_member = [], {}
+    remembered = remembered or {}
+    odd_ids, id_length = odd_staff_numbers(rows)
     for row in rows:
         item = {'row': row['row'], 'name': row.get('name', ''), 'amount': row.get('amount', ''),
                 'source_name': row.get('name', ''), 'source_staff': row.get('employee_id', ''),
                 'savings_amount': row.get('savings_amount', '0'),
                 'subscription_amount': row.get('subscription_amount', '0'),
                 'member_id': None, 'member_number': '', 'employee_id': '',
-                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'match': ''}
+                'loans': [], 'error': '', 'loan_error': '', 'savings_error': '', 'match': '',
+                'merged_rows': [], 'suggestions': [], 'loan_expected': '', 'loan_variance': '',
+                'loan_flag': '', 'allocation_note': '', 'merge_note': '', 'state': 'attention',
+                'source_key': hr_key(row), 'manual': bool(row.get('selected_member_id')), 'remembered': False,
+                'id_warning': ''}
+        if row['row'] in odd_ids:
+            item['id_warning'] = (f'Staff number {odd_ids[row["row"]]} has {len(odd_ids[row["row"]])} digits but most have '
+                                  f'{id_length}. Check it is correct before confirming.')
         try:
             amount = money(row.get('amount') or '0')
             savings = money(row.get('savings_amount') or '0')
@@ -257,56 +465,50 @@ def match_payroll(rows, members, book):
             else:
                 candidates = [m for m in candidates if name_key(m['member_name']) == name_key(row.get('name')) and name_key(row.get('name'))]
                 item['match'] = 'Exact name (review identity)'
+            remembered_id = remembered.get(item['source_key']) if not manual else None
+            used_memory = False
+            if len(candidates) != 1 and remembered_id:
+                candidates = [m for m in members if m['id'] == remembered_id]
+                used_memory = len(candidates) == 1
             if len(candidates) != 1:
+                item['suggestions'] = suggest_members(row.get('name'), members) if row.get('name') else []
                 raise ValueError('No unique member match. Select the correct member for review.')
             member = candidates[0]
-            if not manual and row.get('name') and name_key(member['member_name']) != name_key(row['name']):
+            if (not manual and not used_memory and remembered_id and member['id'] != remembered_id
+                    and any(m['id'] == remembered_id for m in members)):
+                member = next(m for m in members if m['id'] == remembered_id)
+                used_memory = True
+            if used_memory:
+                item['match'] = 'Remembered from a previous month; confirm identity'
+                item['remembered'] = True
+            if not manual and not used_memory and row.get('name') and name_key(member['member_name']) != name_key(row['name']):
                 item['identity_candidate'] = {key: member.get(key) for key in
                                               ('id', 'member_name', 'member_number', 'employee_id')}
                 raise ValueError('Name and identifier disagree. Select the verified member for review.')
-            if member['id'] in seen:
-                raise ValueError('Duplicate member row; consolidate the deduction before matching.')
-            seen.add(member['id'])
+            if member['id'] in by_member:
+                # HR often lists a member twice (e.g. one line per loan): add them up.
+                first = by_member[member['id']]
+                for key, value in (('amount', amount), ('savings_amount', savings),
+                                   ('subscription_amount', subscription)):
+                    first[key] = str(money(first[key]) + value)
+                first['merged_rows'].append(row['row'])
+                continue
             item.update(member_id=member['id'], name=member['member_name'],
                         member_number=identifier(member.get('member_number')),
                         employee_id=identifier(member.get('employee_id')))
+            by_member[member['id']] = item
             if savings and not (item['member_number'] or item['employee_id']):
                 item['savings_error'] = 'Member has no member/staff number for savings import; update the member record.'
-            if not amount:
-                result.append(item)
-                continue
-            loans = [dict(l) for l in book if l['member_id'] == member['id']]
-            if not loans:
-                item['loan_error'] = 'No active loan with an outstanding balance.'
-                result.append(item)
-                continue
-            for loan in loans:
-                loan['balance'] = str(money(loan['balance']))
-                loan['allocation'] = ''
-            if len(loans) == 1 and amount <= money(loans[0]['balance']):
-                loans[0]['allocation'] = str(amount)
-            elif sum((money(l['balance']) for l in loans), Decimal(0)) == amount:
-                for loan in loans:
-                    loan['allocation'] = loan['balance']
-            elif all(l['expected'] != '' for l in loans) and sum((money(l['expected']) for l in loans), Decimal(0)) == amount:
-                for loan in loans:
-                    loan['allocation'] = loan['expected']
-            if all(l['allocation'] != '' for l in loans):
-                item['allocation_note'] = 'Suggested allocations match the HR deduction. Review before confirming.'
-            elif amount > sum((money(l['balance']) for l in loans), Decimal(0)):
-                item['allocation_note'] = 'HR deducted more than the total outstanding. Verify the excess with HR.'
-            elif any(l['expected'] == '' for l in loans):
-                item['allocation_note'] = 'At least one expected payment is unknown. Verify the split with HR.'
-            else:
-                expected = sum((money(l['expected']) for l in loans), Decimal(0))
-                item['allocation_note'] = (
-                    f'HR deduction {amount:,.2f} differs from expected payments of {expected:,.2f}. '
-                    'Verify the split with HR before entering allocations.'
-                )
-            item['loans'] = loans
         except ValueError as exc:
             item['error'] = str(exc)
         result.append(item)
+    for item in result:
+        if item['member_id'] and not item['error']:
+            if item['merged_rows']:
+                rows_text = ', '.join(str(n) for n in [item['row']] + item['merged_rows'])
+                item['merge_note'] = f'Rows {rows_text} are the same member and were added together.'
+            if money(item['amount']):
+                _allocate(item, book)
     return result
 
 
@@ -336,14 +538,21 @@ REVIEW_HEADERS = ['source_row', 'hr_name', 'hr_staff_number', 'matched_member_nu
 
 def prepare_review(db, rows, month):
     members = [dict(m) for m in db.execute("SELECT id,member_number,employee_id,first_name || ' ' || last_name AS member_name FROM members ORDER BY first_name,last_name").fetchall()]
-    items = match_payroll(rows, members, loan_book(db, month))
+    items = match_payroll(rows, members, loan_book(db, month), load_remembered(db))
     for item in items:
+        item['state'] = 'attention'
         item['loans'] = [{k: loan[k] for k in ('id', 'loan_number', 'purpose', 'balance', 'expected', 'basis', 'allocation')} for loan in item['loans']]
         if item['member_id']:
             if money(item['amount']) > 0 and has_month_payment(db, item['member_id'], month):
                 item['loan_error'] = 'Repayment already exists in this month; exclude loan deduction and review history.'
             if money(item['savings_amount']) > 0 and has_month_savings(db, item['member_id'], month):
                 item['savings_error'] = 'Savings already exist in this month; exclude savings deduction and review history.'
+        if item['error'] or item['loan_error'] or item['savings_error']:
+            item['state'] = 'attention'
+        elif item.get('loan_flag') in ('short', 'over', 'unknown') or item['merged_rows'] or item['id_warning']:
+            item['state'] = 'check'
+        else:
+            item['state'] = 'ready'
     return items, members
 
 
@@ -360,6 +569,11 @@ def prepare_exports(db, items, choices, month, payment_date, account, username):
             loan_total, savings_total = money(item['amount']), money(item['savings_amount'])
         include_loan = loan_total > 0 and not exclude_loan
         include_savings = savings_total > 0 and not exclude_savings
+        # An unmatched row can never be confirmed: skip it, and say so in the reconciliation file.
+        unresolved = bool(item['error'] or not item['member_id'])
+        if unresolved:
+            include_loan = include_savings = False
+        skipped = 'Unmatched - NOT exported' if unresolved and not exclude_all else 'Excluded / zero deduction'
         member = None
         if include_loan or include_savings:
             if not choices.get(f'confirm_{row}'):
@@ -404,8 +618,8 @@ def prepare_exports(db, items, choices, month, payment_date, account, username):
                        identifier(member['member_number']) if member else item['member_number'],
                        item['amount'], item['savings_amount'], item['subscription_amount'],
                        str(loan_exported), str(savings_exported),
-                       'Exported' if include_loan else 'Excluded / zero deduction',
-                       'Exported' if include_savings else 'Excluded / zero deduction',
+                       'Exported' if include_loan else skipped,
+                       'Exported' if include_savings else skipped,
                        'Separate fee - NOT included in loan/savings imports'])
     if not loans and not savings:
         raise ValueError('No approved loan or savings deductions to export.')

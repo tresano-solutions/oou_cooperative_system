@@ -230,6 +230,65 @@ class PayrollRoutes(unittest.TestCase):
         with patch('permissions.can', side_effect=lambda p: p != 'savings.manage'):
             self.assertEqual(self.combined_preview().status_code, 403)
 
+    def test_unmatched_row_is_skipped_and_reported_not_blocking(self):
+        import zipfile
+        raw = chr(10).join(['Employee Number,Full name,COOPERATIVE LOAN,COOPERATIVE SAVINGS',
+                            f'{self._testMethodName},Payroll Member,91666.67,10000',
+                            '999999,Nobody Known,5000,2000', ''])
+        response = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(raw.encode()), 'hr.csv')})
+        result = self.export_combined(response)
+        self.assertEqual(result.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+            review = list(csv.DictReader(io.StringIO(archive.read('payroll_reconciliation_2026-10.csv').decode())))
+            loans = list(csv.DictReader(io.StringIO(archive.read('loan_repayments_2026-10.csv').decode())))
+        self.assertEqual(len(loans), 1)
+        self.assertEqual(len(review), 2)
+        self.assertEqual(review[1]['loan_status'], 'Unmatched - NOT exported')
+        self.assertEqual(review[1]['loan_exported'], '0')
+
+    def test_unknown_headings_map_then_correction_is_remembered(self):
+        nl = chr(10)
+        raw = nl.join(['Emp No.,Staff Name,Loan Ded', f'ZZ-{self._testMethodName},Someone Else,91666.67', '']).encode()
+        response = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(raw), 'hr.csv')})
+        self.assertIn('We could not recognise every column', response.text)
+        staging = re.search(r'name="staging_id" value="([^"]+)"', response.text).group(1)
+        mapped = self.client.post('/loans/payroll-adapter', data={
+            'action': 'map', 'staging_id': staging, 'month': '2026-10', 'payment_date': '2026-10-27',
+            'counter_account': '1400', 'col_employee_id': '0', 'col_name': '1', 'col_amount': '2'})
+        self.assertIn('name="review_token"', mapped.text)
+        self.assertIn('Columns read:', mapped.text)
+        self.assertIn('No unique member match', mapped.text)
+        with app.app_context():
+            self.assertEqual(get_db().execute('SELECT COUNT(*) FROM payroll_staging').fetchone()[0], 0)
+        token = re.search(r'name="review_token" value="([^"]+)"', mapped.text).group(1)
+        fixed = self.client.post('/loans/payroll-adapter', data={
+            'action': 'rematch', 'review_token': token, 'member_2': f'Payroll Member . x . #{self.member}'})
+        self.assertIn('Manually selected member', fixed.text)
+        token = re.search(r'name="review_token" value="([^"]+)"', fixed.text).group(1)
+        data = {'action': 'export', 'review_token': token, 'confirm_2': 'on', f'amount_2_{self.loan}': '91666.67'}
+        self.assertIn('attachment', self.client.post('/loans/payroll-adapter', data=data).headers.get('Content-Disposition', ''))
+        # Next month the same HR line resolves on its own.
+        again = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(raw), 'hr.csv')})
+        staging = re.search(r'name="staging_id" value="([^"]+)"', again.text).group(1)
+        auto = self.client.post('/loans/payroll-adapter', data={
+            'action': 'map', 'staging_id': staging, 'month': '2026-10', 'payment_date': '2026-10-27',
+            'counter_account': '1400', 'col_employee_id': '0', 'col_name': '1', 'col_amount': '2'})
+        self.assertIn('Remembered from a previous month', auto.text)
+        self.assertNotIn('No unique member match', auto.text)
+
+    def test_screen_shows_numbers_and_shortfall(self):
+        response = self.client.post('/loans/payroll-adapter', data={
+            'month': '2026-10', 'payment_date': '2026-10-27', 'counter_account': '1400',
+            'file': (io.BytesIO(chr(10).join(['member_number,amount', f'{self._testMethodName},50000', '']).encode()), 'pay.csv')})
+        self.assertIn('50,000.00', response.text)
+        self.assertIn('Short 41,666.67', response.text)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -78,8 +78,11 @@ def payroll_loan_book():
 @login_required
 @role_required('admin', 'treasurer')
 def payroll_repayment_adapter():
+    import base64
     import json
+    import re
     import zipfile
+    from datetime import timezone
     from decimal import Decimal
     from itsdangerous import URLSafeTimedSerializer, BadData
     import repayment_adapter as adapter
@@ -88,8 +91,9 @@ def payroll_repayment_adapter():
     month = request.form.get('month', datetime.now().strftime('%Y-%m'))
     payment_date = request.form.get('payment_date', datetime.now().strftime('%Y-%m-%d'))
     account = request.form.get('counter_account', '1400')
-    items, members, token, combined = [], [], '', False
+    items, members, token, combined, control = [], [], '', False, False
     source_rows = []
+    columns, mapping_info, staging_id = {}, None, ''
     try:
         action = request.form.get('action')
         if request.method == 'POST' and action in ('export', 'rematch'):
@@ -99,6 +103,8 @@ def payroll_repayment_adapter():
             month, payment_date, account = payload['month'], payload['date'], payload['account']
             items, token = payload['items'], request.form['review_token']
             source_rows, combined = payload['source_rows'], payload['combined']
+            control = payload.get('control', False)
+            columns = payload.get('columns') or {}
             resolve_loan_repayment_counter_account(db, account, '')
         if request.method == 'POST' and action == 'export':
             if combined and not la_permissions.can('savings.manage'):
@@ -112,6 +118,9 @@ def payroll_repayment_adapter():
                                    'allocations': [{'loan_number': l[0], 'amount': l[1], 'receipt': l[5]} for l in lines],
                                    'savings': [{'member_number': l[0], 'amount': l[2], 'receipt': l[6]} for l in savings_lines],
                                    'reconciliation': review}))
+            remembered = adapter.remember_matches(db, items, request.form, current_user.id)
+            if remembered:
+                audit(db, 'REMEMBER_PAYROLL_MATCHES', 'loans', f'Saved {remembered} confirmed HR-to-member match(es) for future payroll files')
             db.commit()
             if combined:
                 from io import BytesIO
@@ -140,22 +149,56 @@ def payroll_repayment_adapter():
             adapter.month_date(month)
             datetime.strptime(payment_date, '%Y-%m-%d')
             resolve_loan_repayment_counter_account(db, account, '')
-            upload = request.files.get('file')
-            if not upload or not upload.filename:
-                raise ValueError('Select a payroll file.')
-            source_rows = adapter.read_payroll(upload.read(5 * 1024 * 1024 + 1), upload.filename)
-            combined = any('savings_amount' in r or 'subscription_amount' in r for r in source_rows)
-        if request.method == 'POST':
+            mapping = None
+            db.execute("DELETE FROM payroll_staging WHERE created_at < ?",
+                       ((datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),))
+            if action == 'map':
+                staging_id = request.form.get('staging_id', '')
+                held = db.execute('SELECT filename, content FROM payroll_staging WHERE id=? AND user_id=?',
+                                  (staging_id, current_user.id)).fetchone()
+                if not held:
+                    raise ValueError('The uploaded file has expired. Upload it again.')
+                raw, filename = base64.b64decode(held['content']), held['filename']
+                mapping = {f: request.form.get(f'col_{f}', '') for f in adapter.FIELD_LABELS}
+            else:
+                upload = request.files.get('file')
+                if not upload or not upload.filename:
+                    raise ValueError('Select a payroll file.')
+                raw, filename = upload.read(5 * 1024 * 1024 + 1), upload.filename
+            try:
+                source_rows = adapter.read_payroll(raw, filename, mapping)
+            except adapter.NeedsMapping as needed:
+                if not staging_id:
+                    staging_id = secrets.token_urlsafe(16)
+                    db.execute('INSERT INTO payroll_staging (id, user_id, filename, content) VALUES (?,?,?,?)',
+                               (staging_id, current_user.id, filename, base64.b64encode(raw).decode()))
+                db.commit()
+                mapping_info = {'headers': needed.headers, 'guesses': needed.guesses, 'sample': needed.sample,
+                                'fields': adapter.FIELD_LABELS, 'staging_id': staging_id}
+                flash(str(needed), 'warning')
+            else:
+                if staging_id:
+                    db.execute('DELETE FROM payroll_staging WHERE id=?', (staging_id,))
+                    db.commit()
+                combined = any('savings_amount' in r or 'subscription_amount' in r for r in source_rows)
+                control = bool(getattr(source_rows, 'control_verified', False))
+                columns = dict(getattr(source_rows, 'columns', None) or {})
+        if request.method == 'POST' and not mapping_info:
             if combined and not la_permissions.can('savings.manage'):
                 return 'Savings management permission is required for combined payroll.', 403
             if action == 'rematch':
                 for row in source_rows:
-                    selected = request.form.get(f'member_{row["row"]}', '')
-                    if selected:
-                        row['selected_member_id'] = selected
+                    selected = request.form.get(f'member_{row["row"]}', '').strip()
+                    # The picker shows "Name . no . staff . #id"; a bare id also works.
+                    picked = re.search(r'#(\d+)\s*$', selected) or re.fullmatch(r'(\d+)', selected)
+                    if picked:
+                        row['selected_member_id'] = picked.group(1)
+                    elif selected:
+                        raise ValueError(f'Row {row["row"]}: choose a member from the list.')
             items, members = adapter.prepare_review(db, source_rows, month)
             token = serializer.dumps({'user': current_user.id, 'host': request.host, 'month': month, 'date': payment_date,
-                                      'account': account, 'items': items, 'source_rows': source_rows, 'combined': combined})
+                                      'account': account, 'items': items, 'source_rows': list(source_rows), 'combined': combined,
+                                      'control': control, 'columns': columns})
     except (ValueError, BadData, UnknownCashAccountError) as exc:
         flash(str(exc), 'danger')
     except (UnicodeError, csv.Error, OSError, zipfile.BadZipFile, KeyError) as exc:
@@ -170,9 +213,15 @@ def payroll_repayment_adapter():
                 totals[key] += adapter.money(item[key])
             except ValueError:
                 pass
+    summary = {'rows': len(items), 'ready': 0, 'check': 0, 'attention': 0, 'short': 0, 'over': 0}
+    for item in items:
+        summary[item.get('state', 'attention')] += 1
+        if item.get('loan_flag') in ('short', 'over'):
+            summary[item['loan_flag']] += 1
     return render_template('admin/payroll-repayment-adapter.html', items=items, review_token=token, members=members,
                            month=month, payment_date=payment_date, account=account,
-                           totals=totals, combined=combined,
+                           totals=totals, combined=combined, summary=summary, control=control,
+                           columns=columns, mapping_info=mapping_info, field_labels=adapter.FIELD_LABELS,
                            accounts=get_loan_repayment_counter_accounts(db))
 
 

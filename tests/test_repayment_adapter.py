@@ -75,12 +75,11 @@ class AdapterTests(unittest.TestCase):
     def test_matching_and_unknown_id_no_name_fallback(self):
         members = [dict(id=1, member_number='001', employee_id='S1', member_name='Jane Doe')]
         loan = {**self.loan(), 'expected': '100.00'}
-        rows = [dict(row=2, member_number='001', amount='100'), dict(row=3, member_number='001', amount='100'),
+        rows = [dict(row=2, member_number='001', amount='100'),
                 dict(row=4, member_number='wrong', name='Jane Doe', amount='100')]
         result = adapter.match_payroll(rows, members, [loan])
         self.assertEqual(result[0]['loans'][0]['allocation'], '100.00')
         self.assertTrue(result[1]['error'])
-        self.assertTrue(result[2]['error'])
         self.assertFalse(adapter.match_payroll([dict(row=2, name='Doe Jane', amount='100')], members, [loan])[0]['error'])
 
     def test_multiple_only_suggest_exact_sum(self):
@@ -129,7 +128,83 @@ class AdapterTests(unittest.TestCase):
         result = adapter.match_payroll(rows, members, [])
         self.assertFalse(result[0]['error'])
         self.assertIn('Manually selected', result[0]['match'])
-        self.assertTrue(adapter.match_payroll(rows + [{**rows[0], 'row': 3}], members, [])[1]['error'])
+        merged = adapter.match_payroll(rows + [{**rows[0], 'row': 3}], members, [])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]['savings_amount'], '200.00')
+        self.assertEqual(merged[0]['merged_rows'], [3])
+
+    def test_duplicate_member_lines_are_added_together(self):
+        members = [dict(id=1, member_number='001', employee_id='', member_name='Jane Doe')]
+        loans = [{**self.loan(), 'expected': '5000.00'}]
+        rows = [dict(row=2, member_number='001', amount='3000'), dict(row=9, member_number='001', amount='2000')]
+        result = adapter.match_payroll(rows, members, loans)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['amount'], '5000.00')
+        self.assertEqual(result[0]['loans'][0]['allocation'], '5000.00')
+        self.assertEqual(result[0]['loan_flag'], 'match')
+        self.assertIn('Rows 2, 9', result[0]['merge_note'])
+
+    def test_shortfall_and_excess_are_flagged(self):
+        members = [dict(id=1, member_number='001', employee_id='', member_name='Jane Doe')]
+        loans = [{**self.loan(), 'expected': '5000.00'}]
+        short = adapter.match_payroll([dict(row=2, member_number='001', amount='3000')], members, loans)[0]
+        self.assertEqual((short['loan_flag'], short['loan_variance']), ('short', '-2000.00'))
+        self.assertIn('arrears', short['allocation_note'])
+        over = adapter.match_payroll([dict(row=2, member_number='001', amount='6000')], members, loans)[0]
+        self.assertEqual((over['loan_flag'], over['loan_variance']), ('over', '1000.00'))
+
+    def test_name_suggestions_for_unmatched_rows(self):
+        members = [dict(id=1, member_number='001', employee_id='', member_name='Adeolu Keshinro'),
+                   dict(id=2, member_number='002', employee_id='', member_name='Someone Else')]
+        row = dict(row=2, name='ADEOLU K. KESHINRO', amount='100')
+        item = adapter.match_payroll([row], members, [])[0]
+        self.assertTrue(item['error'])
+        self.assertEqual([s['id'] for s in item['suggestions']], [1])
+
+    def test_excel_cp1252_csv_is_readable(self):
+        raw = ('Staff Number,Full name,Loan Repayment\n1001,Adé B,5000\n').encode('cp1252')
+        self.assertEqual(adapter.read_payroll(raw, 'hr.csv')[0]['amount'], '5000')
+
+    def test_total_row_labelled_in_name_column(self):
+        raw = ('S/N,Employee Number,Full name,COOPERATIVE LOAN,COOPERATIVE SAVINGS\n'
+               '1,1001,ADE ONE,100.10,10\n2,1002,ADE TWO,0,20\n,,TOTAL,100.1,30\n').encode()
+        rows = adapter.read_payroll(raw, 'hr.csv')
+        self.assertEqual([r['employee_id'] for r in rows], ['1001', '1002'])
+        self.assertTrue(rows.control_verified)
+        with self.assertRaises(ValueError):
+            adapter.read_payroll(raw.replace(b',,TOTAL,100.1,30', b',,TOTAL,100.1,31'), 'hr.csv')
+
+    def test_unknown_headings_need_mapping_then_work(self):
+        nl = chr(10)
+        raw = nl.join(['Emp No.,Staff Name,Loan Ded,Sav Ded', '1001,Jane Doe,500,100', '']).encode()
+        with self.assertRaises(adapter.NeedsMapping) as caught:
+            adapter.read_payroll(raw, 'hr.csv')
+        guesses = caught.exception.guesses
+        self.assertEqual((guesses['employee_id'], guesses['name'], guesses['amount'], guesses['savings_amount']), (0, 1, 2, 3))
+        rows = adapter.read_payroll(raw, 'hr.csv', {k: v for k, v in guesses.items()})
+        self.assertEqual((rows[0]['employee_id'], rows[0]['amount'], rows[0]['savings_amount']), ('1001', '500', '100'))
+        self.assertEqual(rows.columns['amount'], 'Loan Ded')
+        with self.assertRaises(ValueError):
+            adapter.read_payroll(raw, 'hr.csv', {'amount': 2, 'savings_amount': 2, 'employee_id': 0})
+        with self.assertRaises(ValueError):
+            adapter.read_payroll(raw, 'hr.csv', {'amount': 9, 'employee_id': 0})
+
+    def test_odd_staff_number_is_flagged(self):
+        members = [dict(id=i, member_number=f'M{i}', employee_id=f'100{i:04d}', member_name=f'Person {i}') for i in range(1, 7)]
+        members.append(dict(id=7, member_number='M7', employee_id='7', member_name='Short Id'))
+        rows = [dict(row=i + 1, employee_id=m['employee_id'], name=m['member_name'], amount='100') for i, m in enumerate(members)]
+        items = adapter.match_payroll(rows, members, [])
+        self.assertIn('digits', items[6]['id_warning'])
+        self.assertEqual(items[0]['id_warning'], '')
+
+    def test_remembered_match_resolves_a_known_mismatch(self):
+        members = [dict(id=1, member_number='001', employee_id='5001', member_name='Jane Doe')]
+        row = dict(row=2, employee_id='9999', name='J. DOE', amount='100')
+        self.assertTrue(adapter.match_payroll([row], members, [])[0]['error'])
+        item = adapter.match_payroll([row], members, [], {adapter.hr_key(row): 1})[0]
+        self.assertEqual(item['error'], '')
+        self.assertTrue(item['remembered'])
+        self.assertIn('Remembered', item['match'])
 
 
 if __name__ == '__main__':

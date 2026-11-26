@@ -1999,6 +1999,32 @@ def init_db():
     _exec_ignore(db, 'CREATE UNIQUE INDEX IF NOT EXISTS uq_user_permissions ON user_permissions(user_id, permission)')
     _exec_ignore(db, 'CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id)')
 
+    # Payroll adapter: remembered HR-line -> member matches (so a correction made once
+    # is applied automatically next month) and a short-lived holding area for an
+    # uploaded HR file while the user maps its columns.
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS payroll_identity_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hr_key TEXT NOT NULL,
+            member_id INTEGER NOT NULL,
+            hr_label TEXT,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (member_id) REFERENCES members (id)
+        )
+    '''))
+    _exec_ignore(db, 'CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_identity_map ON payroll_identity_map(hr_key)')
+    db.execute(_adapt('''
+        CREATE TABLE IF NOT EXISTS payroll_staging (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            filename TEXT,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''))
+
     # Audit log table
     db.execute(_adapt('''
         CREATE TABLE IF NOT EXISTS audit_log (

@@ -1,74 +1,305 @@
 {% extends "base.html" %}
 {% block title %}Intelligent Loan Adapter{% endblock %}
+{% macro naira(v) -%}{%- if v is none or v == '' -%}&mdash;{%- else -%}{{ '{:,.2f}'.format(v|float) }}{%- endif -%}{%- endmacro %}
 {% block content %}
-<div class="container-fluid">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-    <h2 class="h4 mb-0">Intelligent Loan Adapter</h2>
+<style>
+  .adp { --adp-ink:#1f2937; --adp-muted:#5b6575; --adp-line:#dfe4ea; --adp-soft:#f4f6f9;
+         --adp-ok:#17653a; --adp-ok-bg:#e3f4ea; --adp-warn:#8a5a00; --adp-warn-bg:#fff2d6;
+         --adp-bad:#a12626; --adp-bad-bg:#fde7e7; --adp-brand:#1d4f91; min-width:0; max-width:100%; color:var(--adp-ink); }
+  .adp h1, .adp h2, .adp h3 { color:var(--adp-ink); }
+  .adp-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:.75rem; margin-bottom:1rem; }
+  .adp-head h2 { font-size:1.4rem; margin:0; }
+  .adp-head p { margin:.15rem 0 0; color:var(--adp-muted); font-size:.92rem; }
+  .adp-steps { display:flex; flex-wrap:wrap; gap:.5rem; margin:0 0 1rem; padding:0; list-style:none; }
+  .adp-steps li { display:flex; align-items:center; gap:.5rem; padding:.4rem .8rem; border:1px solid var(--adp-line); border-radius:999px; font-size:.88rem; color:var(--adp-muted); background:#fff; }
+  .adp-steps li b { display:inline-flex; width:1.35rem; height:1.35rem; align-items:center; justify-content:center; border-radius:50%; background:var(--adp-soft); font-size:.78rem; }
+  .adp-steps li.is-active { color:#fff; background:var(--adp-brand); border-color:var(--adp-brand); font-weight:600; }
+  .adp-steps li.is-active b { background:#fff; color:var(--adp-brand); }
+  .adp-steps li.is-done { color:var(--adp-ok); border-color:#b8dcc7; }
+  .adp-steps li.is-done b { background:var(--adp-ok-bg); }
+  .adp-card { background:#fff; border:1px solid var(--adp-line); border-radius:10px; padding:1rem 1.1rem; margin-bottom:1rem; }
+  .adp-sum { cursor:pointer; font-size:1rem; list-style-position:inside; }
+  .adp-hint { color:var(--adp-muted); font-size:.85rem; }
+  .adp-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75rem; margin-bottom:1rem; }
+  .adp-stat { background:#fff; border:1px solid var(--adp-line); border-radius:10px; padding:.7rem .9rem; }
+  .adp-stat span { display:block; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; color:var(--adp-muted); }
+  .adp-stat strong { display:block; font-size:1.3rem; font-variant-numeric:tabular-nums; line-height:1.3; }
+  .adp-stat small { color:var(--adp-muted); }
+  .adp-stat.is-money strong { font-size:1.35rem; }
+  .adp-money { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-top:-.25rem; }
+  .adp-verified { display:inline-flex; align-items:center; gap:.35rem; color:var(--adp-ok); background:var(--adp-ok-bg); border-radius:999px; padding:.15rem .6rem; font-size:.8rem; font-weight:600; }
+  .adp-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; margin-bottom:.75rem; }
+  .adp-filter { border:1px solid var(--adp-line); background:#fff; border-radius:999px; padding:.3rem .8rem; font-size:.86rem; color:var(--adp-ink); }
+  .adp-filter[aria-pressed="true"] { background:var(--adp-brand); color:#fff; border-color:var(--adp-brand); }
+  .adp-search { max-width:260px; }
+  .adp-tablewrap { overflow-x:auto; border:1px solid var(--adp-line); border-radius:10px; background:#fff; }
+  .adp-table { width:100%; border-collapse:collapse; min-width:940px; font-size:.9rem; }
+  .adp-table thead th { background:#e9eef5; color:#1f2937; font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.03em; padding:.55rem .65rem; border-bottom:1px solid var(--adp-line); white-space:nowrap; position:sticky; top:0; }
+  .adp-table td { padding:.6rem .65rem; vertical-align:top; border-bottom:1px solid var(--adp-line); background:#fff; color:var(--adp-ink); }
+  .adp-table .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .adp-table th.num { text-align:right; }
+  .adp-table .ctr { text-align:center; }
+  .adp-row.is-excluded td { opacity:.45; }
+  .adp-row[data-state="attention"] .adp-main td:first-child { box-shadow:inset 4px 0 0 var(--adp-bad); }
+  .adp-row[data-state="check"] .adp-main td:first-child { box-shadow:inset 4px 0 0 #d99a00; }
+  .adp-row[data-state="ready"] .adp-main td:first-child { box-shadow:inset 4px 0 0 #2f9e5f; }
+  .adp-name { font-weight:600; }
+  .adp-sub { display:block; color:var(--adp-muted); font-size:.8rem; }
+  .adp-badge { display:inline-flex; align-items:center; gap:.3rem; border-radius:999px; padding:.15rem .6rem; font-size:.78rem; font-weight:600; white-space:nowrap; }
+  .adp-badge.ready { color:var(--adp-ok); background:var(--adp-ok-bg); }
+  .adp-badge.check { color:var(--adp-warn); background:var(--adp-warn-bg); }
+  .adp-badge.attention { color:var(--adp-bad); background:var(--adp-bad-bg); }
+  .adp-var-short { color:var(--adp-bad); font-weight:600; }
+  .adp-var-over { color:var(--adp-warn); font-weight:600; }
+  .adp-var-match { color:var(--adp-ok); }
+  .adp-detail td { background:var(--adp-soft); padding:.6rem .9rem .9rem 1.4rem; }
+  .adp-msg { margin:.25rem 0 0; font-size:.86rem; }
+  .adp-msg.bad { color:var(--adp-bad); }
+  .adp-msg.warn { color:var(--adp-warn); }
+  .adp-alloc { width:100%; max-width:760px; border-collapse:collapse; margin-top:.5rem; font-size:.86rem; }
+  .adp-alloc th { background:transparent !important; color:var(--adp-muted) !important; font-size:.75rem; text-transform:uppercase; padding:.25rem .5rem; text-align:left; border-bottom:1px solid var(--adp-line); }
+  .adp-alloc th.num, .adp-alloc td.num { text-align:right; }
+  .adp-alloc td { padding:.3rem .5rem; border-bottom:1px solid var(--adp-line); background:transparent; vertical-align:middle; }
+  .adp-alloc input { text-align:right; font-variant-numeric:tabular-nums; min-width:130px; }
+  .adp-suggest { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.5rem; }
+  .adp-suggest button { text-align:left; }
+  .adp-bar { position:sticky; bottom:0; z-index:5; margin-top:1rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.75rem; background:#fff; border:1px solid var(--adp-line); border-radius:10px; padding:.7rem 1rem; box-shadow:0 -4px 14px rgba(15,23,42,.08); }
+  .adp-bar .figures { display:flex; flex-wrap:wrap; gap:1.25rem; font-variant-numeric:tabular-nums; }
+  .adp-bar .figures span { color:var(--adp-muted); font-size:.8rem; display:block; }
+  .adp-bar .figures strong { font-size:1.05rem; }
+  .adp-empty { display:none; padding:1.5rem; text-align:center; color:var(--adp-muted); }
+  @media (max-width: 767px) { .adp-stat strong { font-size:1.1rem; } .adp-search { max-width:none; width:100%; } }
+</style>
+<div class="adp">
+  <div class="adp-head">
+    <div>
+      <h2>Intelligent Loan Adapter</h2>
+      <p>Turn the HR payroll deduction file into ready-to-upload loan repayment and salary savings files. Nothing is posted here.</p>
+    </div>
     <a class="btn btn-outline-secondary" href="{{ url_for('loans.bulk_loan_repayments') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i> Bulk Repayments</a>
   </div>
-  <form method="get" action="{{ url_for('loans.payroll_loan_book') }}" class="d-flex flex-wrap align-items-end gap-2 border-bottom pb-3 mb-3">
-    <div><label for="book-month" class="form-label">Loan book month</label><input id="book-month" type="month" class="form-control" name="month" value="{{ month }}" required></div>
-    <button class="btn btn-outline-primary"><i class="fas fa-download" aria-hidden="true"></i> Export Loan Book</button>
-  </form>
-  <form method="post" enctype="multipart/form-data" class="row g-3 border-bottom pb-3 mb-3">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="col-md-2"><label class="form-label" for="pay-month">Payroll month</label><input id="pay-month" class="form-control" type="month" name="month" value="{{ month }}" required></div>
-    <div class="col-md-2"><label class="form-label" for="pay-date">Payment date</label><input id="pay-date" class="form-control" type="date" name="payment_date" value="{{ payment_date }}" required></div>
-    <div class="col-md-3"><label class="form-label" for="pay-account">Debit account</label><select id="pay-account" class="form-select" name="counter_account" required>{% for a in accounts %}<option value="{{ a.code }}" {% if a.code == account %}selected{% endif %}>{{ a.code }} - {{ a.name }}</option>{% endfor %}</select></div>
-    <div class="col-md-3"><label class="form-label" for="pay-file">HR deductions (.xlsx / .csv)</label><input id="pay-file" class="form-control" type="file" name="file" accept=".csv,.xlsx" required></div>
-    <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary"><i class="fas fa-search" aria-hidden="true"></i> Match Payroll</button></div>
-  </form>
+
+  <ol class="adp-steps" aria-label="Progress">
+    <li class="{{ 'is-done' if items else 'is-active' }}"><b>1</b> Upload HR file</li>
+    <li class="{{ 'is-active' if items else '' }}"><b>2</b> Review &amp; confirm</li>
+    <li><b>3</b> Download &amp; upload files</li>
+  </ol>
+
+  <details class="adp-card" {% if not items %}open{% endif %}>
+    <summary class="adp-sum"><strong>1. Upload the HR deduction file</strong>{% if items %}<span class="adp-hint"> &mdash; matched for {{ month }}. Click to upload a different file.</span>{% endif %}</summary>
+    <div class="mt-3"></div>
+    <form method="post" enctype="multipart/form-data" class="row g-3 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-6 col-md-2"><label class="form-label" for="pay-month">Payroll month</label><input id="pay-month" class="form-control" type="month" name="month" value="{{ month }}" required></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="pay-date">Payment date</label><input id="pay-date" class="form-control" type="date" name="payment_date" value="{{ payment_date }}" required></div>
+      <div class="col-12 col-md-3"><label class="form-label" for="pay-account">Debit account</label><select id="pay-account" class="form-select" name="counter_account" required>{% for a in accounts %}<option value="{{ a.code }}" {% if a.code == account %}selected{% endif %}>{{ a.code }} - {{ a.name }}</option>{% endfor %}</select></div>
+      <div class="col-12 col-md-3"><label class="form-label" for="pay-file">HR deductions (.xlsx / .csv)</label><input id="pay-file" class="form-control" type="file" name="file" accept=".csv,.xlsx" required></div>
+      <div class="col-12 col-md-2 d-grid"><button class="btn btn-primary"><i class="fas fa-search" aria-hidden="true"></i> Match Payroll</button></div>
+    </form>
+    <p class="adp-hint mt-2 mb-0">Expected columns: Employee Number, Full name, Cooperative Loan, Cooperative Savings (a Subscription column is optional). A TOTAL row at the bottom is checked against the member rows and then ignored.</p>
+    <form method="get" action="{{ url_for('loans.payroll_loan_book') }}" class="d-flex flex-wrap align-items-end gap-2 border-top pt-3 mt-3">
+      <div><label for="book-month" class="form-label mb-1">Need the expected instalments first?</label><input id="book-month" type="month" class="form-control" name="month" value="{{ month }}" required></div>
+      <button class="btn btn-outline-primary"><i class="fas fa-download" aria-hidden="true"></i> Export Loan Book</button>
+    </form>
+  </details>
+
+  {% if mapping_info %}
+  <div class="adp-card" id="adp-mapping">
+    <h3 class="h6 mb-1">We could not recognise every column</h3>
+    <p class="adp-hint">Tell us which column holds what. We have pre-selected our best guess. You need a staff, member or name column, and at least a loan or savings column. This is only asked when the headings are unfamiliar.</p>
+    <form method="post" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="map">
+      <input type="hidden" name="staging_id" value="{{ mapping_info.staging_id }}">
+      <input type="hidden" name="month" value="{{ month }}">
+      <input type="hidden" name="payment_date" value="{{ payment_date }}">
+      <input type="hidden" name="counter_account" value="{{ account }}">
+      {% for field, label in mapping_info.fields.items() %}
+      <div class="col-12 col-md-4">
+        <label class="form-label" for="col-{{ field }}">{{ label }}</label>
+        <select class="form-select" id="col-{{ field }}" name="col_{{ field }}">
+          <option value="">&mdash; not in this file &mdash;</option>
+          {% for header in mapping_info.headers %}{% set i = loop.index0 %}<option value="{{ i }}" {% if mapping_info.guesses.get(field) == i %}selected{% endif %}>{{ i + 1 }}. {{ header or '(blank heading)' }}{% if mapping_info.sample and mapping_info.sample[0][i] is defined and mapping_info.sample[0][i] %} &mdash; e.g. {{ mapping_info.sample[0][i] }}{% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+      <div class="col-12"><button class="btn btn-primary"><i class="fas fa-check" aria-hidden="true"></i> Use these columns</button></div>
+    </form>
+  </div>
+  {% endif %}
+
   {% if items %}
-  <div class="d-flex flex-wrap gap-3 mb-3"><strong>{{ items|length }} payroll rows</strong><span>Loans: {{ '{:,.2f}'.format(totals.amount) }}</span>{% if combined %}<span>Savings: {{ '{:,.2f}'.format(totals.savings_amount) }}</span><span>Subscriptions: {{ '{:,.2f}'.format(totals.subscription_amount) }} (separate fee)</span>{% endif %}<span>{{ month }} / GL {{ account }}</span><span class="text-success">No repayments posted</span></div>
-  {% if totals.subscription_amount %}<div class="alert alert-warning" role="status">Subscription deductions are retained in the reconciliation report, not added to savings or loan repayments.</div>{% endif %}
-  <form method="post">
+  <h3 class="h6 text-uppercase text-muted mb-2" style="letter-spacing:.04em">2. Review &amp; confirm &mdash; {{ month }} &middot; GL {{ account }}</h3>
+  <div class="adp-stats">
+    <div class="adp-stat"><span>Payroll rows</span><strong>{{ summary.rows }}</strong><small>{% if control %}<i class="fas fa-check-circle" aria-hidden="true"></i> HR total verified{% else %}No HR total row found{% endif %}</small></div>
+    <div class="adp-stat"><span>Ready</span><strong>{{ summary.ready }}</strong><small>matched, nothing unusual</small></div>
+    <div class="adp-stat"><span>Needs a check</span><strong>{{ summary.check }}</strong><small>{{ summary.short }} short &middot; {{ summary.over }} over</small></div>
+    <div class="adp-stat"><span>Needs action</span><strong>{{ summary.attention }}</strong><small>unmatched or blocked</small></div>
+  </div>
+  <div class="adp-stats adp-money">
+    <div class="adp-stat is-money"><span>Loan deductions</span><strong>&#8358;{{ naira(totals.amount) }}</strong></div>
+    {% if combined %}<div class="adp-stat is-money"><span>Savings</span><strong>&#8358;{{ naira(totals.savings_amount) }}</strong></div>
+    <div class="adp-stat is-money"><span>Subscriptions</span><strong>&#8358;{{ naira(totals.subscription_amount) }}</strong><small>separate fee, not exported</small></div>{% endif %}
+  </div>
+  {% if columns %}<p class="adp-hint mb-1"><strong>Columns read:</strong> {% for field, header in columns.items() %}{{ field_labels[field] }} &larr; &ldquo;{{ header }}&rdquo;{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>{% endif %}
+  <p class="text-success mb-2"><i class="fas fa-shield-alt" aria-hidden="true"></i> No repayments posted &mdash; you upload the generated files yourself in the next step.</p>
+  {% if totals.subscription_amount %}<div class="alert alert-warning py-2" role="status">Subscription deductions are retained in the reconciliation report, not added to savings or loan repayments.</div>{% endif %}
+
+  <form method="post" id="adp-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="review_token" value="{{ review_token }}">
-    <datalist id="adapter-members">{% for m in members %}<option value="{{ m.id }}" label="{{ m.member_name }} | {{ m.member_number or '' }} | {{ m.employee_id or '' }}"></option>{% endfor %}</datalist>
-    <div class="text-end mb-2"><button name="action" value="rematch" formnovalidate class="btn btn-outline-secondary"><i class="fas fa-sync" aria-hidden="true"></i> Apply Member Matches</button></div>
-    {% for item in items %}
-    <section class="border-bottom py-3">
-      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
-        <div><strong>Row {{ item.row }}: {{ item.name or 'Unmatched member' }}</strong><small class="d-block text-muted">HR: {{ item.source_name }} / {{ item.source_staff or 'No staff number' }}</small><small class="d-block text-muted">{{ item.match }}{% if item.member_number %} / Member {{ item.member_number }}{% endif %}</small></div>
-        <div class="d-flex flex-wrap gap-3">
-          {% if not item.error %}<label><input class="form-check-input" type="checkbox" name="confirm_{{ item.row }}"> Confirm member &amp; deductions</label>{% endif %}
-          <label><input class="form-check-input" type="checkbox" name="exclude_{{ item.row }}"> Exclude row</label>
-        </div>
+    <datalist id="adapter-members">{% for m in members %}<option value="{{ m.member_name }} &middot; {{ m.member_number or '-' }} &middot; staff {{ m.employee_id or '-' }} &middot; #{{ m.id }}"></option>{% endfor %}</datalist>
+
+    <div class="adp-toolbar">
+      <button type="button" class="adp-filter" data-filter="all" aria-pressed="true">All ({{ summary.rows }})</button>
+      <button type="button" class="adp-filter" data-filter="attention" aria-pressed="false">Needs action ({{ summary.attention }})</button>
+      <button type="button" class="adp-filter" data-filter="check" aria-pressed="false">Needs a check ({{ summary.check }})</button>
+      <button type="button" class="adp-filter" data-filter="ready" aria-pressed="false">Ready ({{ summary.ready }})</button>
+      <input type="search" class="form-control form-control-sm adp-search" id="adp-search" placeholder="Search name or staff number" aria-label="Search rows">
+      <span class="ms-auto d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-sm btn-success" id="adp-confirm-ready"><i class="fas fa-check-double" aria-hidden="true"></i> Confirm all ready rows ({{ summary.ready }})</button>
+        <button name="action" value="rematch" formnovalidate class="btn btn-sm btn-outline-secondary"><i class="fas fa-sync" aria-hidden="true"></i> Apply Member Matches</button>
+      </span>
+    </div>
+
+    <div class="adp-tablewrap">
+      <table class="adp-table">
+        <thead><tr>
+          <th scope="col" class="ctr">Confirm</th><th scope="col">Status</th><th scope="col">HR row</th><th scope="col">Matched member</th>
+          <th scope="col" class="num">Loan deducted</th><th scope="col" class="num">Expected</th><th scope="col" class="num">Difference</th>
+          {% if combined %}<th scope="col" class="num">Savings</th><th scope="col" class="num">Subscription</th>{% endif %}
+          <th scope="col" class="ctr">Exclude</th>
+        </tr></thead>
+        {% for item in items %}
+        {% set cols = 8 + (2 if combined else 0) %}
+        <tbody class="adp-row" data-state="{{ item.state }}" data-unresolved="{{ 1 if item.error else 0 }}" data-row="{{ item.row }}" data-loan="{{ item.amount if not (item.error or item.loan_error) else 0 }}" data-savings="{{ item.savings_amount if not item.error else 0 }}"
+               data-search="{{ (item.source_name ~ ' ' ~ item.name ~ ' ' ~ item.source_staff ~ ' ' ~ item.member_number ~ ' ' ~ item.employee_id)|lower }}">
+          <tr class="adp-main">
+            <td class="ctr">{% if not item.error %}<input class="form-check-input adp-confirm" type="checkbox" name="confirm_{{ item.row }}" id="confirm-{{ item.row }}" aria-label="Confirm row {{ item.row }}">{% else %}&mdash;{% endif %}</td>
+            <td>
+              {% if item.state == 'ready' %}<span class="adp-badge ready"><i class="fas fa-check-circle" aria-hidden="true"></i> Ready</span>
+              {% elif item.state == 'check' %}<span class="adp-badge check"><i class="fas fa-exclamation-circle" aria-hidden="true"></i> Check</span>
+              {% else %}<span class="adp-badge attention"><i class="fas fa-times-circle" aria-hidden="true"></i> Action needed</span>{% endif %}
+              <button type="button" class="btn btn-link btn-sm p-0 d-block adp-toggle" aria-expanded="{{ 'false' if item.state == 'ready' else 'true' }}">{{ 'Details' if item.state == 'ready' else 'Hide details' }}</button>
+            </td>
+            <td><span class="adp-name">Row {{ item.row }}: {{ item.source_name or 'No name' }}</span><span class="adp-sub">Staff no. {{ item.source_staff or 'none' }}</span></td>
+            <td>{% if item.member_id %}<span class="adp-name">{{ item.name }}</span><span class="adp-sub">Member {{ item.member_number or '-' }} &middot; Staff {{ item.employee_id or '-' }}</span>{% if item.match != 'Member / staff number' %}<span class="adp-sub">{{ item.match }}</span>{% endif %}{% else %}<span class="text-danger">Not matched</span>{% endif %}</td>
+            <td class="num">{{ naira(item.amount) if item.amount|float > 0 else '0.00' }}</td>
+            <td class="num">{{ naira(item.loan_expected) }}</td>
+            <td class="num">{% if item.loan_flag == 'short' %}<span class="adp-var-short">Short {{ naira((item.loan_variance|float)|abs) }}</span>
+              {% elif item.loan_flag == 'over' %}<span class="adp-var-over">Over {{ naira(item.loan_variance) }}</span>
+              {% elif item.loan_flag == 'match' %}<span class="adp-var-match">Matches</span>
+              {% elif item.loan_flag == 'unknown' %}<span class="adp-sub">Unconfirmed</span>{% else %}&mdash;{% endif %}</td>
+            {% if combined %}<td class="num">{{ naira(item.savings_amount) if item.savings_amount|float > 0 else '0.00' }}{% if item.savings_amount|float > 0 %}<label class="adp-sub"><input class="form-check-input adp-ex-sav" type="checkbox" name="exclude_savings_{{ item.row }}"> Exclude</label>{% endif %}</td>
+            <td class="num">{{ naira(item.subscription_amount) if item.subscription_amount|float > 0 else '0.00' }}</td>{% endif %}
+            <td class="ctr"><input class="form-check-input adp-ex" type="checkbox" name="exclude_{{ item.row }}" aria-label="Exclude row {{ item.row }}"></td>
+          </tr>
+          <tr class="adp-detail" {% if item.state == 'ready' %}hidden{% endif %}><td colspan="{{ cols }}">
+            {% if item.error %}<p class="adp-msg bad" role="alert">{{ item.error }}</p>{% endif %}
+            {% if item.id_warning %}<p class="adp-msg warn"><i class="fas fa-hashtag" aria-hidden="true"></i> {{ item.id_warning }}</p>{% endif %}
+            {% if item.merge_note %}<p class="adp-msg warn"><i class="fas fa-layer-group" aria-hidden="true"></i> {{ item.merge_note }}</p>{% endif %}
+            {% if item.identity_candidate %}
+            {% set candidate = item.identity_candidate %}
+            <div class="alert alert-warning py-2 my-2">
+              <strong>CoopMS record matching the identifier:</strong> {{ candidate.member_name }}
+              <small class="d-block">Member: {{ candidate.member_number or '-' }} | Staff: {{ candidate.employee_id or '-' }}</small>
+              <button type="button" class="btn btn-sm btn-outline-dark mt-2" data-member-field="member-{{ item.row }}" data-member-id="{{ candidate.id }}">Select this member</button>
+            </div>{% endif %}
+            {% if item.suggestions %}
+            <div class="adp-hint mt-2">Did you mean:</div>
+            <div class="adp-suggest">{% for s in item.suggestions %}<button type="button" class="btn btn-sm btn-outline-primary" data-member-field="member-{{ item.row }}" data-member-id="{{ s.id }}"><strong>{{ s.member_name }}</strong><small class="d-block">Member {{ s.member_number or '-' }} &middot; Staff {{ s.employee_id or '-' }} &middot; {{ s.score }}% alike</small></button>{% endfor %}</div>{% endif %}
+            {% if item.loan_error %}<p class="adp-msg bad" role="alert">{{ item.loan_error }}</p>{% endif %}
+            {% if item.allocation_note and not item.loan_error %}<p class="adp-msg {{ 'warn' if item.loan_flag in ('short','over','unknown') else '' }}">{{ item.allocation_note }}</p>{% endif %}
+            {% if item.savings_error %}<p class="adp-msg bad" role="alert">{{ item.savings_error }}</p>{% endif %}
+            {% if item.loans %}
+            <table class="adp-alloc"><thead><tr><th>Loan</th><th>Type</th><th class="num">Outstanding</th><th class="num">Expected this month</th><th>Schedule basis</th><th class="num">Allocate</th></tr></thead>
+              <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="num">{{ naira(loan.balance) }}</td><td class="num">{{ naira(loan.expected) if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td class="num"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
+            </table>
+            {% if item.amount|float > 0 %}<label class="mt-2 small"><input class="form-check-input adp-ex-loan" type="checkbox" name="exclude_loan_{{ item.row }}"> Exclude loan deduction for this member</label>{% endif %}
+            {% endif %}
+            <details class="mt-2" {% if item.error %}open{% endif %}><summary class="small">Find a different member</summary>
+              <label class="form-label small mt-1" for="member-{{ item.row }}">Type a name or staff number, then choose from the list</label>
+              <input id="member-{{ item.row }}" name="member_{{ item.row }}" list="adapter-members" class="form-control form-control-sm" style="max-width:480px" autocomplete="off">
+              <span class="adp-hint">Then press &ldquo;Apply Member Matches&rdquo; above.</span></details>
+          </td></tr>
+        </tbody>
+        {% endfor %}
+      </table>
+      <div class="adp-empty" id="adp-empty">No rows match this filter.</div>
+    </div>
+
+    <div class="adp-bar" role="region" aria-label="Export summary">
+      <div class="figures">
+        <div><span>Rows confirmed</span><strong id="adp-n">0</strong></div>
+        <div><span>Loan repayments</span><strong>&#8358;<span id="adp-loan">0.00</span></strong></div>
+        {% if combined %}<div><span>Salary savings</span><strong>&#8358;<span id="adp-sav">0.00</span></strong></div>{% endif %}
       </div>
-      {% if item.error %}<p class="text-danger mt-2 mb-0" role="alert">{{ item.error }}</p>{% endif %}
-      {% if item.identity_candidate %}
-      {% set candidate = item.identity_candidate %}
-      <div class="alert alert-warning mt-2 mb-2">
-        <strong>CoopMS record matching the identifier:</strong> {{ candidate.member_name }}
-        <small class="d-block">Member: {{ candidate.member_number or '-' }} | Staff: {{ candidate.employee_id or '-' }}</small>
-        <button type="button" class="btn btn-sm btn-outline-dark mt-2"
-                data-member-field="member-{{ item.row }}" data-member-id="{{ candidate.id }}">Select this member</button>
-      </div>
-      {% endif %}
-      <details class="mt-2" {% if item.error %}open{% endif %}><summary>Member match</summary><label class="form-label" for="member-{{ item.row }}">Find member by name or staff number</label><input id="member-{{ item.row }}" name="member_{{ item.row }}" list="adapter-members" class="form-control" autocomplete="off"></details>
-      <div class="d-flex flex-wrap gap-3 mt-2">
-        <div><strong>Loan deduction: {{ item.amount }}</strong>{% if item.amount|float > 0 %}<label class="ms-2"><input class="form-check-input" type="checkbox" name="exclude_loan_{{ item.row }}"> Exclude loans</label>{% endif %}</div>
-        {% if combined %}<div><strong>Savings: {{ item.savings_amount }}</strong>{% if item.savings_amount|float > 0 %}<label class="ms-2"><input class="form-check-input" type="checkbox" name="exclude_savings_{{ item.row }}"> Exclude savings</label>{% endif %}</div><div>Subscription: {{ item.subscription_amount }}</div>{% endif %}
-      </div>
-      {% if item.loan_error %}<p class="text-danger mt-2 mb-0" role="alert">{{ item.loan_error }}</p>{% endif %}
-      {% if item.allocation_note and not item.loan_error %}<p class="small mt-2 mb-0">{{ item.allocation_note }}</p>{% endif %}
-      {% if item.savings_error %}<p class="text-danger mt-2 mb-0" role="alert">{{ item.savings_error }}</p>{% endif %}
-      {% if item.loans %}<div class="table-responsive mt-2"><table class="table table-sm align-middle">
-        <thead class="table-light"><tr><th>Loan</th><th>Type</th><th class="text-end">Outstanding</th><th class="text-end">Expected this month</th><th>Schedule basis</th><th>Allocation</th></tr></thead>
-        <tbody>{% for loan in item.loans %}<tr><td class="text-break">{{ loan.loan_number }}</td><td>{{ loan.purpose }}</td><td class="text-end">{{ loan.balance }}</td><td class="text-end">{{ loan.expected if loan.expected != '' else 'Unconfirmed' }}</td><td>{{ loan.basis }}</td><td style="min-width:150px"><input aria-label="Allocation for {{ loan.loan_number }}" class="form-control form-control-sm" type="number" min="0" max="{{ loan.balance }}" step="0.01" name="amount_{{ item.row }}_{{ loan.id }}" value="{{ loan.allocation }}" {% if item.error or item.loan_error %}disabled{% endif %}></td></tr>{% endfor %}</tbody>
-      </table></div>{% endif %}
-    </section>
-    {% endfor %}
-    <div class="mt-3 text-end"><button name="action" value="export" class="btn btn-primary"><i class="fas fa-download" aria-hidden="true"></i> {% if combined %}Download Loan &amp; Savings Schedules{% else %}Download Approved Repayments{% endif %}</button></div>
+      <button name="action" value="export" class="btn btn-primary btn-lg" id="adp-export"><i class="fas fa-download" aria-hidden="true"></i> {% if combined %}Download Loan &amp; Savings Schedules{% else %}Download Approved Repayments{% endif %}</button>
+    </div>
+    <p class="adp-hint mt-2">3. After downloading: upload the loan file in Loans &rsaquo; Bulk Repayments, and the savings file in Savings &rsaquo; Salary Upload for the same payroll month. Do not re-save the CSVs in Excel.</p>
   </form>
   <script>
-    document.querySelectorAll('[data-member-field]').forEach(button => {
-      button.addEventListener('click', () => {
-        const field = document.getElementById(button.dataset.memberField);
-        field.value = button.dataset.memberId;
-        field.form.requestSubmit(field.form.querySelector('button[value="rematch"]'));
+    (function () {
+      const rows = Array.from(document.querySelectorAll('.adp-row'));
+      const fmt = n => n.toLocaleString('en-NG', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      let filter = 'all';
+      function totals() {
+        let n = 0, loan = 0, sav = 0;
+        rows.forEach(r => {
+          const confirmed = r.querySelector('.adp-confirm'), ex = r.querySelector('.adp-ex').checked;
+          r.classList.toggle('is-excluded', ex);
+          if (!confirmed || !confirmed.checked || ex) return;
+          const exLoan = r.querySelector('.adp-ex-loan'), exSav = r.querySelector('.adp-ex-sav');
+          const l = exLoan && exLoan.checked ? 0 : parseFloat(r.dataset.loan) || 0;
+          const s = exSav && exSav.checked ? 0 : parseFloat(r.dataset.savings) || 0;
+          if (l || s) n++;
+          loan += l; sav += s;
+        });
+        document.getElementById('adp-n').textContent = n;
+        document.getElementById('adp-loan').textContent = fmt(loan);
+        const sv = document.getElementById('adp-sav'); if (sv) sv.textContent = fmt(sav);
+        document.getElementById('adp-export').disabled = n === 0;
+      }
+      function apply() {
+        const q = document.getElementById('adp-search').value.trim().toLowerCase();
+        let shown = 0;
+        rows.forEach(r => {
+          const ok = (filter === 'all' || r.dataset.state === filter) && (!q || r.dataset.search.includes(q));
+          r.hidden = !ok; if (ok) shown++;
+        });
+        document.getElementById('adp-empty').style.display = shown ? 'none' : 'block';
+      }
+      document.querySelectorAll('.adp-filter').forEach(b => b.addEventListener('click', () => {
+        filter = b.dataset.filter;
+        document.querySelectorAll('.adp-filter').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        apply();
+      }));
+      document.querySelectorAll('.adp-toggle').forEach(b => b.addEventListener('click', () => {
+        const detail = b.closest('tbody').querySelector('.adp-detail');
+        detail.hidden = !detail.hidden;
+        b.setAttribute('aria-expanded', String(!detail.hidden));
+        b.textContent = detail.hidden ? 'Details' : 'Hide details';
+      }));
+      document.getElementById('adp-search').addEventListener('input', apply);
+      document.getElementById('adp-confirm-ready').addEventListener('click', () => {
+        rows.filter(r => r.dataset.state === 'ready').forEach(r => { const c = r.querySelector('.adp-confirm'); if (c) c.checked = true; });
+        totals();
       });
-    });
+      document.getElementById('adp-form').addEventListener('change', totals);
+      document.getElementById('adp-form').addEventListener('submit', e => {
+        if (!e.submitter || e.submitter.value !== 'export') return;
+        const skipped = rows.filter(r => r.dataset.unresolved === '1' && !r.querySelector('.adp-ex').checked).map(r => r.dataset.row);
+        if (skipped.length && !confirm(skipped.length + ' unmatched row(s) will NOT be exported (HR row ' + skipped.join(', ') + '). They will be listed in the reconciliation file. Download anyway?')) e.preventDefault();
+      });
+      document.querySelectorAll('[data-member-field]').forEach(button => {
+        button.addEventListener('click', () => {
+          const field = document.getElementById(button.dataset.memberField);
+          field.value = button.dataset.memberId;
+          field.form.requestSubmit(field.form.querySelector('button[value="rematch"]'));
+        });
+      });
+      totals(); apply();
+    })();
   </script>
   {% endif %}
 </div>
