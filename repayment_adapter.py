@@ -539,7 +539,7 @@ LOAN_HEADERS = ['loan_number', 'amount', 'payment_date', 'payment_method', 'coun
 SAVINGS_HEADERS = ['member_number', 'employee_id', 'amount', 'month', 'date', 'counter_account', 'receipt_number', 'notes']
 REVIEW_HEADERS = ['source_row', 'hr_name', 'hr_staff_number', 'matched_member_number', 'loan_deduction',
                   'savings_deduction', 'subscription_deduction', 'loan_exported', 'savings_exported',
-                  'loan_status', 'savings_status', 'subscription_status']
+                  'loan_status', 'savings_status', 'subscription_status', 'loan_gap', 'savings_gap']
 
 
 def prepare_review(db, rows, month):
@@ -567,6 +567,14 @@ def prepare_review(db, rows, month):
         else:
             item['state'] = 'ready'
     return items, members
+
+
+def _gap(deducted, exported):
+    """HR deduction minus what the files carry; unreadable amounts count as zero."""
+    try:
+        return money(deducted or '0') - exported
+    except ValueError:
+        return Decimal('0.00') - exported
 
 
 def prepare_exports(db, items, choices, month, payment_date, account, username):
@@ -633,7 +641,8 @@ def prepare_exports(db, items, choices, month, payment_date, account, username):
                        str(loan_exported), str(savings_exported),
                        'Exported' if include_loan else skipped,
                        'Exported' if include_savings else skipped,
-                       'Separate fee - NOT included in loan/savings imports'])
+                       'Separate fee - NOT included in loan/savings imports',
+                       str(_gap(item['amount'], loan_exported)), str(_gap(item['savings_amount'], savings_exported))])
     if not loans and not savings:
         raise ValueError('No approved loan or savings deductions to export.')
     return loans, savings, review

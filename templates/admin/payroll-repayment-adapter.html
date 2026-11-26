@@ -65,9 +65,25 @@
   .adp-suggest button { text-align:left; }
   .adp-bar { position:sticky; bottom:0; z-index:5; margin-top:1rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.75rem; background:#fff; border:1px solid var(--adp-line); border-radius:10px; padding:.7rem 1rem; box-shadow:0 -4px 14px rgba(15,23,42,.08); }
   .adp-bar .figures { display:flex; flex-wrap:wrap; gap:1.25rem; font-variant-numeric:tabular-nums; }
-  .adp-bar .figures span { color:var(--adp-muted); font-size:.8rem; display:block; }
+  .adp-bar .figures .lbl { color:var(--adp-muted); font-size:.8rem; display:block; }
+  .adp-bar .figures strong.is-gap { color:var(--adp-bad); }
+  .adp-bar .figures strong.is-clear { color:var(--adp-ok); }
   .adp-bar .figures strong { font-size:1.05rem; }
   .adp-saved { margin-bottom:.6rem; padding:.45rem .8rem; border:1px solid #b8dcc7; background:#e3f4ea; color:#17653a; border-radius:8px; font-size:.86rem; }
+  .adp-recon { background:#fff; border:1px solid var(--adp-line); border-radius:10px; padding:1rem 1.1rem; margin-top:1rem; }
+  .adp-recon h3 { font-size:1rem; margin:0 0 .35rem; }
+  .adp-recon-table { width:100%; max-width:640px; border-collapse:collapse; font-size:.92rem; }
+  .adp-recon-table th, .adp-recon-table td { padding:.4rem .6rem; border-bottom:1px solid var(--adp-line); background:#fff; color:var(--adp-ink); text-align:left; }
+  .adp-recon-table thead th { background:#e9eef5; font-size:.75rem; text-transform:uppercase; letter-spacing:.03em; }
+  .adp-recon-table .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .adp-recon-table .gap-bad { color:var(--adp-bad); font-weight:700; } .adp-recon-table .gap-ok { color:var(--adp-ok); font-weight:700; }
+  .adp-gapgroup { border:1px solid var(--adp-line); border-radius:8px; margin-top:.5rem; }
+  .adp-gapgroup summary { cursor:pointer; padding:.5rem .75rem; font-weight:600; }
+  .adp-gapgroup ul { list-style:none; margin:0; padding:0 .75rem .6rem; }
+  .adp-gapgroup li { display:flex; flex-wrap:wrap; gap:.5rem; align-items:baseline; padding:.3rem 0; border-top:1px solid var(--adp-line); font-size:.88rem; }
+  .adp-gapgroup li .amt { font-variant-numeric:tabular-nums; font-weight:600; margin-left:auto; }
+  .adp-rowgap { display:block; color:var(--adp-bad); font-size:.78rem; font-weight:600; margin-top:.15rem; }
+  .adp-row.is-flash td { box-shadow:inset 0 0 0 2px #d99a00; }
   .adp-empty { display:none; padding:1.5rem; text-align:center; color:var(--adp-muted); }
   @media (max-width: 767px) { .adp-stat strong { font-size:1.1rem; } .adp-search { max-width:none; width:100%; } }
 </style>
@@ -157,6 +173,7 @@
       <button type="button" class="adp-filter" data-filter="attention" aria-pressed="false">Needs action ({{ summary.attention }})</button>
       <button type="button" class="adp-filter" data-filter="check" aria-pressed="false">Needs a check ({{ summary.check }})</button>
       <button type="button" class="adp-filter" data-filter="ready" aria-pressed="false">Ready ({{ summary.ready }})</button>
+      <button type="button" class="adp-filter" data-filter="gap" aria-pressed="false" id="adp-gap-filter">Not in the files (0)</button>
       <input type="search" class="form-control form-control-sm adp-search" id="adp-search" placeholder="Search name or staff number" aria-label="Search rows">
       <span class="ms-auto d-flex flex-wrap gap-2">
         <button type="button" class="btn btn-sm btn-success" id="adp-confirm-ready"><i class="fas fa-check-double" aria-hidden="true"></i> Confirm all ready rows ({{ summary.ready }})</button>
@@ -175,6 +192,8 @@
         {% for item in items %}
         {% set cols = 8 + (2 if combined else 0) %}
         <tbody class="adp-row" data-state="{{ item.state }}" data-unresolved="{{ 1 if item.error else 0 }}" data-row="{{ item.row }}" data-member="{{ item.member_id or '' }}" data-loan="{{ item.amount if not (item.error or item.loan_error) else 0 }}" data-savings="{{ item.savings_amount if not item.error else 0 }}"
+               data-hr-loan="{{ item.amount if item.amount|float > 0 else 0 }}" data-hr-sav="{{ item.savings_amount if item.savings_amount|float > 0 else 0 }}" data-name="{{ item.source_name }}"
+               data-loan-block="{{ item.error or item.loan_error }}" data-sav-block="{{ item.error or item.savings_error }}" data-unmatched="{{ 1 if item.error else 0 }}"
                data-search="{{ (item.source_name ~ ' ' ~ item.name ~ ' ' ~ item.source_staff ~ ' ' ~ item.member_number ~ ' ' ~ item.employee_id)|lower }}">
           <tr class="adp-main">
             <td class="ctr">{% if not item.error %}<input class="form-check-input adp-confirm" type="checkbox" name="confirm_{{ item.row }}" id="confirm-{{ item.row }}" aria-label="Confirm row {{ item.row }}">{% else %}&mdash;{% endif %}</td>
@@ -184,7 +203,7 @@
               {% else %}<span class="adp-badge attention"><i class="fas fa-times-circle" aria-hidden="true"></i> Action needed</span>{% endif %}
               <button type="button" class="btn btn-link btn-sm p-0 d-block adp-toggle" aria-expanded="{{ 'false' if item.state == 'ready' else 'true' }}">{{ 'Details' if item.state == 'ready' else 'Hide details' }}</button>
             </td>
-            <td><span class="adp-name">Row {{ item.row }}: {{ item.source_name or 'No name' }}</span><span class="adp-sub">Staff no. {{ item.source_staff or 'none' }}</span></td>
+            <td><span class="adp-name">Row {{ item.row }}: {{ item.source_name or 'No name' }}</span><span class="adp-sub">Staff no. {{ item.source_staff or 'none' }}</span><span class="adp-rowgap" hidden></span></td>
             <td>{% if item.member_id %}<span class="adp-name">{{ item.name }}</span><span class="adp-sub">Member {{ item.member_number or '-' }} &middot; Staff {{ item.employee_id or '-' }}</span>{% if item.match != 'Member / staff number' %}<span class="adp-sub">{{ item.match }}</span>{% endif %}{% else %}<span class="text-danger">Not matched</span>{% endif %}</td>
             <td class="num">{{ naira(item.amount) if item.amount|float > 0 else '0.00' }}</td>
             <td class="num">{{ naira(item.loan_expected) }}</td>
@@ -231,11 +250,25 @@
       <div class="adp-empty" id="adp-empty">No rows match this filter.</div>
     </div>
 
+    <section class="adp-recon" id="adp-recon" aria-labelledby="adp-recon-h">
+      <h3 id="adp-recon-h">Reconciliation to the HR file</h3>
+      <p class="adp-hint mb-2">What HR deducted, against what the files you download will contain. Any difference is listed below with the reason, so nothing goes missing silently.</p>
+      <table class="adp-recon-table">
+        <thead><tr><th scope="col"></th><th scope="col" class="num">HR file</th><th scope="col" class="num">In your files</th><th scope="col" class="num">Gap</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Loan repayments</th><td class="num" id="adp-hr-loan">0.00</td><td class="num" id="adp-ex-loan-total">0.00</td><td class="num" id="adp-gap-loan">0.00</td></tr>
+          {% if combined %}<tr><th scope="row">Salary savings</th><td class="num" id="adp-hr-sav">0.00</td><td class="num" id="adp-ex-sav-total">0.00</td><td class="num" id="adp-gap-sav">0.00</td></tr>{% endif %}
+        </tbody>
+      </table>
+      <div id="adp-gaps" class="mt-2"></div>
+    </section>
+
     <div class="adp-bar" role="region" aria-label="Export summary">
       <div class="figures">
-        <div><span>Rows confirmed</span><strong id="adp-n">0</strong></div>
-        <div><span>Loan repayments</span><strong>&#8358;<span id="adp-loan">0.00</span></strong></div>
-        {% if combined %}<div><span>Salary savings</span><strong>&#8358;<span id="adp-sav">0.00</span></strong></div>{% endif %}
+        <div><span class="lbl">Rows confirmed</span><strong id="adp-n">0</strong></div>
+        <div><span class="lbl">Loan repayments</span><strong>&#8358;<span id="adp-loan">0.00</span></strong></div>
+        {% if combined %}<div><span class="lbl">Salary savings</span><strong>&#8358;<span id="adp-sav">0.00</span></strong></div>{% endif %}
+        <div><span class="lbl">Gap vs HR file</span><strong id="adp-gap-total">None</strong> <a href="#adp-recon" class="small" id="adp-gap-link" hidden>See why</a></div>
       </div>
       <button name="action" value="export" class="btn btn-primary btn-lg" id="adp-export"><i class="fas fa-download" aria-hidden="true"></i> {% if combined %}Download Loan &amp; Savings Schedules{% else %}Download Approved Repayments{% endif %}</button>
     </div>
@@ -246,28 +279,100 @@
       const rows = Array.from(document.querySelectorAll('.adp-row'));
       const fmt = n => n.toLocaleString('en-NG', {minimumFractionDigits: 2, maximumFractionDigits: 2});
       let filter = 'all';
+      const num = v => { const x = parseFloat(v); return isFinite(x) ? x : 0; };
+      const esc = text => String(text).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+      const CATEGORY = {
+        unmatched: 'Member not matched (resolve it, or it will not be exported)',
+        blocked: 'Blocked by a check (see the row for the reason)',
+        excluded: 'Excluded by you',
+        allocation: 'Allocation does not equal the HR deduction',
+        unconfirmed: 'Not confirmed yet',
+      };
       function totals() {
-        let n = 0, loan = 0, sav = 0;
+        let n = 0, loan = 0, sav = 0, hrLoan = 0, hrSav = 0;
+        const gaps = {};
+        const addGap = (key, r, kind, amount, why) => {
+          (gaps[key] = gaps[key] || []).push({r, kind, amount, why});
+        };
         rows.forEach(r => {
           const confirmed = r.querySelector('.adp-confirm'), ex = r.querySelector('.adp-ex').checked;
-          r.classList.toggle('is-excluded', ex);
-          if (!confirmed || !confirmed.checked || ex) return;
           const exLoan = r.querySelector('.adp-ex-loan'), exSav = r.querySelector('.adp-ex-sav');
-          const l = exLoan && exLoan.checked ? 0 : parseFloat(r.dataset.loan) || 0;
-          const s = exSav && exSav.checked ? 0 : parseFloat(r.dataset.savings) || 0;
-          if (l || s) n++;
-          loan += l; sav += s;
+          r.classList.toggle('is-excluded', ex);
+          const loanHr = num(r.dataset.hrLoan), savHr = num(r.dataset.hrSav);
+          hrLoan += loanHr; hrSav += savHr;
+          const ok = confirmed && confirmed.checked && !ex;
+          let loanIn = 0, savIn = 0;
+          if (loanHr > 0) {
+            if (r.dataset.unmatched === '1') addGap('unmatched', r, 'Loan', loanHr, 'No member matched');
+            else if (ex || (exLoan && exLoan.checked)) addGap('excluded', r, 'Loan', loanHr, ex ? 'Whole row excluded' : 'Loan deduction excluded');
+            else if (r.dataset.loanBlock) addGap('blocked', r, 'Loan', loanHr, r.dataset.loanBlock);
+            else if (!ok) addGap('unconfirmed', r, 'Loan', loanHr, 'Row not confirmed');
+            else {
+              let allocated = 0;
+              r.querySelectorAll('input[name^="amount_"]').forEach(i => { allocated += num(i.value); });
+              allocated = Math.round(allocated * 100) / 100;
+              if (Math.abs(loanHr - allocated) > 0.005) {
+                addGap('allocation', r, 'Loan', loanHr - allocated, 'Allocated ' + fmt(allocated) + ' of ' + fmt(loanHr));
+              } else loanIn = loanHr;
+            }
+          }
+          if (savHr > 0) {
+            if (r.dataset.unmatched === '1') addGap('unmatched', r, 'Savings', savHr, 'No member matched');
+            else if (ex || (exSav && exSav.checked)) addGap('excluded', r, 'Savings', savHr, ex ? 'Whole row excluded' : 'Savings deduction excluded');
+            else if (r.dataset.savBlock) addGap('blocked', r, 'Savings', savHr, r.dataset.savBlock);
+            else if (!ok) addGap('unconfirmed', r, 'Savings', savHr, 'Row not confirmed');
+            else savIn = savHr;
+          }
+          if (loanIn || savIn) n++;
+          loan += loanIn; sav += savIn;
         });
-        document.getElementById('adp-n').textContent = n;
-        document.getElementById('adp-loan').textContent = fmt(loan);
-        const sv = document.getElementById('adp-sav'); if (sv) sv.textContent = fmt(sav);
+        // Per-row chips and the gap filter: a row is "in the gap" if any of its money is missing from the files.
+        const inGap = new Map();
+        Object.entries(gaps).forEach(([key, list]) => list.forEach(g => {
+          const entry = inGap.get(g.r) || {amount: 0, whys: [], onlyUnconfirmed: true};
+          entry.amount += g.amount; entry.whys.push(g.kind + ': ' + g.why);
+          if (key !== 'unconfirmed') entry.onlyUnconfirmed = false;
+          inGap.set(g.r, entry);
+        }));
+        rows.forEach(r => {
+          const chip = r.querySelector('.adp-rowgap'), entry = inGap.get(r);
+          r.dataset.gap = entry ? '1' : '0';
+          if (entry && !entry.onlyUnconfirmed) { chip.hidden = false; chip.textContent = 'Gap ' + fmt(entry.amount) + ' - ' + entry.whys.join('; '); }
+          else { chip.hidden = true; chip.textContent = ''; }
+        });
+        const gapLoan = hrLoan - loan, gapSav = hrSav - sav;
+        const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+        const cls = (id, gap) => { const el = document.getElementById(id); if (el) { el.className = 'num ' + (Math.abs(gap) > 0.005 ? 'gap-bad' : 'gap-ok'); } };
+        set('adp-n', n); set('adp-loan', fmt(loan)); set('adp-sav', fmt(sav));
+        set('adp-hr-loan', fmt(hrLoan)); set('adp-ex-loan-total', fmt(loan)); set('adp-gap-loan', fmt(gapLoan)); cls('adp-gap-loan', gapLoan);
+        set('adp-hr-sav', fmt(hrSav)); set('adp-ex-sav-total', fmt(sav)); set('adp-gap-sav', fmt(gapSav)); cls('adp-gap-sav', gapSav);
+        const total = gapLoan + gapSav, flagged = Math.abs(gapLoan) > 0.005 || Math.abs(gapSav) > 0.005;
+        const gapBox = document.getElementById('adp-gap-total');
+        gapBox.className = flagged ? 'is-gap' : 'is-clear';
+        gapBox.textContent = flagged ? '\u20A6' + fmt(Math.abs(total)) : 'None';
+        document.getElementById('adp-gap-link').hidden = !flagged;
+        document.getElementById('adp-gap-filter').textContent = 'Not in the files (' + inGap.size + ')';
+        // Reasons, grouped; each row is a link that jumps to it.
+        const box = document.getElementById('adp-gaps');
+        let html = '';
+        ['unmatched', 'blocked', 'allocation', 'excluded', 'unconfirmed'].filter(k => gaps[k]).forEach(k => {
+          const list = gaps[k], sum = list.reduce((acc, g) => acc + g.amount, 0);
+          html += '<details class="adp-gapgroup"' + (k === 'unconfirmed' ? '' : ' open') + '><summary>' + esc(CATEGORY[k]) + ' &mdash; ' + list.length + ' item(s), &#8358;' + fmt(sum) + '</summary><ul>';
+          list.forEach(g => {
+            html += '<li><button type="button" class="btn btn-link btn-sm p-0" data-goto="' + esc(g.r.dataset.row) + '">Row ' + esc(g.r.dataset.row) + '</button>'
+              + '<span>' + esc(g.r.dataset.name || 'No name') + '</span><span class="adp-hint">' + esc(g.kind) + ': ' + esc(g.why) + '</span>'
+              + '<span class="amt">&#8358;' + fmt(g.amount) + '</span></li>';
+          });
+          html += '</ul></details>';
+        });
+        box.innerHTML = html || '<p class="mb-0"><span class="adp-verified"><i class="fas fa-check-circle" aria-hidden="true"></i> Every deduction in the HR file is accounted for in the files.</span></p>';
         document.getElementById('adp-export').disabled = n === 0;
       }
       function apply() {
         const q = document.getElementById('adp-search').value.trim().toLowerCase();
         let shown = 0;
         rows.forEach(r => {
-          const ok = (filter === 'all' || r.dataset.state === filter) && (!q || r.dataset.search.includes(q));
+          const ok = (filter === 'all' || (filter === 'gap' ? r.dataset.gap === '1' : r.dataset.state === filter)) && (!q || r.dataset.search.includes(q));
           r.hidden = !ok; if (ok) shown++;
         });
         document.getElementById('adp-empty').style.display = shown ? 'none' : 'block';
@@ -289,6 +394,21 @@
         totals();
       });
       document.getElementById('adp-form').addEventListener('change', totals);
+      document.getElementById('adp-form').addEventListener('input', totals);
+      document.getElementById('adp-gaps').addEventListener('click', e => {
+        const link = e.target.closest('[data-goto]');
+        if (!link) return;
+        const row = rows.find(r => r.dataset.row === link.dataset.goto);
+        if (!row) return;
+        filter = 'all';
+        document.getElementById('adp-search').value = '';
+        document.querySelectorAll('.adp-filter').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.filter === 'all')));
+        apply();
+        row.querySelector('.adp-detail').hidden = false;
+        const toggle = row.querySelector('.adp-toggle'); toggle.setAttribute('aria-expanded', 'true'); toggle.textContent = 'Hide details';
+        row.scrollIntoView({block: 'center'});
+        row.classList.add('is-flash'); setTimeout(() => row.classList.remove('is-flash'), 2500);
+      });
       document.getElementById('adp-form').addEventListener('submit', e => {
         if (!e.submitter || e.submitter.value !== 'export') return;
         const skipped = rows.filter(r => r.dataset.unresolved === '1' && !r.querySelector('.adp-ex').checked).map(r => r.dataset.row);

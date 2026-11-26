@@ -271,6 +271,8 @@ class PayrollRoutes(unittest.TestCase):
         self.assertEqual(len(review), 2)
         self.assertEqual(review[1]['loan_status'], 'Unmatched - NOT exported')
         self.assertEqual(review[1]['loan_exported'], '0')
+        self.assertEqual((review[1]['loan_gap'], review[1]['savings_gap']), ('5000.00', '2000.00'))
+        self.assertEqual((review[0]['loan_gap'], review[0]['savings_gap']), ('0.00', '0.00'))
 
     def test_unknown_headings_map_then_correction_is_remembered(self):
         nl = chr(10)
