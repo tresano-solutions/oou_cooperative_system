@@ -71,3 +71,11 @@ functions/venv/
 deploy/vps/landing/download/*.apk
 deploy/vps/landing/download/*.aab
 private_uploads/
+
+# Credentials and connection strings must never be committed.
+.env.*
+!.env.example
+!deploy/vps/.env.example
+*.pem
+*.key
+Postgres Database*

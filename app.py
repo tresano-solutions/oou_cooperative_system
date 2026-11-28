@@ -615,6 +615,11 @@ def apply_security_headers(response):
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
     response.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    # The parts of a CSP that cannot break a page: no framing, no <base> hijack, no plugins.
+    # Script/style sources stay in the edge's report-only policy until inline scripts are removed.
+    response.headers.setdefault('Content-Security-Policy',
+                                "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+    response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
     if not _is_debug:
         response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     if current_user.is_authenticated and request.endpoint != 'static':
